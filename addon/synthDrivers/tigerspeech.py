@@ -29,10 +29,20 @@ add-on, each by breaking it and being told.  They apply here unchanged.
    sends on `synthDoneSpeaking`.  Blocking there costs a letter of latency per
    keystroke.  Feeding gets its own thread.
 
-2. *Hand the player a whole utterance at a time.*  Slicing it into chunks
-   created a holding area where rendered audio waited to be discarded --
-   measured, 367 of 435 utterances thrown away in one session, heard as words
-   cut in half.
+2. *Never let rendered audio wait in a holding area to be discarded.*  This
+   used to read "hand the player a whole utterance at a time", because slicing
+   one into chunks was how the holding area appeared -- measured, 367 of 435
+   utterances thrown away in one session, heard as words cut in half.
+
+   The audio is now streamed, so it genuinely does arrive in chunks; what
+   makes that safe is that no chunk ever waits.  Each one goes straight to the
+   audio queue as it comes off the pipe, and the only thing that stops it is
+   the user having cancelled, which is the one case where cutting a word in
+   half is the correct answer.  The rule that was really being kept is the one
+   stated above; the whole-utterance version was the shape it happened to take
+   when the audio arrived all at once.  Waiting for it all cost most of a
+   second before the first sound of a paragraph, and none of that was the
+   engine -- it renders at about ninety times real time.
 
 3. *Discard work by draining, never by stamping it.*  A generation counter
    compared at render time froze that driver silent -- 615 utterances spoken,
@@ -205,7 +215,24 @@ def _joinFragments(parts):
 
 
 REQ_MAGIC = 0x54475233          # 'TGR3'
+#: The same audio, in chunks, as the engine produces it.
+#:
+#: A separate magic rather than a flag so that a stale `tiger_host.exe` left in
+#: an add-on folder refuses the request outright instead of answering it in a
+#: shape this driver would read as chunk lengths.
+REQ_MAGIC_STREAM = 0x54475234   # 'TGR4'
 RSP_MAGIC = 0x54475253          # 'TGRS'
+
+
+def _readExactly(stream, n):
+    """Read exactly `n` bytes or raise.  A pipe read can always come up short."""
+    out = b""
+    while len(out) < n:
+        chunk = stream.read(n - len(out))
+        if not chunk:
+            raise IOError("engine closed the pipe")
+        out += chunk
+    return out
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ENGINE_DIR = os.path.join(_HERE, "_tigerspeech")
@@ -356,6 +383,17 @@ class SynthDriver(SynthDriver):
         self._proc = None
         self._procLock = threading.Lock()
         self._stopped = False
+        #: Bumped by `cancel()`.  Read once at the start of a streamed render
+        #: and compared while it runs, so that audio for an utterance the user
+        #: has already interrupted stops being fed.
+        #:
+        #: This is not the generation stamp rule 3 forbids.  That one decided
+        #: whether an utterance was rendered or emitted *at all*, and a lost
+        #: race left the driver permanently silent.  This one can only ever
+        #: shorten the tail of a stream that is already playing; the next
+        #: utterance re-reads it, so no sequence of races can stop the driver
+        #: speaking.
+        self._cancels = 0
         self._queue = queue.Queue()
         self._audioQueue = queue.Queue()
         self._player = self._makePlayer()
@@ -497,8 +535,16 @@ class SynthDriver(SynthDriver):
         pitch = min(100, max(0, self._pitch + adj))
         return int((pitch - 50) * PITCH_SEMITONES * 10 / 50)
 
-    def _render(self, text, wpm, voice, pitch=0):
-        """-> PCM bytes, or None.  One request, one utterance."""
+    def _render(self, text, wpm, voice, pitch=0, sink=None):
+        """-> PCM bytes, or None.  One request, one utterance.
+
+        With a `sink`, the audio is asked for in chunks and each is handed over
+        as it arrives, and the return is `b""` because the audio has already
+        gone.  A sink returning False stops the feeding without abandoning the
+        response.  The engine renders far faster than real time, so the whole
+        utterance still arrives in a fraction of its own duration -- what
+        changes is that the first of it can be sounding by then.
+        """
         text = text.strip()
         if not text:
             return b""
@@ -535,25 +581,44 @@ class SynthDriver(SynthDriver):
             proc = self._host()
             v = voice.encode("utf-8")
             t = _encode(text)
-            proc.stdin.write(struct.pack("<IiiIII", REQ_MAGIC, wpm, pitch,
+            req = REQ_MAGIC_STREAM if sink is not None else REQ_MAGIC
+            proc.stdin.write(struct.pack("<IiiIII", req, wpm, pitch,
                                          0, len(v), len(t)) + v + t)
             proc.stdin.flush()
-            head = proc.stdout.read(12)
-            if len(head) < 12:
-                raise IOError("engine closed the pipe")
-            magic, status, nframes = struct.unpack("<IiI", head)
+            if sink is None:
+                magic, status, nframes = struct.unpack(
+                    "<IiI", _readExactly(proc.stdout, 12))
+                if magic != RSP_MAGIC:
+                    raise IOError("bad response magic %08x" % magic)
+                pcm = _readExactly(proc.stdout, nframes * 2)
+                if status:
+                    log.debugWarning("tigerspeech: OSErr %d for %r"
+                                     % (status, text))
+                return pcm
+            # Streamed.  The status arrives first, because SESpeakBuffer
+            # returns in a tenth of a millisecond and the outcome is known long
+            # before the audio is.
+            magic, status = struct.unpack("<Ii", _readExactly(proc.stdout, 8))
             if magic != RSP_MAGIC:
                 raise IOError("bad response magic %08x" % magic)
-            want = nframes * 2
-            pcm = b""
-            while len(pcm) < want:          # a pipe read can come up short
-                chunk = proc.stdout.read(want - len(pcm))
-                if not chunk:
-                    raise IOError("truncated audio")
-                pcm += chunk
+            feeding = True
+            while True:
+                (n,) = struct.unpack("<I", _readExactly(proc.stdout, 4))
+                if not n:
+                    break
+                chunk = _readExactly(proc.stdout, n * 2)
+                # Read to the end of the response even once the sink has
+                # stopped wanting it.  The same pipe carries the next
+                # utterance, so chunks left unread would put the protocol out
+                # of step -- and this driver's answer to that is to kill the
+                # engine, which costs far more than reading audio nobody will
+                # hear.  The engine renders at about ninety times real time, so
+                # draining is cheap.
+                if feeding and not sink(chunk):
+                    feeding = False
             if status:
                 log.debugWarning("tigerspeech: OSErr %d for %r" % (status, text))
-            return pcm
+            return b""
         except Exception as e:
             # The protocol is a stream: a failed exchange leaves it out of step,
             # so drop the process rather than trying to resynchronise.
@@ -660,13 +725,26 @@ class SynthDriver(SynthDriver):
         # renderer to reproduce what somebody heard.
         if log.isEnabledFor(log.DEBUG):
             log.debug("tigerspeech: speaking %r" % (text,))
-        pcm = self._render(text, wpm, voice, self._pitchOffset(adj))
+        # Indexes go in before the audio rather than after rendering it.  They
+        # belonged at the head of this utterance already -- see the docstring
+        # above -- and now that the audio arrives in pieces there is no later
+        # moment that would still be the head.
         if pending:
             for index in pending:
                 self._audioQueue.put(("index", index))
             del pending[:]
-        if pcm:
-            self._audioQueue.put(("audio", pcm))
+        mark = self._cancels
+        fed = []
+
+        def sink(chunk):
+            if self._cancels != mark:
+                return False            # interrupted: stop feeding, keep reading
+            fed.append(len(chunk))
+            self._audioQueue.put(("audio", chunk))
+            return True
+
+        pcm = self._render(text, wpm, voice, self._pitchOffset(adj), sink=sink)
+        if pcm is not None and fed and self._cancels == mark:
             gap = self.PAUSE_MS.get(self._pauseMode, 0)
             if gap:
                 self._audioQueue.put(("audio", _silence(gap)))
@@ -740,6 +818,7 @@ class SynthDriver(SynthDriver):
         ungated, because a flag that tracked whether the *worker* was busy once
         left interruption silently broken while sound was still playing.
         """
+        self._cancels += 1
         for q in (self._queue, self._audioQueue):
             while True:
                 try:
