@@ -85,9 +85,31 @@ static void __cdecl sh_vDSP_vmsb(const float *A, vdsp_stride IA,
                                  float *D, vdsp_stride ID, vdsp_length N)
 {
     vdsp_length n;
+    static int variant = -1;
     if (!A || !B || !C || !D) return;
-    for (n = 0; n < N; n++, A += IA, B += IB, C += IC, D += ID)
-        *D = *A * *B - *C;
+    /* TIGER_VMSB picks an alternative reading, so the one that is only
+     * inferred can be tested rather than argued about. The engine feeds this
+     * a window, a candidate and a windowed target and sums the magnitudes of
+     * the result to score an alignment; a wrong reading does not crash, it
+     * just scores badly and joins the grains in the wrong place. */
+    if (variant < 0) {
+        const char *v = getenv("TIGER_VMSB");
+        variant = v ? atoi(v) : 0;
+    }
+    switch (variant) {
+    case 1:     /* D = A - B*C */
+        for (n = 0; n < N; n++, A += IA, B += IB, C += IC, D += ID)
+            *D = *A - *B * *C;
+        break;
+    case 2:     /* D = (A - B) * C */
+        for (n = 0; n < N; n++, A += IA, B += IB, C += IC, D += ID)
+            *D = (*A - *B) * *C;
+        break;
+    default:    /* D = A*B - C, the documented vDSP_vmsb */
+        for (n = 0; n < N; n++, A += IA, B += IB, C += IC, D += ID)
+            *D = *A * *B - *C;
+        break;
+    }
 }
 
 /* vDSP_vmma(A, IA, B, IB, C, IC, D, ID, E, IE, N):
@@ -104,6 +126,30 @@ static void __cdecl sh_vDSP_vmma(const float *A, vdsp_stride IA,
 {
     vdsp_length n;
     if (!A || !B || !C || !D || !E) return;
+    /* The two weights here are the same Hann window read from two places --
+     * A is &w[hop] and C is &w[0] -- so for the overlap-add to be transparent
+     * they must sum to one at every n. That is only true when the hop is
+     * exactly half the window length. If WSOLA varies its hop, a plain Hann
+     * pair no longer sums to unity and every join gets an amplitude step,
+     * which is what a crackle laid over otherwise clean speech is.
+     *
+     * So measure it rather than assume it. */
+    if (accel_debug()) {
+        static unsigned calls;
+        static double worst;
+        double dev = 0.0;
+        vdsp_length k;
+        for (k = 0; k < N; k++) {
+            double sum = (double)A[k * IA] + (double)C[k * IC];
+            double e = sum - 1.0;
+            if (e < 0) e = -e;
+            if (e > dev) dev = e;
+        }
+        if (dev > worst) worst = dev;
+        if (++calls <= 6 || (calls % 100000) == 0)
+            printf("  [vDSP] vmma #%u N=%lu  weights sum to 1 +/- %.4f "
+                   "(worst %.4f)\n", calls, (unsigned long)N, dev, worst);
+    }
     for (n = 0; n < N; n++, A += IA, B += IB, C += IC, D += ID, E += IE)
         *E = *A * *B + *C * *D;
 }

@@ -246,6 +246,8 @@ int main(int argc, char **argv)
                                              PAGE_EXECUTE_READWRITE);
     if (!g_thunks) die("cannot allocate thunk area");
 
+    g_float_stats = getenv("TIGER_FLOAT_STATS") ? 1 : 0;
+
     AddVectoredExceptionHandler(1, on_fault);
 
     /* An optional third image, which so far only Leopard has wanted.  Loaded
@@ -364,6 +366,30 @@ int main(int argc, char **argv)
                                          long len, long flags);
         SESpeak_t speak = (SESpeak_t)find_export(&mt, "_SESpeakBuffer");
         if (!speak) die("SESpeakBuffer not found");
+        /* TIGER_RATE, in words per minute, so the amount of time-scaling can
+         * be varied deliberately.
+         *
+         * Alex is concatenative: a rate the recordings were not made at means
+         * MTMBModRateWsola has to stretch them, and that is the one stage
+         * whose maths is ours rather than Apple's.  If the crackle follows the
+         * amount of stretching, it is in there; if it is the same at every
+         * rate, it is not. */
+        {
+            const char *rt = getenv("TIGER_RATE");
+            if (rt && *rt) {
+                typedef int (__cdecl *SESetInfo_t)(void *, unsigned,
+                                                   const void *);
+                SESetInfo_t setinfo =
+                    (SESetInfo_t)find_export(&mt, "_SESetSpeechInfo");
+                unsigned fixed = (unsigned)atoi(rt) << 16;   /* Fixed 16.16 */
+                if (setinfo) {
+                    int r = call_aligned3((void *)setinfo, chan,
+                                          (void *)0x72617465u, &fixed);
+                    printf("\nSESetSpeechInfo 'rate' %d wpm -> OSErr %d\n",
+                           atoi(rt), r);
+                }
+            }
+        }
         printf("\nSESpeakBuffer at %p, %d bytes of text\n",
                (void *)speak, (int)(sizeof(text) - 1));
         err = call_aligned4((void *)speak, chan, (void *)text,
@@ -384,6 +410,11 @@ int main(int argc, char **argv)
             if (g_sc.magic || g_sc.sessions || g_sc.resets)
                 printf("  [ac] %u decoder stream(s), %u reset(s)\n",
                        g_sc.sessions, g_sc.resets);
+            if (g_fstat_n)
+                printf("  [flt] engine float output roughness %.3f over %u "
+                       "samples\n",
+                       g_fstat_d / (g_fstat_abs > 1e-9 ? g_fstat_abs : 1.0),
+                       g_fstat_n);
             if (g_pcmstat_n)
                 printf("  [pcm] decoder output roughness %.3f over %u samples "
                        "(clean speech is about 0.10)\n",

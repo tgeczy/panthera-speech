@@ -125,7 +125,13 @@ static float    g_pcm[PCM_CAP];
 static unsigned g_pcm_n;
 static unsigned g_slices;
 static unsigned g_frames_seen;
-static unsigned g_empty_run;            /* consecutive slices carrying nothing */
+static unsigned g_empty_run;          /* consecutive slices carrying nothing */
+/* Roughness of the engine's own float output, under TIGER_FLOAT_STATS: the
+ * decoded grains are clean and the finished wav is not, so this says which
+ * side of the float-to-short conversion the noise arrives on. */
+static int      g_float_stats;
+static double   g_fstat_abs, g_fstat_d;
+static unsigned g_fstat_n;
 /*
  * The spin guard counts *silent* slices, not slices.
  *
@@ -264,6 +270,32 @@ static void take_slice(unsigned char *slice)
         const float *data = *(const float **)(b + 8);
         unsigned n = bytes / sizeof(float), j;
         if (i == 0 && data) {
+            /* The buffer's byte count is its capacity; `frames` is how much of
+             * it the engine actually filled.  Taking the capacity appends
+             * whatever was left in the buffer from last time -- stale audio,
+             * at full amplitude, scattered through the utterance wherever a
+             * slice came up short. */
+            static unsigned mismatches;
+            if (n != frames && mismatches < 8) {
+                mismatches++;
+                printf("  [au] slice %u: buffer holds %u frames, slice says "
+                       "%u -- taking %u\n", g_slices, n, frames,
+                       frames < n ? frames : n);
+            }
+            if (frames < n) n = frames;
+            /* Roughness of the engine's own float output, before anything of
+             * ours touches it.  The decoded grains are clean and the finished
+             * wav is not, so the stage that adds the noise is somewhere
+             * between -- and this says which side of the float-to-short
+             * conversion it is on. */
+            if (g_float_stats) {
+                for (j = 0; j + 1 < n; j++) {
+                    double a = data[j], b = data[j + 1];
+                    g_fstat_abs += a < 0 ? -a : a;
+                    g_fstat_d   += (b - a) < 0 ? (a - b) : (b - a);
+                    g_fstat_n++;
+                }
+            }
             for (j = 0; j < n && g_pcm_n < PCM_CAP; j++)
                 g_pcm[g_pcm_n++] = data[j];
         }
