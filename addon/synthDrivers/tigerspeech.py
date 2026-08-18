@@ -63,7 +63,8 @@ import queue
 import nvwave
 import speech.commands
 from logHandler import log
-from autoSettingsUtils.driverSetting import BooleanDriverSetting
+from autoSettingsUtils.driverSetting import BooleanDriverSetting, DriverSetting
+from autoSettingsUtils.utils import StringParameterInfo
 from synthDriverHandler import (SynthDriver, VoiceInfo, synthDoneSpeaking,
                                 synthIndexReached)
 
@@ -125,6 +126,29 @@ def _encode(text):
     the whole fix -- there is no table of symbol names to maintain.
     """
     return text.translate(_FOLD).encode("mac_roman", "tigerspeech_fold")
+
+
+def _silence(ms):
+    """-> that many milliseconds of 16-bit mono silence."""
+    if ms <= 0:
+        return b""
+    return b"\0" * (2 * int(OUT_RATE * ms / 1000.0))
+
+
+def _joinFragments(parts):
+    """Join the pieces of one utterance back into a sentence.
+
+    A space goes in only where neither side already has one: NVDA's fragments
+    usually carry their own spacing, and doubling it is harmless, but "link"
+    followed by "Home" with nothing between them would otherwise be handed to
+    the engine as "linkHome" and spoken as one word.
+    """
+    out = []
+    for part in parts:
+        if out and part[:1].strip() and out[-1][-1:].strip():
+            out.append(" ")
+        out.append(part)
+    return "".join(out)
 
 
 REQ_MAGIC = 0x54475233          # 'TGR3'
@@ -206,8 +230,14 @@ class SynthDriver(SynthDriver):
             _("Accept &embedded speech commands in text"),
             defaultVal=False,
         ),
+        DriverSetting(
+            "pauseMode",
+            _("&Pause between phrases"),
+            defaultVal="short",
+        ),
     )
-    supportedCommands = {speech.commands.IndexCommand}
+    supportedCommands = {speech.commands.IndexCommand,
+                         speech.commands.BreakCommand}
     supportedNotifications = {synthIndexReached, synthDoneSpeaking}
 
     @classmethod
@@ -251,6 +281,7 @@ class SynthDriver(SynthDriver):
         self._rate = 50
         self._pitch = 50
         self._acceptCommands = False
+        self._pauseMode = "short"
         self._voiceId = self._voices[0][0]
         for bundle, _display, engine in self._voices:      # prefer Fred
             if bundle == "Fred":
@@ -453,16 +484,48 @@ class SynthDriver(SynthDriver):
             if item is None:
                 break
             wpm, voice, pitch = self._wpm(), self._voiceId, self._pitchOffset()
+            run = []
             for kind, value in item:
                 if self._stopped:
                     break
+                if kind == "text":
+                    run.append(value)
+                    continue
+                self._flush(run, wpm, voice, pitch)
                 if kind == "index":
                     self._audioQueue.put(("index", value))
-                    continue
-                pcm = self._render(value, wpm, voice, pitch)
-                if pcm:
-                    self._audioQueue.put(("audio", pcm))
+                elif kind == "break":
+                    self._audioQueue.put(("audio", _silence(value)))
+            if not self._stopped:
+                self._flush(run, wpm, voice, pitch)
             self._audioQueue.put(("done", None))
+
+    def _flush(self, run, wpm, voice, pitch):
+        """Render the text collected so far as ONE utterance.
+
+        **Adjacent strings in a speech sequence are not separate utterances.**
+        NVDA inserts an IndexCommand only where a callback sits or an utterance
+        genuinely ends -- see speech/manager.py -- so a line of a web page with
+        a link in it arrives as several plain strings with nothing between
+        them, and rendering each one on its own gave every fragment the falling
+        intonation and the final lengthening of a complete sentence.  Measured,
+        that cost 163 ms across two joins and, more to the point, sounded like
+        the synthesizer stopping to think in the middle of a sentence.  Two
+        testers reported it the same morning.
+
+        Joining costs nothing in index accuracy, because there was no index
+        between the pieces to lose -- which is also why say-all is unaffected.
+        """
+        if not run:
+            return
+        text = _joinFragments(run)
+        del run[:]
+        pcm = self._render(text, wpm, voice, pitch)
+        if pcm:
+            self._audioQueue.put(("audio", pcm))
+            gap = self.PAUSE_MS.get(self._pauseMode, 0)
+            if gap:
+                self._audioQueue.put(("audio", _silence(gap)))
 
     def _feed(self):
         """Playback lives on its own thread because `feed()` blocks.
@@ -494,6 +557,11 @@ class SynthDriver(SynthDriver):
                 items.append(("text", item))
             elif isinstance(item, speech.commands.IndexCommand):
                 items.append(("index", item.index))
+            elif isinstance(item, speech.commands.BreakCommand):
+                # NVDA asking for a pause in so many words.  Dropped silently
+                # until now, which meant the one place a pause was *wanted*
+                # was the one place it did not happen.
+                items.append(("break", item.time))
         self._queue.put(items)
 
     def cancel(self):
@@ -552,6 +620,23 @@ class SynthDriver(SynthDriver):
 
     def _set_acceptCommands(self, value):
         self._acceptCommands = bool(value)
+
+    #: How much silence to put where NVDA split the sequence, in milliseconds.
+    PAUSE_MS = {"short": 0, "medium": 60, "long": 150}
+
+    def _get_availablePausemodes(self):
+        from collections import OrderedDict
+        return OrderedDict((
+            ("short", StringParameterInfo("short", _("Short"))),
+            ("medium", StringParameterInfo("medium", _("Medium"))),
+            ("long", StringParameterInfo("long", _("Long"))),
+        ))
+
+    def _get_pauseMode(self):
+        return self._pauseMode
+
+    def _set_pauseMode(self, value):
+        self._pauseMode = value if value in self.PAUSE_MS else "short"
 
     def _get_pitch(self):
         return self._pitch

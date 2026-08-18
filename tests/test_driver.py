@@ -523,3 +523,83 @@ def test_the_driver_actually_uses_that_encoder():
     src = io.open(path, encoding="utf-8").read()
     assert "t = _encode(text)" in src, "the request no longer encodes the text"
     assert 't = text.encode("utf-8")' not in src, "still sending UTF-8"
+
+
+def _speakAndWait(driver, seq, timeout=25.0):
+    """Speak one sequence and wait for it to finish, -> (feeds, bytes)."""
+    import synthDriverHandler
+    before = synthDriverHandler.synthDoneSpeaking.count
+    fed0, bytes0 = driver._player.fed, driver._player.bytes
+    driver.speak(seq)
+    end = time.perf_counter() + timeout
+    while time.perf_counter() < end:
+        if synthDriverHandler.synthDoneSpeaking.count > before:
+            break
+        time.sleep(0.005)
+    else:
+        raise AssertionError("the sequence never finished speaking")
+    return driver._player.fed - fed0, driver._player.bytes - bytes0
+
+
+def test_adjacent_text_is_one_utterance_not_several(driver):
+    """A line with a link in it is one sentence, and must sound like one.
+
+    NVDA puts an IndexCommand only where a callback sits or an utterance ends
+    -- speech/manager.py -- so the pieces of a web page line arrive as plain
+    adjacent strings.  Rendering each on its own gave every fragment the
+    falling intonation of a finished sentence, which two testers reported as
+    the speech pausing before every link.
+    """
+    _warm(driver)
+    feeds, _b = _speakAndWait(driver, ["Read more about it ", "link", "Home"])
+    assert feeds == 1, "each fragment was still rendered on its own (%d feeds)" % feeds
+
+
+def test_an_index_still_splits_the_utterance_and_is_reported(driver):
+    """Joining must not swallow the boundaries NVDA actually asked for."""
+    import speech.commands
+    import synthDriverHandler
+    _warm(driver)
+    before = synthDriverHandler.synthIndexReached.count
+    feeds, _b = _speakAndWait(driver, ["first part ",
+                                       speech.commands.IndexCommand(7),
+                                       "second part"])
+    assert feeds == 2, "the index did not split the audio (%d feeds)" % feeds
+    assert synthDriverHandler.synthIndexReached.count > before, "index lost"
+
+
+def test_a_break_command_becomes_real_silence(driver):
+    """NVDA asking for a pause in so many words was dropped until now."""
+    import speech.commands
+    import tigerspeech
+    _warm(driver)
+    _f1, plain = _speakAndWait(driver, ["one", "two"])
+    _f2, withGap = _speakAndWait(driver, ["one",
+                                          speech.commands.BreakCommand(300),
+                                          "two"])
+    want = len(tigerspeech._silence(300))
+    assert withGap >= plain + want * 0.8, (
+        "a 300 ms break added %d bytes, expected about %d" % (withGap - plain, want))
+
+
+def test_the_pause_setting_lengthens_the_gaps(driver):
+    """The knob two testers asked for, in both directions."""
+    import tigerspeech
+    _warm(driver)
+    driver._set_pauseMode("short")
+    _f, short = _speakAndWait(driver, ["alpha", "beta"])
+    driver._set_pauseMode("long")
+    _f, long_ = _speakAndWait(driver, ["alpha", "beta"])
+    driver._set_pauseMode("short")
+    assert long_ > short, "'long' produced no more audio than 'short'"
+    assert tigerspeech.SynthDriver.PAUSE_MS["short"] == 0
+
+
+def test_fragments_are_joined_without_gluing_words_together(driver):
+    """"link" then "Home" must not reach the engine as "linkHome"."""
+    import tigerspeech
+    join = tigerspeech._joinFragments
+    assert join(["link", "Home"]) == "link Home"
+    assert join(["Read more about it ", "here"]) == "Read more about it here"
+    assert join([" on our site.", " Next"]) == " on our site. Next"
+    assert join(["only"]) == "only"

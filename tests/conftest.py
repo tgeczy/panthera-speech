@@ -138,7 +138,10 @@ def _install_fake_nvda():
     commands = types.ModuleType("speech.commands")
     class IndexCommand(object):
         def __init__(self, index): self.index = index
+    class BreakCommand(object):
+        def __init__(self, time=0): self.time = time
     commands.IndexCommand = IndexCommand
+    commands.BreakCommand = BreakCommand
     speech.commands = commands
     sys.modules["speech"] = speech
     sys.modules["speech.commands"] = commands
@@ -180,6 +183,17 @@ def _install_fake_nvda():
     asu.driverSetting = ds
     sys.modules["autoSettingsUtils"] = asu
     sys.modules["autoSettingsUtils.driverSetting"] = ds
+
+    #: How NVDA describes each choice in a list setting.
+    class _StringParameterInfo(object):
+        def __init__(self, id, displayName):
+            self.id = id
+            self.displayName = displayName
+
+    utils = types.ModuleType("autoSettingsUtils.utils")
+    utils.StringParameterInfo = _StringParameterInfo
+    asu.utils = utils
+    sys.modules["autoSettingsUtils.utils"] = utils
 
     import builtins
     if not hasattr(builtins, "_"):
