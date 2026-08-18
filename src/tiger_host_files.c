@@ -143,8 +143,14 @@ static int find_libstdcxx(const char *start, char *out, size_t n)
     }
     return 0;
 }
+static unsigned g_reads, g_read_bytes;
 static int __cdecl sh_read(int fd, void *b, unsigned n)
-{ return _read(fd, b, n); }
+{
+    int got = _read(fd, b, n);
+    g_reads++;
+    if (got > 0) g_read_bytes += (unsigned)got;
+    return got;
+}
 static int __cdecl sh_write(int fd, const void *b, unsigned n)
 { (void)fd; return (int)fwrite(b, 1, n, stderr); }
 
@@ -244,18 +250,27 @@ static void * __cdecl sh_mmap(void *addr, unsigned len, int prot, int flags,
         g_nmaps++;
     }
     if (g_verbose)
-        printf("  [mmap] %u bytes of fd %d mapped -> %p\n", len, fd,
-               (void *)(view + slack));
+        printf("  [mmap] %u bytes of fd %d at offset %llu mapped -> %p\n",
+               len, fd, (unsigned long long)off, (void *)(view + slack));
     return view + slack;
 
 fallback:
     /* Never fatal: a mapping that cannot be made is still a file that can be
-     * read, and for every voice but Alex the difference is only speed. */
+     * read, and for every voice but Alex the difference is only speed.
+     *
+     * It is not only speed if the offset is past 4 GB, though: the fallback
+     * seeks with off_lo alone and would silently read the wrong part of the
+     * file.  Say so rather than produce quietly wrong audio. */
     {
-        void *p = mmap_fallback(len, fd, off_lo);
+        void *p;
+        if (off_hi)
+            printf("  [mmap] REFUSING a fallback read at offset %llu -- past "
+                   "4 GB, and the fallback cannot seek there\n",
+                   (unsigned long long)off);
+        p = off_hi ? (void *)-1 : mmap_fallback(len, fd, off_lo);
         if (g_verbose)
-            printf("  [mmap] %u bytes of fd %d READ IN (no mapping) -> %p\n",
-                   len, fd, p);
+            printf("  [mmap] %u bytes of fd %d at offset %llu READ IN "
+                   "(no mapping) -> %p\n", len, fd, (unsigned long long)off, p);
         return p;
     }
 }

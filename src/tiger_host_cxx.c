@@ -108,19 +108,43 @@ static unsigned __cdecl sh_pthread_self(void) { return GetCurrentThreadId(); }
 /* sh_stat sits with the rest of the file layer, in tiger_host_files.c: what it
  * reports about a file's identity is a file-layer concern, and a subtle one. */
 
-/* pread must not disturb the descriptor's own offset, and SpeechDictionary
- * interleaves it with ordinary reads. */
+static unsigned g_preads, g_pread_bytes;
+
+/* pread has to be atomic, not merely offset-correct.
+ *
+ * The obvious implementation -- seek, read, seek back -- is neither. Alex runs
+ * two worker tasks alongside the main thread and they read his 701 MB sample
+ * bank through one descriptor: the engine maps only the first 77 MB, which is
+ * the index, and pulls every waveform grain out of the rest with pread. Two of
+ * those overlapping meant one thread moved the file position out from under
+ * the other, and the grain that came back belonged somewhere else. The voice
+ * stayed recognisably Alex, because the bytes were still his recordings; they
+ * were simply the wrong ones, and it stuttered its way through the wrong word.
+ *
+ * ReadFile with an OVERLAPPED offset reads from where it is told without
+ * depending on the shared position, which is what Darwin's pread promises.
+ */
 static int __cdecl sh_pread(int fd, void *buf, unsigned n,
                             unsigned off_lo, unsigned off_hi)
 {
-    long long here = _lseeki64(fd, 0, SEEK_CUR);
-    int got;
-    (void)off_hi;
-    if (_lseeki64(fd, ((long long)off_hi << 32) | off_lo, SEEK_SET) < 0)
+    long long want = ((long long)off_hi << 32) | (unsigned)off_lo;
+    HANDLE h = (HANDLE)_get_osfhandle(fd);
+    OVERLAPPED ov;
+    DWORD got = 0;
+
+    if (h == INVALID_HANDLE_VALUE) return -1;
+    memset(&ov, 0, sizeof(ov));
+    ov.Offset     = (DWORD)off_lo;
+    ov.OffsetHigh = (DWORD)off_hi;
+    if (!ReadFile(h, buf, n, &got, &ov) && GetLastError() != ERROR_HANDLE_EOF)
         return -1;
-    got = _read(fd, buf, n);
-    _lseeki64(fd, here, SEEK_SET);
-    return got;
+
+    g_preads++;
+    if (got > 0) g_pread_bytes += got;
+    if (g_preads <= 6)
+        printf("  [pread] fd %d %u bytes at %lld -> %u\n", fd, n, want,
+               (unsigned)got);
+    return (int)got;
 }
 static int __cdecl sh_fcntl(int fd, int cmd, int arg)
 { (void)fd; (void)cmd; (void)arg; return 0; }

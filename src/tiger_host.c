@@ -354,7 +354,12 @@ int main(int argc, char **argv)
      * path actually reaches.  That is the difference between AudioToolbox
      * being output plumbing we can replace and it being structural. */
     {
-        static const char text[] = "Hello there.";
+        /* Overridable, because "does the output track the input" is the
+         * first question to ask of a voice that speaks the wrong words. */
+        const char *envtext = getenv("TIGER_TEXT");
+        static const char deftext[] = "Hello there.";
+        const char *text = envtext && *envtext ? envtext : deftext;
+        size_t textlen = strlen(text);
         typedef int (__cdecl *SESpeak_t)(void *chan, const void *buf,
                                          long len, long flags);
         SESpeak_t speak = (SESpeak_t)find_export(&mt, "_SESpeakBuffer");
@@ -362,7 +367,7 @@ int main(int argc, char **argv)
         printf("\nSESpeakBuffer at %p, %d bytes of text\n",
                (void *)speak, (int)(sizeof(text) - 1));
         err = call_aligned4((void *)speak, chan, (void *)text,
-                            (void *)(sizeof(text) - 1), (void *)0);
+                            (void *)textlen, (void *)0);
         printf("  -> OSErr %d\n", err);
 
         /* SESpeakBuffer returns as soon as the utterance is accepted; the

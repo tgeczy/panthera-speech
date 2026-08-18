@@ -39,15 +39,39 @@ typedef unsigned long vdsp_length;
  *
  * "Sum of vector element magnitudes" -- in ModifyRate this scores how well a
  * candidate window matches, so it runs once per candidate offset. */
+/* Instrumentation, off unless TIGER_ACCEL_DEBUG is set.  Fifty-eight million
+ * calls cannot be printed, but the first handful of each say whether the
+ * lengths and strides are sane and whether the search scores vary at all -- a
+ * score that never changes means the search is degenerate and every grain will
+ * come from the same place, which sounds like a stutter. */
+static int g_accel_debug = -1;
+static int accel_debug(void)
+{
+    if (g_accel_debug < 0)
+        g_accel_debug = getenv("TIGER_ACCEL_DEBUG") ? 1 : 0;
+    return g_accel_debug;
+}
+
 static void __cdecl sh_vDSP_svemg(const float *A, vdsp_stride IA,
                                   float *C, vdsp_length N)
 {
     float sum = 0.0f;
     vdsp_length n;
+    const float *p = A;
     if (!A || !C) return;
-    for (n = 0; n < N; n++, A += IA)
-        sum += (*A < 0.0f) ? -*A : *A;
+    for (n = 0; n < N; n++, p += IA)
+        sum += (*p < 0.0f) ? -*p : *p;
     *C = sum;
+    if (accel_debug()) {
+        static unsigned calls;
+        static float lo = 1e30f, hi = -1e30f;
+        if (sum < lo) lo = sum;
+        if (sum > hi) hi = sum;
+        if (++calls <= 6 || (calls % 10000000) == 0)
+            printf("  [vDSP] svemg #%u N=%lu IA=%ld first=%g sum=%g "
+                   "(range %g..%g)\n", calls, (unsigned long)N, (long)IA,
+                   (double)A[0], (double)sum, (double)lo, (double)hi);
+    }
 }
 
 /* vDSP_vmsb(A, IA, B, IB, C, IC, D, ID, N): D[n] = A[n]*B[n] - C[n].
@@ -120,6 +144,10 @@ static void __cdecl sh_vDSP_hann_window(float *C, vdsp_length N, int flag)
     if (!C || !N) return;
     for (n = 0; n < count; n++)
         C[n] = (float)(scale * (1.0 - cos(6.2831853071795864769 * n / N)));
+    if (accel_debug())
+        printf("  [vDSP] hann N=%lu flag=%d -> C[0]=%g C[N/4]=%g C[N/2]=%g\n",
+               (unsigned long)N, flag, (double)C[0],
+               (double)C[N / 4], (double)C[N / 2]);
 }
 
 /* lrintf: round to nearest, ties to even, which is what the default rounding
