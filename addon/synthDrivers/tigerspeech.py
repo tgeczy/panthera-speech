@@ -405,6 +405,11 @@ class SynthDriver(SynthDriver):
         #: streaming off and says why, and the old request still works against
         #: every host that has ever existed.
         self._streaming = True
+        #: Whether the output stream has been stopped or has run dry, so that
+        #: the next chunk fed has to start it again.  Only that one is worth
+        #: timing; the rest block because the buffer is full, which is the
+        #: point of feeding from its own thread.
+        self._playerIdle = True
         self._queue = queue.Queue()
         self._audioQueue = queue.Queue()
         self._player = self._makePlayer()
@@ -820,11 +825,29 @@ class SynthDriver(SynthDriver):
             kind, value = item
             try:
                 if kind == "audio":
-                    self._player.feed(value)
+                    # The last hop, and the only part of the wait this driver
+                    # cannot see from the render side.  Feeding the *first*
+                    # chunk after the output has been idle or stopped is where
+                    # the audio device has to start a stream again, and that
+                    # cost belongs to what a user calls lag just as much as the
+                    # render does -- so measure it rather than assume it is
+                    # small.  Later chunks block on purpose, because the buffer
+                    # is full, and timing those would say nothing.
+                    if self._playerIdle:
+                        self._playerIdle = False
+                        t0 = time.perf_counter()
+                        self._player.feed(value)
+                        ms = (time.perf_counter() - t0) * 1000.0
+                        if ms >= 20.0 and log.isEnabledFor(log.DEBUG):
+                            log.debug("tigerspeech: the audio device took "
+                                      "%.0f ms to start playing" % ms)
+                    else:
+                        self._player.feed(value)
                 elif kind == "index":
                     synthIndexReached.notify(synth=self, index=value)
                 elif kind == "done":
                     self._player.idle()
+                    self._playerIdle = True
                     synthDoneSpeaking.notify(synth=self)
             except Exception:
                 pass
@@ -887,6 +910,10 @@ class SynthDriver(SynthDriver):
             self._player.stop()
         except Exception:
             pass
+        # Stopping tears the output stream down, so the next chunk pays to
+        # start it again -- which is exactly the wait after an interruption
+        # that a user feels most sharply.
+        self._playerIdle = True
 
     def pause(self, switch):
         try:
