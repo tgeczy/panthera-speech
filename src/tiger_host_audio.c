@@ -108,6 +108,13 @@ static int __cdecl sh_DisposeAUGraph(void *g)
 #define kAUProp_ScheduleAudioSlice  3300
 #define kAUProp_ScheduleStartTime   3301
 
+/* The slice begins with an AudioTimeStamp, whose first field is a Float64
+ * sample time saying *where in the output* this slice belongs.  Appending in
+ * arrival order ignored it, and the positions are not always consecutive. */
+#define SLICE_SAMPLETIME_OFF 0
+#define SLICE_TSFLAGS_OFF   56
+#define kAudioTimeStampSampleTimeValid 1
+
 #define SLICE_PROC_OFF    64
 #define SLICE_DATA_OFF    68
 #define SLICE_FLAGS_OFF   72
@@ -196,6 +203,48 @@ static void queue_completion(slice_done_t p, void *u, void *s, unsigned frames)
     LeaveCriticalSection(&g_p_cs);
 }
 
+/* Read a slice's audio at the moment it finishes "playing", not when it was
+ * scheduled.
+ *
+ * kAudioUnitProperty_ScheduleAudioSlice means "play this buffer at this time".
+ * A real ScheduledSoundPlayer reads the buffer when it plays it; the engine is
+ * free to fill it after scheduling, and its worker does exactly that. Copying
+ * at schedule time therefore captured whatever the buffer held *before* it was
+ * filled -- the previous slice's audio -- which is heard as sounds inserted
+ * where none belong and as speech skipping about, because the content is one
+ * slice behind its own timestamp.
+ *
+ * The completion callback is the contract: after it, the engine may reuse the
+ * buffer. Immediately before it, the audio is finished and correct.
+ */
+static void collect_slice(unsigned char *slice)
+{
+    unsigned frames = *(unsigned *)(slice + SLICE_FRAMES_OFF);
+    unsigned char *bl = *(unsigned char **)(slice + SLICE_BUFLIST_OFF);
+    double stime = *(double *)(slice + SLICE_SAMPLETIME_OFF);
+    unsigned tsflags = *(unsigned *)(slice + SLICE_TSFLAGS_OFF);
+    unsigned nbufs, i;
+    if (!bl || !frames) return;
+    nbufs = *(unsigned *)bl;
+    for (i = 0; i < nbufs; i++) {
+        unsigned char *b = bl + 4 + i * 12;
+        unsigned bytes = *(unsigned *)(b + 4);
+        const float *data = *(const float **)(b + 8);
+        unsigned n = bytes / sizeof(float), j, pos;
+        if (i != 0 || !data) continue;
+        if (frames < n) n = frames;
+        pos = (stime > 0.0) ? (unsigned)(stime + 0.5) : 0;
+        if (!(tsflags & kAudioTimeStampSampleTimeValid))
+            pos = g_pcm_n;
+        if (pos > g_pcm_n && pos < PCM_CAP)
+            while (g_pcm_n < pos) g_pcm[g_pcm_n++] = 0.0f;
+        for (j = 0; j < n && pos + j < PCM_CAP; j++)
+            g_pcm[pos + j] = data[j];
+        if (pos + n > g_pcm_n)
+            g_pcm_n = (pos + n < PCM_CAP) ? pos + n : PCM_CAP;
+    }
+}
+
 static DWORD WINAPI pacer_thread(LPVOID arg)
 {
     (void)arg;
@@ -222,6 +271,7 @@ static DWORD WINAPI pacer_thread(LPVOID arg)
             if (ms >= 1.0) Sleep((DWORD)ms);
             else SwitchToThread();
         }
+        collect_slice((unsigned char *)job.slice);
         *(unsigned *)((unsigned char *)job.slice + SLICE_FLAGS_OFF)
             |= SLICE_FLAG_COMPLETE;
         /* Into engine code, so the stack must be 16-byte aligned at the call --
@@ -233,13 +283,6 @@ static DWORD WINAPI pacer_thread(LPVOID arg)
     }
     return 0;
 }
-
-/* A ScheduledAudioSlice begins with an AudioTimeStamp, and its first field is
- * a Float64 sample time saying *where in the output* the slice belongs.  We
- * have been appending slices in arrival order and ignoring it. */
-#define SLICE_SAMPLETIME_OFF 0
-#define SLICE_TSFLAGS_OFF   56
-#define kAudioTimeStampSampleTimeValid 1
 
 static void take_slice(unsigned char *slice)
 {
@@ -354,17 +397,7 @@ static void take_slice(unsigned char *slice)
              * at the same time overwrites, a slice at a new time lands where
              * it belongs, and a gap the engine leaves stays a gap instead of
              * silently closing up. */
-            {
-                unsigned pos = (stime > 0.0) ? (unsigned)(stime + 0.5) : 0;
-                if (!(tsflags & kAudioTimeStampSampleTimeValid))
-                    pos = g_pcm_n;              /* no timeline: append */
-                if (pos > g_pcm_n && pos < PCM_CAP)
-                    while (g_pcm_n < pos) g_pcm[g_pcm_n++] = 0.0f;
-                for (j = 0; j < n && pos + j < PCM_CAP; j++)
-                    g_pcm[pos + j] = data[j];
-                if (pos + n > g_pcm_n)
-                    g_pcm_n = (pos + n < PCM_CAP) ? pos + n : PCM_CAP;
-            }
+            (void)j; (void)data;        /* read at completion, not here */
         }
     }
     /* Do NOT complete the slice here.
