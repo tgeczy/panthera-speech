@@ -944,7 +944,19 @@ static int __cdecl sh_AudioFormatGetProperty(unsigned sel, unsigned specsize,
 {
     (void)specsize; (void)spec;
     if (sel == 0x66657866u) {                  /* 'fexf' externally framed */
-        if (out && iosize && *iosize >= 4) *(unsigned *)out = 1;
+        /* TIGER_FEXF overrides the answer, because it is 1.0.6-only machinery
+         * that we force on: a nonzero reply makes MEOWACDecoder store -1 as its
+         * frame size, which puts MEOWACIterator into its packet-table branch
+         * and has it read 16-bit big-endian packet sizes out of the compressed
+         * blob.  Vicki (1.0.4) never goes near that path; Alex does.
+         *   unset or 1 : externally framed (the current answer)
+         *   0          : not externally framed
+         *   2          : fail the property entirely, as an unimplemented one
+         *                would */
+        const char *e = getenv("TIGER_FEXF");
+        int mode = e ? atoi(e) : 1;
+        if (mode == 2) { if (iosize) *iosize = 0; return -50; }
+        if (out && iosize && *iosize >= 4) *(unsigned *)out = (unsigned)mode;
         if (iosize) *iosize = 4;
         return 0;
     }
