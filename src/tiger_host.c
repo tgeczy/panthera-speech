@@ -381,6 +381,14 @@ int main(int argc, char **argv)
                 else quiet++;
             }
             printf("  %u slice(s), %u frames total\n", g_slices, g_pcm_n);
+            if (g_sc.magic || g_sc.sessions || g_sc.resets)
+                printf("  [ac] %u decoder stream(s), %u reset(s)\n",
+                       g_sc.sessions, g_sc.resets);
+            if (g_pcmstat_n)
+                printf("  [pcm] decoder output roughness %.3f over %u samples "
+                       "(clean speech is about 0.10)\n",
+                       g_pcmstat_d / (g_pcmstat_abs > 1.0 ? g_pcmstat_abs : 1.0),
+                       g_pcmstat_n);
         }
         if (g_pcm_n) write_wav("tiger-out.wav");
     }

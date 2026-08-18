@@ -83,12 +83,17 @@ typedef struct {
     unsigned      pcm_cap, pcm_n, pcm_pos;      /* in samples */
     unsigned      sessions;
     int           ac_live;              /* an AudioConverter stream is open  */
+    unsigned      resets;               /* AudioConverterReset calls */
     unsigned      lost;                 /* access units the decoder refused */
     int           complained;
     int           quiet;                /* one complaint per run is plenty  */
 } sndconv;
 
 static sndconv g_sc;
+
+/* Roughness of the decoder's own output, under TIGER_PCM_STATS. */
+static double g_pcmstat_abs, g_pcmstat_d;
+static unsigned g_pcmstat_n;
 
 /* ---- AAC, through the decoder Windows already ships -------------------- */
 /*
@@ -889,6 +894,11 @@ static int __cdecl sh_AudioConverterReset(void *conv)
         IMFTransform_ProcessMessage(g_aac, MFT_MESSAGE_COMMAND_FLUSH, 0);
         g_sc.ac_live = 0;
     }
+    /* Whether this is ever called decides whether the packets the engine feeds
+     * are one continuous recording or a series of unrelated grains -- and so
+     * whether keeping one decoder stream open across them is right or is
+     * overlapping each grain onto the wrong neighbour. */
+    g_sc.resets++;
     return 0;
 }
 
@@ -1018,6 +1028,33 @@ static int __cdecl sh_AudioConverterFillComplexBuffer(void *conv,
                  * and taking Vicki's 2112 off a 1024-sample refill deletes it
                  * outright. */
                 aac_drain();
+                /* Is the noise already here, or does the engine add it?
+                 *
+                 * Roughness -- mean|x[n+1]-x[n]| over mean|x[n]| -- separates
+                 * the two without guessing. Clean speech through this same
+                 * output path measures about 0.10; Alex's finished audio
+                 * measures 0.30. If the decoder's own output is near 0.10 the
+                 * noise is downstream of it, and if it is near 0.30 it is the
+                 * codec path. */
+                /* And optionally the samples themselves, so the decode can
+                 * be listened to on its own, before the engine has touched
+                 * it. A number can say "rougher"; only the ear says why. */
+                if (getenv("TIGER_PCM_DUMP") && g_sc.pcm_n) {
+                    FILE *f = fopen(getenv("TIGER_PCM_DUMP"), "ab");
+                    if (f) {
+                        fwrite(g_sc.pcm, 2, g_sc.pcm_n, f);
+                        fclose(f);
+                    }
+                }
+                if (getenv("TIGER_PCM_STATS")) {
+                    unsigned k;
+                    for (k = 0; k + 1 < g_sc.pcm_n; k++) {
+                        int a = g_sc.pcm[k], b = g_sc.pcm[k + 1];
+                        g_pcmstat_abs += (double)(a < 0 ? -a : a);
+                        g_pcmstat_d   += (double)((b - a) < 0 ? (a - b) : (b - a));
+                        g_pcmstat_n++;
+                    }
+                }
                 if (g_verbose && g_sc.sessions <= 1 && rounds <= 3)
                     printf("  [ac] round %d: %u packet(s) -> %u frames, "
                            "asked for %u\n", rounds, packets, g_sc.pcm_n, want);
