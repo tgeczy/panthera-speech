@@ -108,7 +108,7 @@ static unsigned __cdecl sh_pthread_self(void) { return GetCurrentThreadId(); }
 /* sh_stat sits with the rest of the file layer, in tiger_host_files.c: what it
  * reports about a file's identity is a file-layer concern, and a subtle one. */
 
-static unsigned g_preads, g_pread_bytes;
+static unsigned g_preads, g_pread_bytes, g_pread_short;
 
 /* pread has to be atomic, not merely offset-correct.
  *
@@ -141,6 +141,15 @@ static int __cdecl sh_pread(int fd, void *buf, unsigned n,
 
     g_preads++;
     if (got > 0) g_pread_bytes += got;
+    /* A short read here is invisible and catastrophic: the engine decodes a
+     * truncated grain, which still sounds like speech and is the wrong length.
+     * Never checked before, so check it loudly. */
+    if (got != n) {
+        g_pread_short++;
+        if (g_pread_short <= 8)
+            fprintf(stderr, "tiger_host: SHORT pread fd %d wanted %u got %u "
+                            "at offset %lld\n", fd, n, (unsigned)got, want);
+    }
     if (g_verbose && g_preads <= 6)
         printf("  [pread] fd %d %u bytes at %lld -> %u\n", fd, n, want,
                (unsigned)got);

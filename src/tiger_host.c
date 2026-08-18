@@ -426,6 +426,9 @@ int main(int argc, char **argv)
                        "audio; %u samples handed to the engine (%+d)\n",
                        g_pkts_fed, g_pkts_fed * 1024, g_frames_out,
                        (int)g_frames_out - (int)(g_pkts_fed * 1024));
+            if (g_preads)
+                printf("  [io] %u pread(s), %u short\n",
+                       g_preads, g_pread_short);
             if (g_dup_slices)
                 printf("  [au] %u repeated slice(s) refused\n", g_dup_slices);
             if (g_fstat_n)
