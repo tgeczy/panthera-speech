@@ -730,3 +730,41 @@ def test_a_typographic_apostrophe_is_an_apostrophe():
     # Curly *double* quotes stay: those really are quotation marks, and the
     # engine is right to treat them as such.
     assert enc(u"“quoted”") == b"\xd2quoted\xd3"
+
+
+def test_rate_boost_actually_speaks_faster(driver):
+    """A user asked how to get past 100%, and nothing was stopping us but a
+    constant.
+
+    Measured, the engine honours whatever rate it is given and stays stable
+    far past anything useful: Alex delivers 853 wpm when asked for 800 and
+    1598 when asked for 1500.  So boost widens the slider rather than doing
+    anything clever with the audio.
+
+    It is a switch and not a wider slider because widening the slider would
+    have made everybody's existing setting faster without asking -- the same
+    mistake as a volume control that arrives at half.
+    """
+    import tigerspeech
+    _warm(driver)
+    driver._set_rate(100)
+    driver._set_rateBoost(False)
+    plain = driver._wpm()
+    driver._set_rateBoost(True)
+    boosted = driver._wpm()
+    driver._set_rateBoost(False)
+    assert plain == tigerspeech.RATE_MAX
+    assert boosted == tigerspeech.RATE_MAX_BOOST
+    assert boosted > plain
+
+    # And it has to reach the engine, not just the arithmetic.
+    voice = driver._get_voice()
+    slow = driver._render("the quick brown fox jumps over the lazy dog", plain, voice)
+    fast = driver._render("the quick brown fox jumps over the lazy dog", boosted, voice)
+    assert slow and fast
+    assert len(fast) < len(slow) * 0.75, "boosted speech was not much faster"
+
+
+def test_rate_boost_is_off_by_default(driver):
+    """Upgrading must not change how fast anybody's screen reader talks."""
+    assert driver._get_rateBoost() is False

@@ -76,6 +76,19 @@ OUT_RATE = 22050
 #: lands mid-slider, so the control behaves the way people expect.
 RATE_MIN, RATE_MAX = 80, 400
 
+#: The top of the slider with rate boost on.
+#:
+#: 400 was never the engine's limit, it was ours.  Measured, the engine
+#: honours whatever it is asked for and stays stable well past anything
+#: useful: Alex delivers 853 wpm when asked for 800, and 1598 when asked
+#: for 1500, without a stumble.  A user asked how to get past 100% and the
+#: honest answer was that nothing was stopping us but a constant.
+#:
+#: It is a separate switch rather than a wider slider because widening the
+#: slider would silently make everyone's existing setting faster -- the
+#: same mistake as a volume control that defaults to half.
+RATE_MAX_BOOST = 800
+
 #: NVDA's 0-100 pitch onto an offset from the voice's own pitch, in tenths of
 #: a semitone.  50 is the voice as Apple recorded it; the ends are an octave
 #: either way, which is as far as any of these stay recognisable.
@@ -257,6 +270,12 @@ class SynthDriver(SynthDriver):
             _("Accept &embedded speech commands in text"),
             defaultVal=False,
         ),
+        BooleanDriverSetting(
+            "rateBoost",
+            _("&Rate boost"),
+            defaultVal=False,
+            availableInSettingsRing=True,
+        ),
         DriverSetting(
             "pauseMode",
             _("&Pause between phrases"),
@@ -310,6 +329,7 @@ class SynthDriver(SynthDriver):
         self._pitch = 50
         self._acceptCommands = False
         self._pauseMode = "short"
+        self._rateBoost = False
         self._volume = 100
         self._voiceId = self._voices[0][0]
         for bundle, _display, engine in self._voices:      # prefer Fred
@@ -440,7 +460,14 @@ class SynthDriver(SynthDriver):
         t.start()
 
     def _wpm(self):
-        return RATE_MIN + int(self._rate * (RATE_MAX - RATE_MIN) / 100)
+        """-> words per minute for the slider position.
+
+        The engine has no ceiling worth speaking of -- asked for 1500 wpm it
+        delivers 1598 and stays perfectly stable -- so rate boost simply
+        raises the top of the slider rather than doing anything clever.
+        """
+        top = RATE_MAX_BOOST if self._rateBoost else RATE_MAX
+        return RATE_MIN + int(self._rate * (top - RATE_MIN) / 100)
 
     def _pitchOffset(self, adj=0):
         """-> tenths of a semitone away from the voice's own pitch.
@@ -728,6 +755,12 @@ class SynthDriver(SynthDriver):
             pass
 
     # -- settings ----------------------------------------------------------
+    def _get_rateBoost(self):
+        return self._rateBoost
+
+    def _set_rateBoost(self, value):
+        self._rateBoost = bool(value)
+
     def _get_volume(self):
         return self._volume
 
