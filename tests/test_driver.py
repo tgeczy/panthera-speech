@@ -663,3 +663,28 @@ def test_full_volume_changes_nothing_about_the_request(driver):
     a = driver._render(text, 180, driver._get_voice())
     b = driver._render(text, 180, driver._get_voice())
     assert a == b and a, "renders are not reproducible at full volume"
+
+
+def test_volume_defaults_to_full_not_nvdas_fifty():
+    """Adding a volume control must not turn everybody's volume down.
+
+    NumericDriverSetting takes defaultVal=50, that becomes the config spec's
+    default, and NVDA writes it over whatever __init__ set.  So the first
+    build with a volume control made people quieter on upgrade -- reported
+    within the hour: "alex got quieter, not by a whole lot, but it was
+    definitely noticeable".
+    """
+    import tigerspeech
+    from synthDriverHandler import SynthDriver
+    setting = tigerspeech._fullVolumeByDefault(SynthDriver.VolumeSetting())
+    assert setting.defaultVal == 100
+
+    # And it has to be the setting the driver actually offers, not one made
+    # up by the test.
+    import io
+    import os
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "addon", "synthDrivers", "tigerspeech.py")
+    src = io.open(path, encoding="utf-8").read()
+    assert "_fullVolumeByDefault(SynthDriver.VolumeSetting())" in src
+    assert "\n        SynthDriver.VolumeSetting()," not in src

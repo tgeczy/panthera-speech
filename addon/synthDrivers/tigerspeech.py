@@ -128,6 +128,23 @@ def _encode(text):
     return text.translate(_FOLD).encode("mac_roman", "tigerspeech_fold")
 
 
+def _fullVolumeByDefault(setting):
+    """NVDA defaults a numeric driver setting to 50, and volume is one.
+
+    `NumericDriverSetting` takes `defaultVal=50`, and NVDA writes that over
+    whatever the driver put in `__init__` -- autoSettings.py does
+    `setattr(inst, setting.id, setting.defaultVal)`.  So adding a volume
+    control made everybody quieter the moment they upgraded, which is exactly
+    what a tester reported: "alex got quieter, not by a whole lot, but it was
+    definitely noticeable".
+
+    Full is the right default for a synthesizer that had no volume control at
+    all yesterday: upgrading should change nothing until the user asks it to.
+    """
+    setting.defaultVal = 100
+    return setting
+
+
 def _silence(ms):
     """-> that many milliseconds of 16-bit mono silence."""
     if ms <= 0:
@@ -225,7 +242,7 @@ class SynthDriver(SynthDriver):
         SynthDriver.VoiceSetting(),
         SynthDriver.RateSetting(),
         SynthDriver.PitchSetting(),
-        SynthDriver.VolumeSetting(),
+        _fullVolumeByDefault(SynthDriver.VolumeSetting()),
         BooleanDriverSetting(
             "acceptCommands",
             _("Accept &embedded speech commands in text"),
