@@ -133,10 +133,16 @@ def test_voices_are_read_from_the_install(tiger_tree):
     assert engines <= {"mtk3", "gala", "meow"}, engines
 
 
-def test_missing_tree_is_reported_not_guessed(monkeypatch, tmp_path):
-    """A synthesizer that is selectable and then silent is worse than absent.
+def test_missing_tree_refuses_to_load_rather_than_going_silent(monkeypatch,
+                                                               tmp_path):
+    """Selectable, and then it refuses -- which is not the same as silent.
 
-    Patch `tree`, not the driver: the lookup lives there so the global plugin
+    The synthesizer is always offered now, so that choosing it produces an
+    explanation rather than an absence nobody could account for. What must
+    never happen is the other failure: loading successfully and then saying
+    nothing. So `__init__` has to raise, and it has to tell the user first.
+
+    Patch `tree`, not the driver: the lookup lives there, so the global plugin
     that offers to open the folder gets exactly the same answer.
     """
     import tigerspeech
@@ -145,7 +151,20 @@ def test_missing_tree_is_reported_not_guessed(monkeypatch, tmp_path):
     monkeypatch.setattr(tree, "config_base", lambda: str(tmp_path))
     assert tree.find_tree() is None
     assert not tree.usable()
-    assert not tigerspeech.SynthDriver.check()
+
+    ok, lines = tree.explain()
+    assert not ok
+    assert any("no tree found" in ln for ln in lines), lines
+
+    # Offered, so that selecting it is a way to find out why.
+    assert tigerspeech.SynthDriver.check()
+
+    # And refuses to load, so NVDA falls back and speech carries on.
+    told = []
+    monkeypatch.setattr(tigerspeech, "_explainLater", told.append)
+    with pytest.raises(Exception):
+        tigerspeech.SynthDriver()
+    assert told, "it refused to load and told the user nothing"
 
 
 # -- the rules ------------------------------------------------------------

@@ -108,6 +108,52 @@ read_voices = tree.read_voices
 config_base = tree.config_base
 
 
+_MISSING = (
+    "Tiger-speech cannot start, because the engine is not there yet.\n\n"
+    "This add-on ships no part of Apple's software. You supply it from your "
+    "own Mac OS X 10.4 install disc, and put the extracted Speech folder and "
+    "SpeechDictionary.framework into:\n\n"
+    "%s\n\n"
+    "The extract_tiger.py tool in the project repository will do that for you "
+    "from an installer image, and there is a README in that folder with the "
+    "details. NVDA's log has the full list of what was found and what was "
+    "missing.\n\n"
+    "Open that folder now?"
+)
+
+
+def _explainLater(folder):
+    """Show the engine-missing dialog once NVDA has finished failing.
+
+    Never straight from `__init__`: a modal dialog there would stall the
+    synthesizer switch with speech half torn down. Queued instead, so it
+    arrives after NVDA has fallen back to the previous synthesizer and speech
+    is working again -- which it always does, so the user is never stranded.
+
+    It lands on top of NVDA's own "Could not load the tigerspeech synthesizer"
+    box rather than after it, because that box runs a nested event loop which
+    dispatches this. That ordering is the right way round: ours is the one with
+    something to act on.
+    """
+    try:
+        import wx
+        import gui
+    except ImportError:
+        return
+
+    def show():
+        try:
+            answer = gui.messageBox(_MISSING % folder, "Tiger-speech",
+                                    wx.YES_NO | wx.ICON_INFORMATION)
+            if answer == wx.YES:
+                os.makedirs(folder, exist_ok=True)
+                os.startfile(folder)
+        except Exception:
+            log.error("tiger-speech: could not show the engine dialog",
+                      exc_info=True)
+    wx.CallAfter(show)
+
+
 class SynthDriver(SynthDriver):
     name = "tigerspeech"
     description = _("Tiger-speech (MacinTalk 3.3)")
@@ -125,33 +171,36 @@ class SynthDriver(SynthDriver):
     supportedCommands = {speech.commands.IndexCommand}
     supportedNotifications = {synthIndexReached, synthDoneSpeaking}
 
-    #: So the explanation below is written once per NVDA session rather than
-    #: once per repaint of the synthesizer list.
-    _explained = False
-
     @classmethod
     def check(cls):
-        """Do not appear in the list unless we can actually speak.
+        """Always offer the synthesizer, and explain on selection if it cannot
+        run.
 
-        A synthesizer that is selectable and then silent is worse than one that
-        is absent -- that exact failure is what a user hit with the 32-bit
-        build of the ROM add-on.
+        This used to hide itself when the engine was missing, reasoning that a
+        synthesizer which is selectable and then silent is worse than one that
+        is absent. That is still true -- but it describes a driver that *loads*
+        and then produces no audio, which was the 32-bit DLL case. It does not
+        describe one that refuses to load: NVDA catches the failure, falls back
+        to the previous synthesizer, and speech never stops.
 
-        Being absent is still an answer, though, and until now it was given in
-        silence: two users had the engine folder populated, no synthesizer in
-        the list, and nothing anywhere to say why.  So when the answer is no,
-        say what failed.  One log line on an affected machine, none on a
-        working one.
+        What hiding did cost was every route to an explanation. People
+        installed the add-on, extracted the engine, found nothing in the
+        synthesizer list, and had nothing to go on. The start-up dialog was
+        supposed to cover that, and on at least one machine it never appears.
+
+        So be present and say why. Selecting it now fails cleanly and puts up a
+        dialog naming the folder the engine belongs in, every time, with no
+        dependence on catching the user during start-up.
         """
-        ok, lines = tree.explain()
-        if not ok and not cls._explained:
-            cls._explained = True
-            log.warning("tiger-speech is not available:\n  %s"
-                        % "\n  ".join(lines))
-        return ok
+        return True
 
     def __init__(self):
         super().__init__()
+        ok, lines = tree.explain()
+        if not ok:
+            log.warning("tiger-speech cannot start:\n  %s" % "\n  ".join(lines))
+            _explainLater(tree.config_dir())
+            raise RuntimeError("tiger-speech has no engine to run")
         self._tree = find_tree()
         if not self._tree:
             raise RuntimeError("no Tiger speech tree found")
