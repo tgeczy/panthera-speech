@@ -11,6 +11,16 @@ would have filled, and calls `SESpeakBuffer` directly.
 
 An utterance costs about **twelve milliseconds**.
 
+## Licence, and what is being licensed
+
+**MIT** — see `LICENSE`.
+
+What that covers is the loader, the driver, the shims and the tools: the work
+of making Apple's engine run somewhere it was never built to run. It does not
+and cannot cover Apple's engine, which is not distributed here and is not
+anyone's to relicense. You bring your own copy of software Apple stopped
+shipping in 2007.
+
 ## No Apple bytes here
 
 This repository contains no part of Apple's software, and `package.py`
