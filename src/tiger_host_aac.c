@@ -849,6 +849,18 @@ static int __cdecl sh_AudioConverterNew(const au_asbd *insrc,
             if (g_verbose) printf("  [ac] source ASBD:");
             for (k = 0; k < 40; k++) printf(" %02x", b[k]);
             printf("\n");
+            /* The destination format matters and was never being read: if the
+             * engine wants float and gets 16-bit integers, every frame is
+             * misread and the result is speech with noise laid over it. */
+            if (out) {
+                char g[5];
+                fourcc(g, out->mFormatID);
+                printf("  [ac] dest: '%s' flags %08x, %u bits, %u bytes/frame,"
+                       " %u frames/packet\n", g, (unsigned)out->mFormatFlags,
+                       (unsigned)out->mBitsPerChannel,
+                       (unsigned)out->mBytesPerFrame,
+                       (unsigned)out->mFramesPerPacket);
+            }
         }
     }
     if (conv) *conv = (void *)AC_MAGIC;
