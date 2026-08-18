@@ -48,6 +48,32 @@
  * hold back a margin far larger than anything observed; 512 frames is 23 ms,
  * which no listener notices and no measurement came close to. */
 #define STREAM_LOOKBEHIND 512u
+
+/* Abandoning an utterance the listener has interrupted.
+ *
+ * Measured on Tomi's machine: 38% of utterances waited more than 200 ms before
+ * they even began rendering, the worst 931 ms, because the worker was still
+ * reading out the *previous* response.  Cancelling stops the sound instantly,
+ * but the engine carried on synthesising all seven seconds of audio nobody
+ * would ever hear, and the next thing the user asked for queued behind it.
+ * Streaming made the first sound arrive in 20 ms and this hid the win.
+ *
+ * A Windows event rather than anything on the pipe: the driver's cancel()
+ * runs on NVDA's main thread -- the one that turns keystrokes into speech --
+ * so it must never block, and SetEvent cannot.  The name comes in on the
+ * environment when the host is started. */
+static HANDLE g_cancel_ev;
+
+static int cancel_requested(void)
+{
+    return g_cancel_ev &&
+           WaitForSingleObject(g_cancel_ev, 0) == WAIT_OBJECT_0;
+}
+
+/* StopSpeechAt with kImmediate: give up on this utterance now.  The engine
+ * stops producing, the wait loop below falls out, and the response ends -- so
+ * the pipe stays in step and the driver is free for the next utterance. */
+typedef int (*SEStop_t)(void *chan, unsigned where);
 #define SEL_RATE  0x72617465u           /* 'rate' -- soRate, Fixed wpm */
 #define SEL_PITCH 0x70626173u           /* 'pbas' -- soPitchBase, Fixed */
 #define SEL_DELIM 0x646c696du           /* 'dlim' -- soCommandDelimiter */
@@ -120,6 +146,17 @@ static int serve(image *mt, void *chan, const char *voicesdir)
     SESpeak_t    speak   = (SESpeak_t)find_export(mt, "_SESpeakBuffer");
     SESetInfo_t  setinfo = (SESetInfo_t)find_export(mt, "_SESetSpeechInfo");
     SEGetInfo_t  getinfo = (SEGetInfo_t)find_export(mt, "_SEGetSpeechInfo");
+    SEStop_t     stopnow = (SEStop_t)find_export(mt, "_SEStopSpeechAt");
+    {
+        const char *evname = getenv("TIGER_CANCEL_EVENT");
+        if (evname && *evname) {
+            g_cancel_ev = OpenEventA(SYNCHRONIZE, FALSE, evname);
+            if (!g_cancel_ev)
+                fprintf(stderr, "tiger_host: cannot open the cancel event, so "
+                                "an interrupted utterance will be rendered to "
+                                "the end\n");
+        }
+    }
     unsigned basepitch = 0;              /* the current voice's own pitch */
     char curvoice[128] = "";
     int  currate = -1;
@@ -134,6 +171,7 @@ static int serve(image *mt, void *chan, const char *voicesdir)
         int wpm, pitch, err = 0, voicechanged;
         unsigned flags;
         int streaming;
+        int cancelled = 0;
         unsigned sent = 0;
         double speak_ms = 0.0;
         char name[128];
@@ -244,6 +282,16 @@ static int serve(image *mt, void *chan, const char *voicesdir)
             unsigned last = 0, quiet = 0, ticks = 0;
             while (!g_stopped && quiet < 30 && ticks < 900) {
                 Sleep(10); ticks++;
+                if (cancel_requested()) {
+                    /* The listener has moved on.  Stop the engine rather than
+                     * render the rest of a sentence nobody will hear -- the
+                     * driver cannot start the next utterance until this
+                     * response ends, so finishing it politely *is* the lag. */
+                    if (stopnow)
+                        call_aligned2((void *)stopnow, chan, (void *)0);
+                    cancelled = 1;
+                    break;
+                }
                 if (g_slices != last) { last = g_slices; quiet = 0; }
                 else quiet++;
                 /* Send what has settled, every tick.  The engine runs at about
@@ -276,6 +324,9 @@ static int serve(image *mt, void *chan, const char *voicesdir)
             if (!pacer_idle())
                 fprintf(stderr, "tiger_host: the pacer was still collecting "
                                 "audio a second after the engine stopped\n");
+            if (cancelled)
+                printf("  [au] utterance abandoned at %u frames -- the "
+                       "listener interrupted\n", g_pcm_n);
         }
 
         /* Anything the engine did that a user would notice goes out at a
@@ -331,7 +382,13 @@ static int serve(image *mt, void *chan, const char *voicesdir)
              * would -- which is what the streaming test checks. */
             unsigned zero = 0;
             (void)i; (void)nframes;
-            sent = stream_chunk(sent, g_pcm_n);
+            /* An abandoned utterance sends no tail.  Every frame of it is
+             * audio the listener has already declined, and pushing what may
+             * be megabytes of it through the pipe for the driver to discard
+             * is most of the delay the cancel exists to remove -- measured,
+             * it was the difference between 446 ms and not noticing. */
+            if (!cancelled)
+                sent = stream_chunk(sent, g_pcm_n);
             fwrite(&zero, 4, 1, stdout);
             fflush(stdout);
         } else {

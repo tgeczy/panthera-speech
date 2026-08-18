@@ -971,3 +971,44 @@ def test_debug_logging_reports_how_long_an_utterance_took(driver, monkeypatch):
     first = float(line.split("first sound after ")[1].split(" ms")[0])
     total = float(line.split("all of it by ")[1].split(" ms")[0])
     assert 0.0 <= first <= total, "nonsensical timings: %s" % line
+
+
+def test_interrupting_does_not_delay_the_next_utterance(driver):
+    """The lag people actually describe, and it survived streaming.
+
+    Cancelling stops the sound at once, but the host went on synthesising the
+    rest of an utterance nobody would hear, and the worker could not begin the
+    next one until that response ended.  Measured on a real session before
+    this was fixed: 38% of utterances waited more than 200 ms to *start*
+    rendering, the worst 931 ms -- while the first sound, once started,
+    arrived in 20.
+
+    So: interrupt a long utterance and time how long the next one takes to
+    reach the player.  The threshold is loose on purpose; the fault it guards
+    against is most of a second.
+    """
+    _warm(driver)
+    # Long enough that abandoning it matters: the whole point is the
+    # render still running after nobody wants it, so the text has to
+    # take appreciably longer to synthesise than the threshold below.
+    fed0 = driver._player.fed
+    driver.speak(["The quick brown fox jumps over the lazy dog. " * 40])
+    # Beyond the warm-up's own feeds, or this waits for nothing and cancels
+    # before the long utterance has even been picked up -- which is exactly
+    # how the first version of this test passed without the fix in place.
+    assert _waitForFeeds(driver, fed0 + 1) > fed0, "the long utterance never started"
+
+    before = driver._player.bytes
+    driver.cancel()
+    started = time.perf_counter()
+    driver.speak(["next"])
+    end = started + 5.0
+    while time.perf_counter() < end:
+        if driver._player.bytes > before:
+            break
+        time.sleep(0.002)
+    waited = (time.perf_counter() - started) * 1000.0
+    assert driver._player.bytes > before, "the next utterance never arrived"
+    assert waited < 400.0, (
+        "interrupting still costs %.0f ms before the next utterance is heard"
+        % waited)
