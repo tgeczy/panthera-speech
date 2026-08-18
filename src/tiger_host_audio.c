@@ -166,6 +166,11 @@ static unsigned g_last_hash, g_have_last, g_dup_slices;
 #define SLICE_SPIN_LIMIT 200000
 static double   g_rate = 22050.0;
 static unsigned g_channels = 1;
+/* The stream format the engine set, kept verbatim so the getter can return
+ * exactly it rather than a reconstruction. */
+static unsigned char g_asbd[64];
+static unsigned      g_asbd_size;
+static int           g_have_asbd;
 
 typedef void (__cdecl *slice_done_t)(void *userData, void *slice);
 
@@ -481,6 +486,14 @@ static int __cdecl sh_AudioUnitSetProperty(au_obj *unit, unsigned id,
     if (id == kAUProp_StreamFormat && size >= 40 && data) {
         const unsigned char *p = (const unsigned char *)data;
         char fid[5];
+        /* Kept so the getter can hand back exactly what was set.  Leopard's
+         * engine asks for this again later, and an answer it did not
+         * recognise would be worse than no answer at all. */
+        if (size <= sizeof(g_asbd)) {
+            memcpy(g_asbd, data, size);
+            g_asbd_size = size;
+            g_have_asbd = 1;
+        }
         g_rate = *(const double *)p;
         fourcc(fid, *(const unsigned *)(p + 8));
         g_channels = *(const unsigned *)(p + 28);
@@ -496,6 +509,139 @@ static int __cdecl sh_AudioUnitSetProperty(au_obj *unit, unsigned id,
     } else {
         if (g_verbose) printf("  [au] SetProperty id=%u scope=%u size=%u\n", id, scope, size);
     }
+    return 0;
+}
+
+/* ---- reading state back out of the audio unit -------------------------- */
+/*
+ * Tiger's engine never asks.  Its imports are AudioUnitSetProperty and
+ * AudioUnitReset and nothing else, so a write-only fake AUGraph is a complete
+ * one for it -- which is why Vicki renders byte-perfect through Tiger's
+ * engine and roughly through Leopard's, on the same voice data and the same
+ * host.
+ *
+ * Leopard's engine imports AudioUnitGetProperty, AudioUnitGetPropertyInfo and
+ * AudioUnitAddPropertyListener as well, and we had none of them.  They fell
+ * through to a stub that returns noErr without writing the out-parameter, so
+ * the engine asked where playback had reached, was told the call succeeded,
+ * and read whatever was already on its stack.
+ *
+ * An unimplemented property must therefore fail rather than succeed quietly:
+ * kAudioUnitErr_InvalidProperty is a documented answer that callers handle,
+ * and a wrong answer dressed as a right one is the thing that cost a night.
+ */
+#define kAUProp_ClassInfo            0
+#define kAUProp_SampleRate           2
+#define kAUProp_MaxFramesPerSlice   14
+#define kAUProp_LastRenderError     22
+#define kAUProp_CurrentPlayTime    3302
+#define kAudioUnitErr_InvalidProperty (-10879)
+
+/* Which properties we have actually been asked for, said once each: the
+ * linked surface is 3 symbols, the reached surface is what matters. */
+static void note_get(unsigned id, unsigned scope, int answered)
+{
+    static unsigned seen[16];
+    static int nseen;
+    int i;
+    for (i = 0; i < nseen; i++)
+        if (seen[i] == id) return;
+    if (nseen < 16) seen[nseen++] = id;
+    fprintf(stderr, "tiger_host: the engine read audio unit property %u "
+                    "(scope %u) -- %s\n", id, scope,
+            answered ? "answered" : "NOT IMPLEMENTED, reported as unsupported");
+}
+
+static int __cdecl sh_AudioUnitGetProperty(au_obj *unit, unsigned id,
+                                           unsigned scope, unsigned elem,
+                                           void *data, unsigned *iosize)
+{
+    unsigned want = 0;
+    (void)unit; (void)elem;
+    if (!data || !iosize) return -50;
+    switch (id) {
+    case kAUProp_StreamFormat:
+        if (!g_have_asbd) break;
+        want = g_asbd_size;
+        if (*iosize < want) return -50;
+        memcpy(data, g_asbd, want);
+        *iosize = want;
+        note_get(id, scope, 1);
+        return 0;
+    case kAUProp_SampleRate:
+        want = sizeof(double);
+        if (*iosize < want) return -50;
+        *(double *)data = g_rate;
+        *iosize = want;
+        note_get(id, scope, 1);
+        return 0;
+    case kAUProp_CurrentPlayTime: {
+        /* A ScheduledSoundPlayer reports where playback has reached on the
+         * timeline it was given, which for us is the sample we have collected
+         * up to within the current epoch.  It must never go backwards. */
+        unsigned char *ts = (unsigned char *)data;
+        want = 64;                          /* an AudioTimeStamp */
+        if (*iosize < want) return -50;
+        memset(ts, 0, want);
+        *(double *)(ts + SLICE_SAMPLETIME_OFF) =
+            (double)(g_pcm_n > g_epoch_base ? g_pcm_n - g_epoch_base : 0);
+        *(unsigned *)(ts + SLICE_TSFLAGS_OFF) = kAudioTimeStampSampleTimeValid;
+        *iosize = want;
+        note_get(id, scope, 1);
+        return 0;
+    }
+    case kAUProp_LastRenderError:
+        want = sizeof(int);
+        if (*iosize < want) return -50;
+        *(int *)data = 0;
+        *iosize = want;
+        note_get(id, scope, 1);
+        return 0;
+    case kAUProp_MaxFramesPerSlice:
+        want = sizeof(unsigned);
+        if (*iosize < want) return -50;
+        *(unsigned *)data = 4096;
+        *iosize = want;
+        note_get(id, scope, 1);
+        return 0;
+    default:
+        break;
+    }
+    note_get(id, scope, 0);
+    return kAudioUnitErr_InvalidProperty;
+}
+
+static int __cdecl sh_AudioUnitGetPropertyInfo(au_obj *unit, unsigned id,
+                                               unsigned scope, unsigned elem,
+                                               unsigned *outsize,
+                                               unsigned char *writable)
+{
+    unsigned size = 0;
+    (void)unit; (void)elem;
+    switch (id) {
+    case kAUProp_StreamFormat:   size = g_have_asbd ? g_asbd_size : 0; break;
+    case kAUProp_SampleRate:     size = sizeof(double);   break;
+    case kAUProp_CurrentPlayTime: size = 64;              break;
+    case kAUProp_LastRenderError: size = sizeof(int);     break;
+    case kAUProp_MaxFramesPerSlice: size = sizeof(unsigned); break;
+    default: break;
+    }
+    if (!size) {
+        note_get(id, scope, 0);
+        return kAudioUnitErr_InvalidProperty;
+    }
+    if (outsize) *outsize = size;
+    if (writable) *writable = (unsigned char)(id != kAUProp_CurrentPlayTime);
+    return 0;
+}
+
+/* Nothing here ever changes a property behind the engine's back, so there is
+ * nothing to notify.  Accepting the registration is the honest answer. */
+static int __cdecl sh_AudioUnitAddPropertyListener(au_obj *unit, unsigned id,
+                                                   void *proc, void *udata)
+{
+    (void)unit; (void)proc; (void)udata;
+    if (g_verbose) printf("  [au] AddPropertyListener for property %u\n", id);
     return 0;
 }
 /* 32-bit float in, 16-bit PCM out, because that is what everything downstream

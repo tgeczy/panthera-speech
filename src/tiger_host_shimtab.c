@@ -68,6 +68,12 @@ static const shim g_shims[] = {
     { "_AUGraphStop",             (void *)sh_AUGraphStop             },
     { "_DisposeAUGraph",          (void *)sh_DisposeAUGraph          },
     { "_AudioUnitSetProperty",    (void *)sh_AudioUnitSetProperty    },
+    /* Leopard's engine reads state back; Tiger's never does. */
+    { "_AudioUnitGetProperty",    (void *)sh_AudioUnitGetProperty    },
+    { "_AudioUnitGetPropertyInfo",
+                                  (void *)sh_AudioUnitGetPropertyInfo },
+    { "_AudioUnitAddPropertyListener",
+                                  (void *)sh_AudioUnitAddPropertyListener },
     { "_AudioUnitReset",          (void *)sh_AudioUnitReset          },
     { "_SoundConverterOpen",      (void *)sh_SoundConverterOpen      },
     { "_SoundConverterSetInfo",   (void *)sh_SoundConverterSetInfo   },
