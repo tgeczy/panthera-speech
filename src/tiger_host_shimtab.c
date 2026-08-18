@@ -85,6 +85,11 @@ static const shim g_shims[] = {
     { "_sqlite3_column_int",      (void *)sh_sqlite3_column_int      },
     { "_sqlite3_reset",           (void *)sh_sqlite3_reset           },
     { "_sqlite3_finalize",        (void *)sh_sqlite3_finalize        },
+    /* Leopard's SpeechDictionary matches with POSIX regex; Tiger's does not. */
+    { "_regcomp$UNIX2003",        (void *)sh_regcomp                 },
+    { "_regcomp",                 (void *)sh_regcomp                 },
+    { "_regexec",                 (void *)sh_regexec                 },
+    { "_regfree",                 (void *)sh_regfree                 },
     { "_SoundConverterOpen",      (void *)sh_SoundConverterOpen      },
     { "_SoundConverterSetInfo",   (void *)sh_SoundConverterSetInfo   },
     { "_SoundConverterClose",     (void *)sh_SoundConverterClose     },
