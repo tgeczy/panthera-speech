@@ -949,14 +949,31 @@ static int __cdecl sh_AudioConverterFillComplexBuffer(void *conv,
                 lastpkt = base + (unsigned)descs[i].mStartOffset;
                 lastlen = descs[i].mDataByteSize;
             }
-            /* The same flush Vicki needs, for the same reason.  Windows 7
-             * holds the final frame back, and without this Alex would inherit
-             * an already-solved bug on the one platform nobody here can test
-             * -- and it would be diagnosed from scratch a second time. */
-            aac_flush_delay(lastpkt, lastlen);
+            /* NOT aac_flush_delay() here, though Vicki needs it.
+             *
+             * That trick re-feeds the last packet twice to shake the decoder's
+             * own held frames loose. On Vicki's single long stream the
+             * duplicates land past the end of the utterance and are never
+             * handed out. Alex's grains are decoded one AAC packet at a time,
+             * so re-feeding the packet *is* the payload: one grain came back
+             * three times over, and what reached the engine was the third
+             * copy. Real Alex bytes, wrong ones, blipping in and out.
+             *
+             * A drain alone gets everything out of this decoder. */
+            (void)lastpkt; (void)lastlen;
             aac_end();
+            /* Nothing is trimmed here, which is the other half of the same
+             * fact.  Apple sets kAudioConverterPrimeMethod to None on this
+             * converter -- that is the 'prmm' SetProperty above -- because a
+             * grain is stored as a complete little AAC sequence with no
+             * priming to discard.  One packet in, 1024 samples out, and all of
+             * them wanted.
+             *
+             * Trimming Vicki's 2112 here would delete every grain twice over,
+             * and it is tempting: it is the same codec, the same decoder, and
+             * the constant is sitting right there in this file. */
             if (g_verbose && g_sc.sessions <= 3)
-                if (g_verbose) printf("  [ac] %u packet(s) -> %u frames, asked for %u\n",
+                printf("  [ac] %u packet(s) -> %u frames, asked for %u\n",
                        packets, g_sc.pcm_n, want);
         }
     }
