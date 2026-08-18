@@ -297,7 +297,15 @@ static void take_slice(unsigned char *slice)
     g_slices++;
     if (g_float_stats) {
         static double prev = -1.0;
-        if (g_slices <= 14 || (stime <= prev && frames))
+        static double expect = -1.0;
+        int anomaly = (expect >= 0.0 && frames && stime != expect);
+        if (anomaly)
+            printf("  [au] TIMELINE %s: slice %u wants %.0f, previous ended "
+                   "at %.0f (%+.0f)\n",
+                   stime < expect ? "OVERLAP" : "GAP", g_slices, stime, expect,
+                   stime - expect);
+        if (frames) expect = stime + frames;
+        if (g_slices <= 6 || (stime <= prev && frames))
             printf("  [au] slice %-4u frames %-5u sampleTime %12.1f%s%s\n",
                    g_slices, frames, stime,
                    (tsflags & kAudioTimeStampSampleTimeValid) ? "" : " (invalid)",
