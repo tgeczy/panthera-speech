@@ -603,6 +603,12 @@ class SynthDriver(SynthDriver):
             return
         text = _joinFragments(run)
         del run[:]
+        # The exact string the engine is given.  Reconstructing it from the
+        # sequence log is guesswork, and guessing is what has cost the time
+        # here: this is the one thing that can be pasted straight into a
+        # renderer to reproduce what somebody heard.
+        if log.isEnabledFor(log.DEBUG):
+            log.debug("tigerspeech: speaking %r" % (text,))
         pcm = self._render(text, wpm, voice, self._pitchOffset(adj))
         if pending:
             for index in pending:
@@ -648,7 +654,7 @@ class SynthDriver(SynthDriver):
             shape = []
             for item in speechSequence:
                 if isinstance(item, str):
-                    shape.append(repr(item[:40]))
+                    shape.append(repr(item[:200]))
                 else:
                     shape.append(type(item).__name__)
             log.debug("tigerspeech: sequence %s" % " | ".join(shape))
