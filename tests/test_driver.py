@@ -555,8 +555,18 @@ def test_adjacent_text_is_one_utterance_not_several(driver):
     assert feeds == 1, "each fragment was still rendered on its own (%d feeds)" % feeds
 
 
-def test_an_index_still_splits_the_utterance_and_is_reported(driver):
-    """Joining must not swallow the boundaries NVDA actually asked for."""
+def test_an_index_does_not_split_the_sentence_but_is_still_reported(driver):
+    """An index marks a position; it does not end an utterance.
+
+    NVDA puts one at the *start* of every line during say-all -- the
+    lineReached callback -- and sayAll speaks through speakWithoutPauses,
+    which buffered those lines together precisely because none of them
+    contained a natural pause.  Splitting there handed the engine a fragment
+    ending in nothing and it read that as the end of a sentence: with word
+    wrap on, a full stop between "narrowing" and "budgets".
+
+    So the audio stays whole, and the index is still reported.
+    """
     import speech.commands
     import synthDriverHandler
     _warm(driver)
@@ -564,8 +574,21 @@ def test_an_index_still_splits_the_utterance_and_is_reported(driver):
     feeds, _b = _speakAndWait(driver, ["first part ",
                                        speech.commands.IndexCommand(7),
                                        "second part"])
-    assert feeds == 2, "the index did not split the audio (%d feeds)" % feeds
+    assert feeds == 1, "the index split the sentence (%d feeds)" % feeds
     assert synthDriverHandler.synthIndexReached.count > before, "index lost"
+
+
+def test_every_index_is_reported_even_when_lines_are_joined(driver):
+    """A wrapped paragraph carries one index per line, and none may vanish."""
+    import speech.commands
+    import synthDriverHandler
+    _warm(driver)
+    before = synthDriverHandler.synthIndexReached.count
+    _speakAndWait(driver, [speech.commands.IndexCommand(1), "one line ",
+                           speech.commands.IndexCommand(2), "and another ",
+                           speech.commands.IndexCommand(3), "and a third."])
+    got = synthDriverHandler.synthIndexReached.count - before
+    assert got == 3, "expected three indexes, got %d" % got
 
 
 def test_a_break_command_becomes_real_silence(driver):

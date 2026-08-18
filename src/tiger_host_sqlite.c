@@ -74,6 +74,17 @@ static int sqlite_ready(void)
     HMODULE h;
     if (g_sql.tried) return g_sql.ok;
     g_sql.tried = 1;
+    /* TIGER_SQLITE=0 turns the phrasing dictionary off, so the engine's
+     * phrasing can be A/B'd against itself.  It exists because enabling this
+     * table changed how sentences are broken up, and "is that better or
+     * worse" is a question only a listener can answer -- but only if both
+     * versions can be produced on demand. */
+    { const char *e = getenv("TIGER_SQLITE");
+      if (e && atoi(e) == 0) {
+          fprintf(stderr, "tiger_host: phrasing dictionary disabled by "
+                          "TIGER_SQLITE=0\n");
+          return 0;
+      } }
     h = LoadLibraryA("winsqlite3.dll");
     if (!h) {
         fprintf(stderr, "tiger_host: winsqlite3.dll is not on this system, so "

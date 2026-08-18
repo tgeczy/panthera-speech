@@ -526,44 +526,79 @@ class SynthDriver(SynthDriver):
             #: expressed.  0 means the user's own setting.
             adj = 0
             run = []
+            #: Indexes seen since the last flush, reported once the audio
+            #: around them has been handed to the player.
+            #:
+            #: **An index must not force a split.**  NVDA puts one at the
+            #: *start* of every line during say-all -- the `lineReached`
+            #: callback -- and it has already decided those lines belong
+            #: together: sayAll speaks through `speakWithoutPauses`, which
+            #: buffers lines until one of them contains a natural pause.
+            #: Splitting at the index undid that decision and handed the engine
+            #: a fragment ending in nothing, which it reads as a sentence
+            #: ending.
+            #:
+            #: With word wrap on that is heard as a full stop in the middle of
+            #: a sentence -- "narrowing. budgets", "hits. and kills" -- at
+            #: exactly the wrapped line boundaries, which is why it sounded so
+            #: arbitrary.
+            pending = []
             for kind, value in item:
                 if self._stopped:
                     break
                 if kind == "text":
                     run.append(value)
                     continue
-                self._flush(run, wpm, voice, adj)
                 if kind == "index":
-                    self._audioQueue.put(("index", value))
-                elif kind == "break":
+                    pending.append(value)
+                    continue
+                self._flush(run, wpm, voice, adj, pending)
+                if kind == "break":
                     self._audioQueue.put(("audio", _silence(value)))
                 elif kind == "pitch":
                     adj = value
             if not self._stopped:
-                self._flush(run, wpm, voice, adj)
+                self._flush(run, wpm, voice, adj, pending)
+            for index in pending:               # nothing left to speak
+                self._audioQueue.put(("index", index))
+            del pending[:]
             self._audioQueue.put(("done", None))
 
-    def _flush(self, run, wpm, voice, adj=0):
+    def _flush(self, run, wpm, voice, adj=0, pending=None):
         """Render the text collected so far as ONE utterance.
 
-        **Adjacent strings in a speech sequence are not separate utterances.**
-        NVDA inserts an IndexCommand only where a callback sits or an utterance
-        genuinely ends -- see speech/manager.py -- so a line of a web page with
-        a link in it arrives as several plain strings with nothing between
-        them, and rendering each one on its own gave every fragment the falling
-        intonation and the final lengthening of a complete sentence.  Measured,
-        that cost 163 ms across two joins and, more to the point, sounded like
-        the synthesizer stopping to think in the middle of a sentence.  Two
-        testers reported it the same morning.
+        **A speech sequence is not a list of utterances.**  NVDA hands over the
+        pieces of a line -- text, a link, more text -- as separate strings, and
+        during say-all it hands over several wrapped lines at once, having
+        already decided through `speakWithoutPauses` that they belong together.
+        Rendering each piece on its own gave every one of them the falling
+        intonation and final lengthening of a finished sentence.  Measured, the
+        splitting cost 163 ms across two joins, and there is no silence in it
+        to trim: the extra is in the speech itself.
 
-        Joining costs nothing in index accuracy, because there was no index
-        between the pieces to lose -- which is also why say-all is unaffected.
+        The indexes collected since the last flush are reported immediately
+        before this audio, rather than splitting it.  That matches what they
+        mean: NVDA's say-all index is the `lineReached` callback, placed at the
+        *start* of a line -- "we have just started speaking this" -- and it is
+        also what asks for the next line, so reporting it early keeps the
+        pipeline fed rather than starving it.  Where several wrapped lines were
+        joined, their indexes all arrive at the head of the joined audio, so
+        the caret can lead the voice by part of a sentence.  That is the price
+        of not putting a full stop in the middle of one.
         """
         if not run:
+            if pending:
+                for index in pending:
+                    self._audioQueue.put(("index", index))
+                del pending[:]
             return
         text = _joinFragments(run)
         del run[:]
         pcm = self._render(text, wpm, voice, self._pitchOffset(adj))
+        if pending:
+            for index in pending:
+                self._audioQueue.put(("index", index))
+            del pending[:]
         if pcm:
             self._audioQueue.put(("audio", pcm))
             gap = self.PAUSE_MS.get(self._pauseMode, 0)
