@@ -31,7 +31,23 @@
  * fail loudly rather than misread a request by one word and speak nonsense.
  */
 #define REQ_MAGIC 0x54475233u           /* 'TGR3' */
+/* 'TGR4' asks for the same audio, streamed.  A separate magic rather than a
+ * flag because the failure it guards against is a stale tiger_host.exe left in
+ * an add-on folder: a host that cannot stream must refuse the request outright
+ * rather than answer it in a shape the driver will misread.  That is why the
+ * request magic carries a version at all. */
+#define REQ_MAGIC_STREAM 0x54475234u    /* 'TGR4' */
 #define RSP_MAGIC 0x54475253u           /* 'TGRS' */
+/* How far behind the collected frontier a streamed chunk stops.
+ *
+ * Measured rather than chosen: across Alex, Fred and Vicki, at 120, 180 and
+ * 300 wpm, on text long enough to span many epochs, slices land behind the
+ * frontier 19 to 53 times per utterance and never by more than *one* frame --
+ * the single-frame probe that opens each epoch, covered again immediately by
+ * the 229-frame slice at the same position.  Sent audio cannot be unsent, so
+ * hold back a margin far larger than anything observed; 512 frames is 23 ms,
+ * which no listener notices and no measurement came close to. */
+#define STREAM_LOOKBEHIND 512u
 #define SEL_RATE  0x72617465u           /* 'rate' -- soRate, Fixed wpm */
 #define SEL_PITCH 0x70626173u           /* 'pbas' -- soPitchBase, Fixed */
 #define SEL_DELIM 0x646c696du           /* 'dlim' -- soCommandDelimiter */
@@ -66,6 +82,38 @@ static int voice_spec(const char *dir, unsigned *creator, int *id)
     return 1;
 }
 
+/* 32-bit float to 16-bit PCM, the one place the conversion is written.
+ *
+ * Streamed and blocking responses have to produce identical bytes -- that is
+ * the invariant the streaming test rests on -- so they cannot each carry their
+ * own copy of this loop. */
+static void put_frames(unsigned from, unsigned to)
+{
+    unsigned i;
+    for (i = from; i < to; i++) {
+        double v = g_pcm[i];
+        short s;
+        if (v > 1.0) v = 1.0;
+        if (v < -1.0) v = -1.0;
+        s = (short)(v * 32767.0);
+        fwrite(&s, 2, 1, stdout);
+    }
+}
+
+/* Send frames [sent, upto) as one chunk and return the new frontier.  A chunk
+ * is a frame count followed by that many samples; a count of zero ends the
+ * response, so a chunk is never written empty. */
+static unsigned stream_chunk(unsigned sent, unsigned upto)
+{
+    unsigned n;
+    if (upto <= sent) return sent;
+    n = upto - sent;
+    fwrite(&n, 4, 1, stdout);
+    put_frames(sent, upto);
+    fflush(stdout);
+    return upto;
+}
+
 static int serve(image *mt, void *chan, const char *voicesdir)
 {
     SEUseVoice_t use     = (SEUseVoice_t)find_export(mt, "_SEUseVoice");
@@ -85,12 +133,15 @@ static int serve(image *mt, void *chan, const char *voicesdir)
         unsigned magic, namelen, textlen, nframes, i;
         int wpm, pitch, err = 0, voicechanged;
         unsigned flags;
+        int streaming;
+        unsigned sent = 0;
         double speak_ms = 0.0;
         char name[128];
         char *text;
 
         if (!read_all(stdin, &magic, 4)) return 0;      /* driver went away */
-        if (magic != REQ_MAGIC) return 1;
+        if (magic != REQ_MAGIC && magic != REQ_MAGIC_STREAM) return 1;
+        streaming = (magic == REQ_MAGIC_STREAM);
         if (!read_all(stdin, &wpm, 4) ||
             !read_all(stdin, &pitch, 4) ||
             !read_all(stdin, &flags, 4) ||
@@ -174,6 +225,19 @@ static int serve(image *mt, void *chan, const char *voicesdir)
         speak_ms = wall_ms() - g_utt_t0;
         free(text);
 
+        /* A streamed response says how it went before it says anything else.
+         *
+         * SESpeakBuffer returns in about a tenth of a millisecond and the
+         * first slice arrives a millisecond after that, so `err` is known long
+         * before the audio is, and the driver can start listening for chunks
+         * immediately instead of waiting out the render. */
+        if (streaming) {
+            magic = RSP_MAGIC;
+            fwrite(&magic, 4, 1, stdout);
+            fwrite(&err, 4, 1, stdout);
+            fflush(stdout);
+        }
+
         /* AUGraphStop is the engine's own end-of-utterance signal, with a
          * quiet-period fallback in case an utterance ends another way. */
         if (!err) {
@@ -182,6 +246,12 @@ static int serve(image *mt, void *chan, const char *voicesdir)
                 Sleep(10); ticks++;
                 if (g_slices != last) { last = g_slices; quiet = 0; }
                 else quiet++;
+                /* Send what has settled, every tick.  The engine runs at about
+                 * ninety times real time, so after the first chunk there are
+                 * seconds of audio buffered ahead and playback cannot underrun
+                 * however long the text is. */
+                if (streaming && g_pcm_n > STREAM_LOOKBEHIND)
+                    sent = stream_chunk(sent, g_pcm_n - STREAM_LOOKBEHIND);
             }
             /* The engine has stopped *scheduling*, which is not the same as
              * the audio having been read.
@@ -254,19 +324,24 @@ static int serve(image *mt, void *chan, const char *voicesdir)
                     speak_ms, g_first_slice_ms, g_last_slice_ms, g_pcm_n,
                     g_back_slices, g_back_max);
 
-        nframes = g_pcm_n;
-        magic = RSP_MAGIC;
-        fwrite(&magic, 4, 1, stdout);
-        fwrite(&err, 4, 1, stdout);
-        fwrite(&nframes, 4, 1, stdout);
-        for (i = 0; i < nframes; i++) {
-            double v = g_pcm[i];
-            short s;
-            if (v > 1.0) v = 1.0;
-            if (v < -1.0) v = -1.0;
-            s = (short)(v * 32767.0);
-            fwrite(&s, 2, 1, stdout);
+        if (streaming) {
+            /* The tail, then a zero-length chunk to say that is all of it.
+             * The margin held back during the render is released here, so a
+             * streamed response carries exactly the frames a blocking one
+             * would -- which is what the streaming test checks. */
+            unsigned zero = 0;
+            (void)i; (void)nframes;
+            sent = stream_chunk(sent, g_pcm_n);
+            fwrite(&zero, 4, 1, stdout);
+            fflush(stdout);
+        } else {
+            nframes = g_pcm_n;
+            magic = RSP_MAGIC;
+            fwrite(&magic, 4, 1, stdout);
+            fwrite(&err, 4, 1, stdout);
+            fwrite(&nframes, 4, 1, stdout);
+            put_frames(0, nframes);
+            fflush(stdout);
         }
-        fflush(stdout);
     }
 }
