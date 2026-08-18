@@ -189,6 +189,64 @@ def read_voices(voicesdir, playable_only=False):
     return out
 
 
+def explain():
+    """-> (usable, [lines]) -- the same decision as usable(), said out loud.
+
+    usable() answers a bare False and says nothing about which of its four
+    conditions failed, which is right for a synthesizer list and useless for
+    everything else.  Two users reported a `tigerspeech-data` folder with the
+    three expected directories inside it and no synthesizer in the list, and
+    nothing -- not the add-on, not the log -- could say whether the host was
+    missing, the tree was one level off, or the voices were unreadable.
+
+    Kept next to the decision it describes so the two cannot drift apart.
+    """
+    lines = []
+    ok = True
+
+    lines.append("host: %s %s"
+                 % (HOST_EXE, "found" if os.path.isfile(HOST_EXE)
+                    else "MISSING"))
+    if not os.path.isfile(HOST_EXE):
+        ok = False
+
+    home = config_dir()
+    lines.append("data folder: %s %s"
+                 % (home, "exists" if os.path.isdir(home) else "MISSING"))
+    try:
+        lines.append("  contains: %s"
+                     % (", ".join(sorted(os.listdir(home))) or "(empty)"))
+    except OSError as e:
+        lines.append("  cannot list: %s" % e)
+
+    found_tree = find_tree()
+    if not found_tree:
+        lines.append("no tree found: needs a folder with Speech\\Voices in it,"
+                     " either the data folder itself or one level inside it")
+        return False, lines
+    lines.append("tree: %s" % found_tree)
+
+    mt, sd, voices = engine_paths(found_tree)
+    for what, path in (("MacinTalk", mt), ("SpeechDictionary", sd)):
+        good = os.path.isfile(path)
+        lines.append("%s: %s %s" % (what, path, "found" if good else "MISSING"))
+        if not good:
+            ok = False
+
+    playable = read_voices(voices, playable_only=True)
+    present = read_voices(voices)
+    lines.append("voices: %d playable of %d present in %s"
+                 % (len(playable), len(present), voices))
+    if present and not playable:
+        lines.append("  present, but no engine we can render: %s"
+                     % ", ".join(sorted({v[2] for v in present})))
+    if not playable:
+        ok = False
+    if not aac_available():
+        lines.append("no AAC decoder registered, so Vicki is withheld")
+    return ok, lines
+
+
 def usable():
     """-> True when there is an engine we could actually speak with."""
     if not os.path.isfile(HOST_EXE):

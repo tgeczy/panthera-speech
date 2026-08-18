@@ -125,6 +125,10 @@ class SynthDriver(SynthDriver):
     supportedCommands = {speech.commands.IndexCommand}
     supportedNotifications = {synthIndexReached, synthDoneSpeaking}
 
+    #: So the explanation below is written once per NVDA session rather than
+    #: once per repaint of the synthesizer list.
+    _explained = False
+
     @classmethod
     def check(cls):
         """Do not appear in the list unless we can actually speak.
@@ -132,8 +136,19 @@ class SynthDriver(SynthDriver):
         A synthesizer that is selectable and then silent is worse than one that
         is absent -- that exact failure is what a user hit with the 32-bit
         build of the ROM add-on.
+
+        Being absent is still an answer, though, and until now it was given in
+        silence: two users had the engine folder populated, no synthesizer in
+        the list, and nothing anywhere to say why.  So when the answer is no,
+        say what failed.  One log line on an affected machine, none on a
+        working one.
         """
-        return tree.usable()
+        ok, lines = tree.explain()
+        if not ok and not cls._explained:
+            cls._explained = True
+            log.warning("tiger-speech is not available:\n  %s"
+                        % "\n  ".join(lines))
+        return ok
 
     def __init__(self):
         super().__init__()

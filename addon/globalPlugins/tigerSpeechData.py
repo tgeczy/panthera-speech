@@ -87,21 +87,37 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
     def __init__(self):
         super().__init__()
         if globalVars.appArgs.secure:
+            log.info("Tiger-speech: secure mode, not checking for the engine")
             return
+        log.info("Tiger-speech: engine check armed")
         threading.Timer(6.0, self._check).start()
 
     def _check(self):
+        """Decide whether to ask, and leave a record either way.
+
+        Every step here logs.  Users reported no synthesizer *and* no dialog,
+        which are two different failures with the same appearance -- nothing
+        happening -- and no way to tell them apart after the fact.  A handful of
+        log lines is the difference between "we need another test build" and an
+        answer from the log they already sent.
+        """
         try:
-            if tree.usable():
+            ok, lines = tree.explain()
+            log.info("Tiger-speech: engine %s\n  %s"
+                     % ("ready" if ok else "NOT ready", "\n  ".join(lines)))
+            if ok:
                 return
             folder = tree.config_dir()
             if os.path.exists(os.path.join(folder, _MARKER)):
+                log.info("Tiger-speech: not asking, %s exists in %s"
+                         % (_MARKER, folder))
                 return
             os.makedirs(folder, exist_ok=True)
             readme = os.path.join(folder, "README.txt")
             if not os.path.exists(readme):
                 with open(readme, "w", encoding="utf-8") as f:
                     f.write(_README)
+            log.info("Tiger-speech: showing the engine-missing dialog")
             wx.CallAfter(self._ask, folder)
         except Exception:
             log.error("Tiger-speech: engine check failed", exc_info=True)
