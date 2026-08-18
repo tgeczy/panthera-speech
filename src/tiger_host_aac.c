@@ -82,6 +82,7 @@ typedef struct {
     short        *pcm;                  /* decoded, priming already dropped */
     unsigned      pcm_cap, pcm_n, pcm_pos;      /* in samples */
     unsigned      sessions;
+    int           ac_live;              /* an AudioConverter stream is open  */
     unsigned      lost;                 /* access units the decoder refused */
     int           complained;
     int           quiet;                /* one complaint per run is plenty  */
@@ -854,12 +855,28 @@ static int __cdecl sh_AudioConverterNew(const au_asbd *insrc,
     return 0;
 }
 
-static int __cdecl sh_AudioConverterDispose(void *conv) { (void)conv; return 0; }
+static int __cdecl sh_AudioConverterDispose(void *conv)
+{
+    (void)conv;
+    if (g_sc.ac_live && g_aac) {
+        IMFTransform_ProcessMessage(g_aac, MFT_MESSAGE_COMMAND_FLUSH, 0);
+        g_sc.ac_live = 0;
+    }
+    g_sc.pcm_n = g_sc.pcm_pos = 0;
+    return 0;
+}
 
+/* Reset means "forget the stream", and now that the decoder is kept open
+ * across refills it has to mean that here too -- otherwise the next utterance
+ * would begin with the overlap tail of the last one. */
 static int __cdecl sh_AudioConverterReset(void *conv)
 {
     (void)conv;
     g_sc.pcm_n = g_sc.pcm_pos = 0;
+    if (g_sc.ac_live && g_aac) {
+        IMFTransform_ProcessMessage(g_aac, MFT_MESSAGE_COMMAND_FLUSH, 0);
+        g_sc.ac_live = 0;
+    }
     return 0;
 }
 
@@ -922,59 +939,86 @@ static int __cdecl sh_AudioConverterFillComplexBuffer(void *conv,
     if (!iopackets || !outdata || !outdata->mNumberBuffers) return -50;
     want = *iopackets;
 
-    if (g_sc.pcm_pos >= g_sc.pcm_n && proc) {
-        au_bufferlist in;
-        au_packetdesc *descs = NULL;
-        unsigned packets = 0;
-        memset(&in, 0, sizeof in);
-        in.mNumberBuffers = 1;
+    if (g_sc.pcm_pos >= g_sc.pcm_n && proc && aac_open()) {
+        int rounds = 0;
         g_sc.pcm_n = g_sc.pcm_pos = 0;
-        proc(conv, &packets, &in, &descs, user);
-        if (packets && descs && in.mBuffers[0].mData && aac_open()) {
-            const unsigned char *base =
-                (const unsigned char *)in.mBuffers[0].mData;
-            const unsigned char *lastpkt = NULL;
-            unsigned lastlen = 0;
-            unsigned i;
-            aac_begin();
-            for (i = 0; i < packets; i++) {
-                if (descs[i].mStartOffset < 0 || !descs[i].mDataByteSize) continue;
-                if ((unsigned)descs[i].mStartOffset + descs[i].mDataByteSize >
-                    in.mBuffers[0].mDataByteSize &&
-                    in.mBuffers[0].mDataByteSize)
-                    break;
-                if (!aac_feed(base + (unsigned)descs[i].mStartOffset,
-                              descs[i].mDataByteSize))
-                    g_sc.lost++;
-                lastpkt = base + (unsigned)descs[i].mStartOffset;
-                lastlen = descs[i].mDataByteSize;
+        /* Keep asking until there is something to hand back.
+         *
+         * The decoder holds a frame: feed it one packet and it returns
+         * nothing, because an AAC frame is not finished until the next one
+         * overlaps it.  Asking the engine once per refill and giving up
+         * therefore returned zero frames every time, and Alex fell silent
+         * altogether -- which looked far worse than the stutter it replaced,
+         * and was one step closer. */
+        while (g_sc.pcm_n == 0 && rounds++ < 64) {
+            au_bufferlist in;
+            au_packetdesc *descs = NULL;
+            unsigned packets = 0;
+            memset(&in, 0, sizeof in);
+            in.mNumberBuffers = 1;
+            proc(conv, &packets, &in, &descs, user);
+            if (packets && descs && in.mBuffers[0].mData) {
+                const unsigned char *base =
+                    (const unsigned char *)in.mBuffers[0].mData;
+                unsigned i;
+                /* **Open the stream once, not once per refill.**
+                 *
+                 * AAC frames overlap: each one's samples are finished by the
+                 * next, because the codec adds consecutive MDCT windows
+                 * together.  aac_begin() sends COMMAND_FLUSH, which throws that
+                 * carry-over away, so calling it for every refill puts a seam
+                 * at every single 1024-sample boundary.  Alex counted to seven
+                 * correctly and stuttered all the way there -- a gap per frame,
+                 * which is exactly what a gap every 1024 samples sounds like.
+                 *
+                 * The engine pulls one utterance through one converter: it asks
+                 * for 19083 frames and counts down 18059, 17035, 16011.  That
+                 * is a stream, so treat it as one and let the decoder keep its
+                 * overlap. */
+                if (!g_sc.ac_live) {
+                    aac_begin();
+                    g_sc.ac_live = 1;
+                    g_sc.sessions++;
+                }
+                for (i = 0; i < packets; i++) {
+                    if (descs[i].mStartOffset < 0 || !descs[i].mDataByteSize)
+                        continue;
+                    if ((unsigned)descs[i].mStartOffset + descs[i].mDataByteSize >
+                        in.mBuffers[0].mDataByteSize &&
+                        in.mBuffers[0].mDataByteSize)
+                        break;
+                    if (!aac_feed(base + (unsigned)descs[i].mStartOffset,
+                                  descs[i].mDataByteSize))
+                        g_sc.lost++;
+                }
+                /* Collect what is ready without ending the stream.
+                 *
+                 * Not aac_end(), which would drain *and* close, and not
+                 * aac_flush_delay(), which re-feeds the last packet to shake
+                 * Windows 7's held frame loose: on a stream that duplicate is
+                 * harmless because it lands past the end, but here it would be
+                 * payload, and it was -- one packet arrived three times over
+                 * and the engine got the third copy.
+                 *
+                 * Nothing is trimmed either.  Apple sets
+                 * kAudioConverterPrimeMethod to None on this converter -- the
+                 * 'prmm' SetProperty above -- so there is no priming to drop,
+                 * and taking Vicki's 2112 off a 1024-sample refill deletes it
+                 * outright. */
+                aac_drain();
+                if (g_verbose && g_sc.sessions <= 1 && rounds <= 3)
+                    printf("  [ac] round %d: %u packet(s) -> %u frames, "
+                           "asked for %u\n", rounds, packets, g_sc.pcm_n, want);
+            } else {
+                /* The engine has no more compressed data: flush the decoder's
+                 * tail and close the stream, so the next utterance starts
+                 * clean rather than with this one's overlap. */
+                if (g_sc.ac_live) {
+                    aac_end();
+                    g_sc.ac_live = 0;
+                }
+                break;
             }
-            /* NOT aac_flush_delay() here, though Vicki needs it.
-             *
-             * That trick re-feeds the last packet twice to shake the decoder's
-             * own held frames loose. On Vicki's single long stream the
-             * duplicates land past the end of the utterance and are never
-             * handed out. Alex's grains are decoded one AAC packet at a time,
-             * so re-feeding the packet *is* the payload: one grain came back
-             * three times over, and what reached the engine was the third
-             * copy. Real Alex bytes, wrong ones, blipping in and out.
-             *
-             * A drain alone gets everything out of this decoder. */
-            (void)lastpkt; (void)lastlen;
-            aac_end();
-            /* Nothing is trimmed here, which is the other half of the same
-             * fact.  Apple sets kAudioConverterPrimeMethod to None on this
-             * converter -- that is the 'prmm' SetProperty above -- because a
-             * grain is stored as a complete little AAC sequence with no
-             * priming to discard.  One packet in, 1024 samples out, and all of
-             * them wanted.
-             *
-             * Trimming Vicki's 2112 here would delete every grain twice over,
-             * and it is tempting: it is the same codec, the same decoder, and
-             * the constant is sitting right there in this file. */
-            if (g_verbose && g_sc.sessions <= 3)
-                printf("  [ac] %u packet(s) -> %u frames, asked for %u\n",
-                       packets, g_sc.pcm_n, want);
         }
     }
 
