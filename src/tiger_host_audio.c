@@ -234,15 +234,33 @@ static DWORD WINAPI pacer_thread(LPVOID arg)
     return 0;
 }
 
+/* A ScheduledAudioSlice begins with an AudioTimeStamp, and its first field is
+ * a Float64 sample time saying *where in the output* the slice belongs.  We
+ * have been appending slices in arrival order and ignoring it. */
+#define SLICE_SAMPLETIME_OFF 0
+#define SLICE_TSFLAGS_OFF   56
+#define kAudioTimeStampSampleTimeValid 1
+
 static void take_slice(unsigned char *slice)
 {
     unsigned frames = *(unsigned *)(slice + SLICE_FRAMES_OFF);
+    double stime = *(double *)(slice + SLICE_SAMPLETIME_OFF);
+    unsigned tsflags = *(unsigned *)(slice + SLICE_TSFLAGS_OFF);
     unsigned char *bl = *(unsigned char **)(slice + SLICE_BUFLIST_OFF);
     slice_done_t done = *(slice_done_t *)(slice + SLICE_PROC_OFF);
     void *udata = *(void **)(slice + SLICE_DATA_OFF);
     unsigned nbufs, i;
 
     g_slices++;
+    if (g_float_stats) {
+        static double prev = -1.0;
+        if (g_slices <= 14 || (stime <= prev && frames))
+            printf("  [au] slice %-4u frames %-5u sampleTime %12.1f%s%s\n",
+                   g_slices, frames, stime,
+                   (tsflags & kAudioTimeStampSampleTimeValid) ? "" : " (invalid)",
+                   (stime <= prev && g_slices > 1) ? "  <-- NOT ADVANCING" : "");
+        prev = stime;
+    }
     /* Completing a slice the instant it is scheduled makes the engine schedule
      * the next one immediately, so an empty pipeline spins.  Log the first few
      * and anything that actually carries audio; stop feeding the loop once it
@@ -318,21 +336,35 @@ static void take_slice(unsigned char *slice)
              * resent.  The slice is still completed either way, because
              * completion is the engine's clock and skipping that is what once
              * left the channel wedged mid-utterance. */
+            /* Put the audio where the engine says it goes.
+             *
+             * Every slice carries an AudioTimeStamp whose sample time is its
+             * position in the output, and appending in arrival order quietly
+             * assumed those were always consecutive.  They are not: the first
+             * two both sit at 0, and the engine re-sends a buffer when its
+             * worker has produced nothing new.
+             *
+             * Refusing an identical slice was worse than recording it.  The
+             * re-sent ones carry *advancing* sample times, so dropping them
+             * left the timeline short by 229 frames apiece and pulled
+             * everything after them forward -- which is what a skipping CD
+             * sounds like, and it was my doing rather than the engine's.
+             *
+             * Writing at the stated offset handles all of it: a slice resent
+             * at the same time overwrites, a slice at a new time lands where
+             * it belongs, and a gap the engine leaves stays a gap instead of
+             * silently closing up. */
             {
-                unsigned h = 2166136261u, k;
-                const unsigned char *b8 = (const unsigned char *)data;
-                for (k = 0; k < n * 4; k++)
-                    h = (h ^ b8[k]) * 16777619u;
-                if (g_have_last && h == g_last_hash && n) {
-                    g_dup_slices++;
-                    n = 0;                      /* record nothing, still tick */
-                } else {
-                    g_last_hash = h;
-                    g_have_last = 1;
-                }
+                unsigned pos = (stime > 0.0) ? (unsigned)(stime + 0.5) : 0;
+                if (!(tsflags & kAudioTimeStampSampleTimeValid))
+                    pos = g_pcm_n;              /* no timeline: append */
+                if (pos > g_pcm_n && pos < PCM_CAP)
+                    while (g_pcm_n < pos) g_pcm[g_pcm_n++] = 0.0f;
+                for (j = 0; j < n && pos + j < PCM_CAP; j++)
+                    g_pcm[pos + j] = data[j];
+                if (pos + n > g_pcm_n)
+                    g_pcm_n = (pos + n < PCM_CAP) ? pos + n : PCM_CAP;
             }
-            for (j = 0; j < n && g_pcm_n < PCM_CAP; j++)
-                g_pcm[g_pcm_n++] = data[j];
         }
     }
     /* Do NOT complete the slice here.
