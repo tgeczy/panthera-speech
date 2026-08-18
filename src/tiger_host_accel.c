@@ -125,7 +125,23 @@ static void __cdecl sh_vDSP_vmma(const float *A, vdsp_stride IA,
                                  float *E, vdsp_stride IE, vdsp_length N)
 {
     vdsp_length n;
+    int variant = wsola_variant();
     if (!A || !B || !C || !D || !E) return;
+    if (variant == 1) {          /* windows paired the other way round */
+        for (n = 0; n < N; n++, A += IA, B += IB, C += IC, D += ID, E += IE)
+            *E = *C * *B + *A * *D;
+        return;
+    }
+    if (variant == 2) {          /* no cross-fade at all: hard splice */
+        for (n = 0; n < N; n++, B += IB, D += ID, E += IE)
+            *E = *D;
+        return;
+    }
+    if (variant == 3) {          /* the other side of the splice */
+        for (n = 0; n < N; n++, B += IB, D += ID, E += IE)
+            *E = *B;
+        return;
+    }
     /* The two weights here are the same Hann window read from two places --
      * A is &w[hop] and C is &w[0] -- so for the overlap-add to be transparent
      * they must sum to one at every n. That is only true when the hop is
@@ -169,6 +185,19 @@ static void __cdecl sh_vmul(const float *A, int I, const float *B, int J,
         *C = *A * *B;
 }
 
+/* TIGER_WSOLA selects a variant of the two calls that actually PRODUCE
+ * samples, as opposed to the search.  Vicki never runs any of this and sounds
+ * right; Alex runs all of it and does not, so these are the calls left to
+ * doubt, and no measurement available here can tell a good Alex from a bad one
+ * -- only a listener can.  Rendering the variants side by side spends one
+ * listening pass instead of one per idea. */
+static int wsola_variant(void)
+{
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("TIGER_WSOLA"); v = e ? atoi(e) : 0; }
+    return v;
+}
+
 /* vDSP_hann_window(C, N, flag): fill C with a Hann window.
  *
  * Apple's window is periodic -- 2*pi*n/N, not 2*pi*n/(N-1) -- which matters
@@ -184,7 +213,8 @@ static void __cdecl sh_vmul(const float *A, int I, const float *B, int J,
 static void __cdecl sh_vDSP_hann_window(float *C, vdsp_length N, int flag)
 {
     /* 0.8165 is sqrt(2/3), Apple's normalisation constant. */
-    const double scale = (flag & VDSP_HANN_NORM) ? 0.8165 : 0.5;
+    const double scale = (wsola_variant() == 4) ? 0.8165
+                       : ((flag & VDSP_HANN_NORM) ? 0.8165 : 0.5);
     vdsp_length count = (flag & VDSP_HALF_WINDOW) ? (N + 1) / 2 : N;
     vdsp_length n;
     if (!C || !N) return;
