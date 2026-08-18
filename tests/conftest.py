@@ -120,6 +120,10 @@ def _install_fake_nvda():
         def debugWarning(self, m, *a, **k): self._rec("debug", m, *a)
         def warning(self, m, *a, **k): self._rec("warning", m, *a)
         def error(self, m, *a, **k): self._rec("error", m, *a)
+        #: Real NVDA loggers have these; the driver asks before building a
+        #: debug string, and a fake without them fails only in the tests.
+        DEBUG = 10
+        def isEnabledFor(self, level): return False
     logh.log = _Log()
     sys.modules["logHandler"] = logh
 

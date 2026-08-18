@@ -97,6 +97,15 @@ _FOLD = {
     0x00A0: u" ", 0x2007: u" ", 0x2009: u" ", 0x202F: u" ",   # fixed spaces
     0x2011: u"-", 0x2012: u"-", 0x2015: u"-", 0x2212: u"-",   # more dashes
     0x2032: u"'", 0x2033: u'"', 0x02BC: u"'",                 # primes
+    #: The typographic apostrophe, and the reason a sentence full of them
+    #: fell apart.  MacRoman *has* it, at 0xD5 -- but 0xD5 is the right
+    #: single QUOTATION mark, and the engine's front end treats it as one:
+    #: it breaks the phrase there.  "Canopy’s investments" came out as
+    #: "Canopy" - 250 ms of silence - "s investments", and the sentence ran
+    #: 1.57 s longer for the pauses it grew.  A straight apostrophe is an
+    #: apostrophe, so these are folded before encoding.  Curly *double*
+    #: quotes are left alone: those really are quotation marks.
+    0x2018: u"'", 0x2019: u"'",
     0x2044: u"/",                                             # fraction slash
 }
 
@@ -629,6 +638,20 @@ class SynthDriver(SynthDriver):
 
     # -- NVDA interface ----------------------------------------------------
     def speak(self, speechSequence):
+        # What NVDA actually sent, when someone has turned debug logging on.
+        #
+        # Worth having permanently.  Every reported "it pauses in the middle of
+        # a sentence" so far has turned out to be about where the sequence was
+        # divided, and that is invisible from this side without either a log or
+        # a guess.  Two of those guesses were wrong.
+        if log.isEnabledFor(log.DEBUG):
+            shape = []
+            for item in speechSequence:
+                if isinstance(item, str):
+                    shape.append(repr(item[:40]))
+                else:
+                    shape.append(type(item).__name__)
+            log.debug("tigerspeech: sequence %s" % " | ".join(shape))
         items = []
         for item in speechSequence:
             if isinstance(item, str):

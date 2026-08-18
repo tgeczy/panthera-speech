@@ -711,3 +711,22 @@ def test_volume_defaults_to_full_not_nvdas_fifty():
     src = io.open(path, encoding="utf-8").read()
     assert "_fullVolumeByDefault(SynthDriver.VolumeSetting())" in src
     assert "\n        SynthDriver.VolumeSetting()," not in src
+
+
+def test_a_typographic_apostrophe_is_an_apostrophe():
+    """MacRoman has it, and that turned out to be the problem.
+
+    0xD5 is the right single QUOTATION mark, and the engine's front end treats
+    it as one -- it breaks the phrase there.  "Canopy's investments" was spoken
+    as "Canopy", 250 ms of silence, "s investments", and a sentence carrying
+    two of them ran 1.57 s longer than the same sentence with straight
+    apostrophes.  Reported as the speech "breaking up at and data", which is
+    where it landed after the engine lost its place.
+    """
+    import tigerspeech
+    enc = tigerspeech._encode
+    assert enc(u"Canopy’s") == b"Canopy's"
+    assert enc(u"‘quoted’") == b"'quoted'"
+    # Curly *double* quotes stay: those really are quotation marks, and the
+    # engine is right to treat them as such.
+    assert enc(u"“quoted”") == b"\xd2quoted\xd3"
