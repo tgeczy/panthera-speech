@@ -85,6 +85,7 @@ static int serve(image *mt, void *chan, const char *voicesdir)
         unsigned magic, namelen, textlen, nframes, i;
         int wpm, pitch, err = 0, voicechanged;
         unsigned flags;
+        double speak_ms = 0.0;
         char name[128];
         char *text;
 
@@ -166,8 +167,11 @@ static int serve(image *mt, void *chan, const char *voicesdir)
         g_epoch_base = 0; g_last_stime = 0.0;
         g_sc.sessions = 0; g_sc.resets = 0; g_sc.lost = 0; g_pkts_fed = 0;
         g_sql_rows = 0;
+        g_back_slices = 0; g_back_max = 0;
+        g_utt_t0 = wall_ms(); g_first_slice_ms = -1.0; g_last_slice_ms = 0.0;
         if (!err) err = call_aligned4((void *)speak, chan, text,
                                       (void *)textlen, (void *)0);
+        speak_ms = wall_ms() - g_utt_t0;
         free(text);
 
         /* AUGraphStop is the engine's own end-of-utterance signal, with a
@@ -236,6 +240,19 @@ static int serve(image *mt, void *chan, const char *voicesdir)
         if (g_float_stats)
             fprintf(stderr, "  [sql] %u database(s) open, %u phrasing row(s) "
                             "matched\n", g_sql_opens, g_sql_rows);
+        /* What a streamed response would need to know: whether SESpeakBuffer
+         * returns before the audio exists (so the wait loop is free to send
+         * what has arrived), how long the audio kept coming, and whether any
+         * slice landed behind frames already collected -- which is the one
+         * thing streaming cannot survive, because sent audio cannot be
+         * unsent. */
+        if (g_float_stats)
+            fprintf(stderr, "  [str] speak returned at %.1f ms, first slice "
+                            "%.1f ms, last %.1f ms, %u frame(s); %u slice(s) "
+                            "landed behind the frontier, furthest %u frame(s)"
+                            "\n",
+                    speak_ms, g_first_slice_ms, g_last_slice_ms, g_pcm_n,
+                    g_back_slices, g_back_max);
 
         nframes = g_pcm_n;
         magic = RSP_MAGIC;

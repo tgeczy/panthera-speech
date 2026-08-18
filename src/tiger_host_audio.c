@@ -145,6 +145,29 @@ static int      g_float_stats;
 static double   g_fstat_abs, g_fstat_d;
 static unsigned g_fstat_n;
 static unsigned g_last_hash, g_have_last, g_dup_slices;
+/* Groundwork for streaming the response instead of accumulating it.
+ *
+ * Slices are written at an absolute sample position, so nothing here says a
+ * slice cannot land *behind* the frames already collected -- and a response
+ * that has already been sent cannot be taken back.  Whether it actually
+ * happens, and by how far, is a measurement rather than an argument; these
+ * count it.  See [[measure-dont-reason]]. */
+static unsigned g_back_slices, g_back_max;
+/* When the first and last slice of this utterance were collected, in
+ * milliseconds since the SESpeakBuffer call.  Wall clock, deliberately:
+ * sh_mach_absolute_time is scaled by g_speed, and the question here is what a
+ * listener waits, not what the engine believes. */
+static double   g_utt_t0, g_first_slice_ms, g_last_slice_ms;
+
+static double wall_ms(void)
+{
+    static double freq;
+    LARGE_INTEGER c;
+    if (!freq) { LARGE_INTEGER l; QueryPerformanceFrequency(&l);
+                 freq = (double)l.QuadPart; }
+    QueryPerformanceCounter(&c);
+    return (double)c.QuadPart * 1000.0 / freq;
+}
 /*
  * The spin guard counts *silent* slices, not slices.
  *
@@ -287,6 +310,14 @@ static void collect_slice(unsigned char *slice)
         pos = g_epoch_base + ((stime > 0.0) ? (unsigned)(stime + 0.5) : 0);
         if (!(tsflags & kAudioTimeStampSampleTimeValid))
             pos = g_pcm_n;
+        if (pos < g_pcm_n) {
+            unsigned back = g_pcm_n - pos;
+            g_back_slices++;
+            if (back > g_back_max) g_back_max = back;
+        }
+        { double t = wall_ms() - g_utt_t0;
+          if (g_first_slice_ms < 0.0) g_first_slice_ms = t;
+          g_last_slice_ms = t; }
         if (pos > g_pcm_n && pos < PCM_CAP)
             while (g_pcm_n < pos) g_pcm[g_pcm_n++] = 0.0f;
         for (j = 0; j < n && pos + j < PCM_CAP; j++)
