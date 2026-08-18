@@ -68,6 +68,7 @@ import struct
 import sys
 import subprocess
 import threading
+import time
 import queue
 
 import nvwave
@@ -766,10 +767,18 @@ class SynthDriver(SynthDriver):
             del pending[:]
         mark = self._cancels
         fed = []
+        # What the user actually waits, measured where they wait it.  The two
+        # numbers that matter are different questions: how long until the first
+        # sound, and how long the whole utterance took to arrive.  Streaming
+        # separated them -- before it, they were the same number.
+        started = time.perf_counter()
+        firstAt = []
 
         def sink(chunk):
             if self._cancels != mark:
                 return False            # interrupted: stop feeding, keep reading
+            if not firstAt:
+                firstAt.append(time.perf_counter())
             fed.append(len(chunk))
             self._audioQueue.put(("audio", chunk))
             return True
@@ -781,6 +790,18 @@ class SynthDriver(SynthDriver):
             # losing it -- it could be the one telling the user what happened.
             pcm = self._render(text, wpm, voice, self._pitchOffset(adj),
                                sink=sink)
+        # Timing, at DEBUG, because "it lags on long text" is the report this
+        # driver keeps getting and it was never possible to check from a log.
+        # Both numbers, per utterance: a first sound that arrives late is a
+        # different fault from an utterance that takes a long time in total.
+        if fed and log.isEnabledFor(log.DEBUG):
+            done = time.perf_counter()
+            frames = sum(fed) / 2.0
+            log.debug("tigerspeech: %d chars -> %.2f s of audio in %d chunk(s);"
+                      " first sound after %.0f ms, all of it by %.0f ms"
+                      % (len(text), frames / OUT_RATE, len(fed),
+                         (firstAt[0] - started) * 1000.0,
+                         (done - started) * 1000.0))
         if pcm is not None and fed and self._cancels == mark:
             gap = self.PAUSE_MS.get(self._pauseMode, 0)
             if gap:

@@ -945,3 +945,29 @@ def test_an_engine_that_cannot_stream_still_speaks(driver, monkeypatch):
     # And it stays working afterwards, without asking again.
     _feeds, again = _speakAndWait(driver, ["and again"])
     assert again > 0, "it spoke once and then went silent"
+
+
+def test_debug_logging_reports_how_long_an_utterance_took(driver, monkeypatch):
+    """"It lags on long text" is the report this driver gets most.
+
+    Until now a debug log said what was spoken but never how long any of it
+    took, so the one question people actually ask could not be answered from
+    the log they sent.  Both numbers go in, because they are different
+    faults: a first sound that arrives late, and an utterance that takes a
+    long time in total.
+    """
+    from logHandler import log as fakelog
+    _warm(driver)
+    monkeypatch.setattr(type(fakelog), "isEnabledFor", lambda self, lvl: True)
+    del fakelog.messages[:]
+    _speakAndWait(driver, ["The quick brown fox jumps over the lazy dog. " * 3])
+
+    lines = [m for lvl, m in fakelog.messages
+             if lvl == "debug" and "first sound after" in m]
+    assert lines, "debug logging still says nothing about timing: %r" % (
+        [m for _l, m in fakelog.messages][-5:],)
+    line = lines[-1]
+    assert "chars" in line and "chunk(s)" in line and "s of audio" in line, line
+    first = float(line.split("first sound after ")[1].split(" ms")[0])
+    total = float(line.split("all of it by ")[1].split(" ms")[0])
+    assert 0.0 <= first <= total, "nonsensical timings: %s" % line
