@@ -3,6 +3,29 @@
  * Part of tiger_host.c, which includes it; see there for why this is one
  * translation unit. */
 
+/* The symbol containing `addr`, or NULL.  Both images carry a full symbol
+ * table -- these are unstripped bundles with C++ names in them -- so a fault
+ * can name the function it happened in rather than only the file.  Linear over
+ * a few thousand symbols, which is free at the one moment it runs. */
+static const char *nearest_symbol(const image *im, unsigned addr,
+                                  unsigned *symaddr)
+{
+    const char *best = NULL;
+    unsigned bestaddr = 0, k;
+    for (k = 0; k < im->nsyms; k++) {
+        const nlist *sy = &im->syms[k];
+        if (sy->n_type & N_STAB) continue;
+        if ((sy->n_type & N_TYPE) != 0x0e) continue;      /* N_SECT */
+        if (!sy->n_value || sy->n_value > addr) continue;
+        if (sy->n_value >= bestaddr) {
+            bestaddr = sy->n_value;
+            best = im->strs + sy->n_strx;
+        }
+    }
+    if (best && symaddr) *symaddr = bestaddr;
+    return best;
+}
+
 /* ---- fault reporting --------------------------------------------------- */
 /*
  * A bare access violation here is nearly useless: the address means nothing
@@ -164,21 +187,61 @@ static LONG CALLBACK on_fault(EXCEPTION_POINTERS *ep)
 
     /* A call through a null pointer lands at pc 0 with nothing to name, so the
      * only way to find the caller is to read the return address back off the
-     * stack.  Anything on it that lands inside an image is worth printing. */
+     * stack.  Anything on it that lands inside an image is worth printing.
+     *
+     * Two refinements, both bought by an hour of reading the wrong thing:
+     *
+     * Most values on the stack that point into an image are *not* return
+     * addresses.  This code is position independent, so every function begins
+     * by calling the next instruction and popping it into ebx -- and that PIC
+     * base gets spilled.  A return address has a `call` immediately before it;
+     * a spilled PIC base has a `pop`.  Checking the preceding bytes separates
+     * them, and mistaking one for the other sent me looking for a caller in a
+     * function that never called anything.
+     *
+     * And naming the offset is not enough when the image has a symbol table.
+     * The nearest preceding symbol turns "SpeechDictionary + 0xf59" into
+     * "SLCartDict::SymtabRead + 0x17", which is the difference between a
+     * morning of disassembly and a glance. */
     {
         const unsigned *sp = (const unsigned *)ep->ContextRecord->Esp;
         int k;
         printf("    stack:\n");
-        for (k = 0; k < 24; k++) {
+        for (k = 0; k < 64; k++) {
             unsigned v = sp[k];
             for (i = 0; i < g_nimages; i++) {
                 image *im = g_images[i];
-                if (v >= im->lo + im->slide && v < im->hi + im->slide) {
-                    const char *base = strrchr(im->path, '/');
+                const unsigned char *before;
+                const char *base, *sym;
+                unsigned symaddr;
+                int call = 0;
+                if (v < im->lo + im->slide || v >= im->hi + im->slide) continue;
+                /* A near call is 5 bytes (e8 rel32); an indirect call through
+                 * a register or memory is 2 to 7 and always has ff /2 or /3
+                 * somewhere in that window. */
+                before = (const unsigned char *)v;
+                if (!IsBadReadPtr(before - 7, 7)) {
+                    if (before[-5] == 0xe8) call = 1;
+                    else {
+                        int b;
+                        for (b = 2; b <= 7 && !call; b++)
+                            if (before[-b] == 0xff &&
+                                ((before[-b + 1] >> 3) & 7) >= 2 &&
+                                ((before[-b + 1] >> 3) & 7) <= 3)
+                                call = 1;
+                    }
+                }
+                if (!call) break;               /* a spilled PIC base, not a caller */
+                base = strrchr(im->path, '/');
+                sym = nearest_symbol(im, v - im->slide, &symaddr);
+                if (sym)
+                    printf("      [esp+%02x] %08x  %s + 0x%x  <- %s + 0x%x\n",
+                           k * 4, v, base ? base + 1 : im->path, v - im->slide,
+                           sym, (v - im->slide) - symaddr);
+                else
                     printf("      [esp+%02x] %08x  %s + 0x%x\n", k * 4, v,
                            base ? base + 1 : im->path, v - im->slide);
-                    break;
-                }
+                break;
             }
         }
     }

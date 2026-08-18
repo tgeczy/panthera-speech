@@ -19,6 +19,7 @@ static int __cdecl sh_open(const char *path, int flags, int mode)
     if (!path) { printf("  [open] NULL path\n"); return -1; }
     fd = _open(path, _O_RDONLY | _O_BINARY);
     if (fd < 0) printf("  [open] FAILED errno=%d: %s\n", errno, path);
+    else if (g_verbose) printf("  [open] fd %d <- %s\n", fd, path);
     return fd;
 }
 static int __cdecl sh_close(int fd) { return _close(fd); }
