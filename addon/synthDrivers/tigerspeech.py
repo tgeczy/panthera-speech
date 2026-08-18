@@ -51,6 +51,7 @@ add-on, each by breaking it and being told.  They apply here unchanged.
    drains that queue, and NVDA cancels between changing a setting and speaking
    the confirmation of it.
 """
+import codecs
 import os
 import re
 import struct
@@ -87,6 +88,44 @@ PITCH_SEMITONES = 12
 #: An embedded speech command, as Tiger's front end parses it.  Non-greedy, and
 #: it will not run past a newline, so an unclosed "[[" cannot eat a paragraph.
 COMMAND_RE = re.compile(r"\[\[[^\]]{0,64}\]\]")
+
+#: Characters MacRoman has no room for, mapped to something it can say.
+#: Everything typographic that matters -- em dash, en dash, curly quotes,
+#: ellipsis -- MacRoman already has, so it is not listed here.
+_FOLD = {
+    0x00A0: u" ", 0x2007: u" ", 0x2009: u" ", 0x202F: u" ",   # fixed spaces
+    0x2011: u"-", 0x2012: u"-", 0x2015: u"-", 0x2212: u"-",   # more dashes
+    0x2032: u"'", 0x2033: u'"', 0x02BC: u"'",                 # primes
+    0x2044: u"/",                                             # fraction slash
+}
+
+
+def _unmappable(err):
+    """Anything MacRoman cannot spell becomes a space.
+
+    The alternative, `errors="replace"`, produces "?", and the engine reads a
+    question mark as a question -- it lifts the intonation of the whole
+    sentence.  A gap is closer to the truth than a wrong inflection, and it
+    leaves a real "?" typed by the user meaning what it says.
+    """
+    return (u" " * (err.end - err.start), err.end)
+
+
+codecs.register_error("tigerspeech_fold", _unmappable)
+
+
+def _encode(text):
+    """-> the engine's bytes.
+
+    **The engine's text is a single-byte Mac encoding, not UTF-8.**  Sent as
+    UTF-8, one em dash arrived as three bytes and was read a character at a
+    time: "he paused - then left" came out as "he paused, he eyed and left",
+    and smart quotes as "ah".  MacRoman puts the em dash at 0xD1, the curly
+    quotes at 0xD2 to 0xD5 and the ellipsis at 0xC9, so encoding properly is
+    the whole fix -- there is no table of symbol names to maintain.
+    """
+    return text.translate(_FOLD).encode("mac_roman", "tigerspeech_fold")
+
 
 REQ_MAGIC = 0x54475233          # 'TGR3'
 RSP_MAGIC = 0x54475253          # 'TGRS'
@@ -367,7 +406,7 @@ class SynthDriver(SynthDriver):
         try:
             proc = self._host()
             v = voice.encode("utf-8")
-            t = text.encode("utf-8")
+            t = _encode(text)
             proc.stdin.write(struct.pack("<IiiIII", REQ_MAGIC, wpm, pitch,
                                          0, len(v), len(t)) + v + t)
             proc.stdin.flush()

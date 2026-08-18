@@ -483,3 +483,43 @@ def test_every_wx_name_we_use_actually_exists_in_wxpython():
         "these wx names are not in the allowed set. Check they exist in "
         "wxPython -- YES_NO_CANCEL does not -- then add them here: %r"
         % unknown)
+
+
+def test_typographic_characters_reach_the_engine_as_macroman():
+    """The engine's text is a single-byte Mac encoding, not UTF-8.
+
+    Sent as UTF-8 an em dash arrived as three bytes and was read a character
+    at a time, so "he paused - then left" came out as "he paused, he eyed and
+    left" and smart quotes as "ah".  A tester found it in a story; nothing in
+    the driver noticed, because every byte was perfectly valid.
+    """
+    import tigerspeech
+    enc = tigerspeech._encode
+    assert enc(u"—") == b"\xd1"            # em dash
+    assert enc(u"–") == b"\xd0"            # en dash
+    assert enc(u"“") == b"\xd2"            # left double quote
+    assert enc(u"”") == b"\xd3"            # right double quote
+    assert enc(u"…") == b"\xc9"            # ellipsis
+    assert enc(u"café") == b"caf\x8e"      # accents survive
+
+    # A real question mark must stay one: the engine lifts the intonation of
+    # the whole sentence for it, so it is the wrong thing to substitute with.
+    assert enc(u"Is it?") == b"Is it?"
+    assert b"?" not in enc(u"你好")     # unmappable -> space, not "?"
+    assert enc(u"你好") == b"  "
+
+
+def test_the_driver_actually_uses_that_encoder():
+    """Guards the half of the bug that a unit test cannot see.
+
+    An encoder that is never called is exactly as broken as no encoder, and
+    this file has shipped a test before that passed without looking at
+    anything.  So read the source and prove the call site changed.
+    """
+    import io
+    import os
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "addon", "synthDrivers", "tigerspeech.py")
+    src = io.open(path, encoding="utf-8").read()
+    assert "t = _encode(text)" in src, "the request no longer encodes the text"
+    assert 't = text.encode("utf-8")' not in src, "still sending UTF-8"
