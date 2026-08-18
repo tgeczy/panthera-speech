@@ -375,6 +375,10 @@ class SynthDriver(SynthDriver):
         self._rateBoost = False
         self._inflection = 50
         self._volume = 100
+        #: Whether a non-default volume or inflection has been sent to the
+        #: engine and is still in force on the channel.
+        self._volumeSent = False
+        self._inflectionSent = False
         self._voiceId = self._voices[0][0]
         for bundle, _display, engine in self._voices:      # prefer Fred
             if bundle == "Fred":
@@ -647,11 +651,32 @@ class SynthDriver(SynthDriver):
         # change, and the engine does the work.  Nothing is sent at the
         # halfway point so the default utterance is byte-for-byte what it
         # has always been.
+        # Coming back to the default has to be *said*.
+        #
+        # These commands set state on the speech channel and it outlives the
+        # utterance that set it.  Sending nothing at the default therefore
+        # does not mean "the default", it means "whatever was set last" -- so
+        # dropping the volume to zero and putting it back to 100 left the
+        # synthesizer silent for good, and only 99 brought it back.  A user
+        # found that; it is the worst failure this driver has.
+        #
+        # So the command is sent when the setting is not the default, and once
+        # more when it returns to the default, and then not again.  An
+        # utterance from a driver whose settings were never touched still
+        # carries no embedded commands at all.
         if self._inflection != 50:
             pmod = int(self._inflection * INFLECTION_MAX_PMOD / 100)
             text = "[[pmod %d]]%s" % (pmod, text)
+            self._inflectionSent = True
+        elif self._inflectionSent:
+            text = "[[pmod 100]]%s" % text
+            self._inflectionSent = False
         if self._volume < 100:
             text = "[[volm %.3f]]%s" % (self._volume / 100.0, text)
+            self._volumeSent = True
+        elif self._volumeSent:
+            text = "[[volm 1.000]]%s" % text
+            self._volumeSent = False
         try:
             proc = self._host()
             v = voice.encode("utf-8")
