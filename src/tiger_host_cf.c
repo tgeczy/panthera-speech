@@ -191,6 +191,32 @@ static void * __cdecl sh_CFBundleGetBundleWithIdentifier(const void *id)
            g_dict_bundle ? g_dict_bundle->buf : "(none)");
     return g_dict_bundle;
 }
+/* Alex asks for these two and Vicki never does -- they are the only shims that
+ * separate a voice that renders perfectly from one that does not, which is why
+ * they are written out rather than thunked.
+ *
+ * GetParam looks a tuning parameter up in an override dictionary before
+ * falling back to CFPreferences. Handing back NULL for the *key itself* is not
+ * the same as saying "that key is absent": the engine never gets to ask the
+ * question, and what it does with the answer it never received is its own
+ * business. Building a real string costs four lines. */
+static void * __cdecl sh_CFStringCreateWithCStringNoCopy(void *alloc,
+                                                         const char *cstr,
+                                                         unsigned enc,
+                                                         void *dealloc)
+{
+    (void)alloc; (void)enc; (void)dealloc;
+    return cstr ? (void *)cf_new(cstr) : NULL;
+}
+
+/* An empty override dictionary is a truthful answer -- there is no override --
+ * and it is what lets GetParam fall through to its own default. */
+static void * __cdecl sh_CFDictionaryGetValue(void *dict, void *key)
+{
+    (void)dict; (void)key;
+    return NULL;
+}
+
 static void * __cdecl sh_CFURLCopyFileSystemPath(void *url, int style)
 { (void)style; return url ? cf_new(cf_cstr(url)) : NULL; }
 /* SpeechDictionary reaches for CFURLCopyPath rather than the filesystem-path
