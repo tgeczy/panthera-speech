@@ -214,8 +214,23 @@ static double g_pace = 100.0;
  * yields the thread instead of sleeping. */
 static double g_pace_floor = 0.0;
 
-typedef struct { slice_done_t proc; void *udata; void *slice; unsigned frames; }
+typedef struct { slice_done_t proc; void *udata; void *slice; unsigned frames;
+                 unsigned utt; }
         pending;
+
+/* Which utterance the host is collecting for.  Bumped by serve() per request.
+ *
+ * Stopping the engine is not instant: SEStopSpeechAt returns, the response
+ * ends, and the engine's own workers are still finishing slices for the
+ * utterance nobody wants.  Those arrive while the *next* request is filling
+ * g_pcm, and land in it -- heard as a fragment of the post above bleeding
+ * into the head of the post below, which is exactly what reading quickly
+ * through a timeline produces.
+ *
+ * The driver has the same guard on its audio queue, but it cannot help here:
+ * by the time a chunk leaves this process the stale audio is already mixed
+ * into it. */
+static unsigned g_utt;
 
 static pending  g_pending[PACE_QCAP];
 static int      g_p_head, g_p_tail, g_p_count;
@@ -229,6 +244,10 @@ static volatile LONG    g_p_busy;
  * completion never fires, so the engine waits on a slice that will never
  * finish.  Count it and say it out loud rather than absorbing it. */
 static unsigned         g_p_drops;
+/* Slices that arrived for an utterance already answered.  Counted rather than
+ * ignored: it is the measure of how far the engine runs on after being told to
+ * stop, and it used to be audible. */
+static unsigned         g_stale_slices;
 
 static void queue_completion(slice_done_t p, void *u, void *s, unsigned frames)
 {
@@ -238,6 +257,7 @@ static void queue_completion(slice_done_t p, void *u, void *s, unsigned frames)
         g_pending[g_p_tail].udata = u;
         g_pending[g_p_tail].slice = s;
         g_pending[g_p_tail].frames = frames;
+        g_pending[g_p_tail].utt = g_utt;
         g_p_tail = (g_p_tail + 1) % PACE_QCAP;
         g_p_count++;
     } else {
@@ -358,7 +378,14 @@ static DWORD WINAPI pacer_thread(LPVOID arg)
             if (ms >= 1.0) Sleep((DWORD)ms);
             else SwitchToThread();
         }
-        collect_slice((unsigned char *)job.slice);
+        /* Audio for an utterance that has already been answered must not be
+         * written into the buffer the next one is filling.  Complete the slice
+         * regardless -- that is the engine's clock, and refusing to tick it is
+         * how the channel wedges -- but do not collect what it carries. */
+        if (job.utt == g_utt)
+            collect_slice((unsigned char *)job.slice);
+        else
+            g_stale_slices++;
         *(unsigned *)((unsigned char *)job.slice + SLICE_FLAGS_OFF)
             |= SLICE_FLAG_COMPLETE;
         /* Into engine code, so the stack must be 16-byte aligned at the call --

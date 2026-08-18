@@ -23,10 +23,21 @@ def _settle(player, want_bytes, timeout=5.0):
 
 def _warm(driver):
     """One utterance first, so process startup is not charged to a latency
-    measurement."""
-    before = driver._player.bytes
+    measurement -- and waited out to the end, not merely to its first bytes.
+
+    The feeder hands the device audio at roughly real time now, rather than
+    dumping the whole utterance at once, so a warm-up that is only waited for
+    until it starts is still being fed while the next measurement runs, and
+    its bytes land in that measurement instead.
+    """
+    import synthDriverHandler
+    before = synthDriverHandler.synthDoneSpeaking.count
     driver.speak(["warm"])
-    _settle(driver._player, before + 1, timeout=20.0)
+    end = time.perf_counter() + 20.0
+    while time.perf_counter() < end:
+        if synthDriverHandler.synthDoneSpeaking.count > before:
+            break
+        time.sleep(0.005)
     time.sleep(0.05)
 
 

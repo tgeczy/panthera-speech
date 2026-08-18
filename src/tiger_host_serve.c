@@ -254,6 +254,10 @@ static int serve(image *mt, void *chan, const char *voicesdir)
         g_pcm_n = 0; g_slices = 0; g_stopped = 0; g_empty_run = 0;
         g_dup_slices = 0; g_have_last = 0; g_p_drops = 0;
         g_epoch_base = 0; g_last_stime = 0.0;
+        /* A new utterance: anything still in flight for the last one is stale
+         * from here on, and the pacer will complete those slices without
+         * collecting them. */
+        g_utt++; g_stale_slices = 0;
         g_sc.sessions = 0; g_sc.resets = 0; g_sc.lost = 0; g_pkts_fed = 0;
         g_sql_rows = 0;
         g_back_slices = 0; g_back_max = 0;
@@ -327,6 +331,9 @@ static int serve(image *mt, void *chan, const char *voicesdir)
             if (cancelled)
                 printf("  [au] utterance abandoned at %u frames -- the "
                        "listener interrupted\n", g_pcm_n);
+            if (g_stale_slices)
+                printf("  [au] %u slice(s) arrived for an utterance already "
+                       "answered, and were not collected\n", g_stale_slices);
         }
 
         /* Anything the engine did that a user would notice goes out at a

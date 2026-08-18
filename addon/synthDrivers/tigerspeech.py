@@ -83,6 +83,12 @@ from synthDriverHandler import (SynthDriver, VoiceInfo, synthDoneSpeaking,
 #: not assumed: 22050 Hz, mono, and the host converts its 32-bit float to 16.
 OUT_RATE = 22050
 
+#: How far ahead of the speakers the feeder may run, in seconds.
+#:
+#: Small enough that an interrupt cannot leave much behind, large
+#: enough that playback never catches up with the renderer.
+FEED_LEAD = 0.35
+
 #: NVDA's 0-100 rate onto words per minute.  180 is Tiger's own default and
 #: lands mid-slider, so the control behaves the way people expect.
 RATE_MIN, RATE_MAX = 80, 400
@@ -414,6 +420,9 @@ class SynthDriver(SynthDriver):
         #: timing; the rest block because the buffer is full, which is the
         #: point of feeding from its own thread.
         self._playerIdle = True
+        #: Wall-clock time the audio handed over so far will finish
+        #: playing.  The feeder never runs more than FEED_LEAD past it.
+        self._fedUntil = 0.0
         #: How `cancel()` reaches the engine.
         #:
         #: Stopping the sound is instant, but the host went on synthesising the
@@ -940,6 +949,31 @@ class SynthDriver(SynthDriver):
                     # render does -- so measure it rather than assume it is
                     # small.  Later chunks block on purpose, because the buffer
                     # is full, and timing those would say nothing.
+                    # Hand the device roughly real time, not everything at
+                    # once.
+                    #
+                    # Streaming made this urgent: 5.34 s of audio reached the
+                    # player inside 363 ms, so an interrupt found seconds of
+                    # it already in the sound device with a chunk possibly
+                    # mid-feed, and that chunk lands at the head of the next
+                    # stream -- heard as a fragment of the post above bleeding
+                    # into the start of the post below.  Guarding this queue
+                    # cannot catch it, because by then the audio has left us.
+                    #
+                    # Staying a fraction of a second ahead bounds what an
+                    # interrupt can leave behind, and cannot underrun: the
+                    # engine renders many times faster than real time.
+                    now = time.perf_counter()
+                    if self._fedUntil < now:
+                        self._fedUntil = now
+                    while (self._fedUntil - now > FEED_LEAD
+                           and not self._stopped
+                           and tag == self._cancels):
+                        time.sleep(0.01)
+                        now = time.perf_counter()
+                    if tag is not None and tag != self._cancels:
+                        continue        # interrupted while we waited
+                    self._fedUntil = max(self._fedUntil, now) +                         len(value) / 2.0 / OUT_RATE
                     if self._playerIdle:
                         self._playerIdle = False
                         t0 = time.perf_counter()
@@ -1025,6 +1059,8 @@ class SynthDriver(SynthDriver):
         # start it again -- which is exactly the wait after an interruption
         # that a user feels most sharply.
         self._playerIdle = True
+        # Nothing is queued at the device any more, so the feeder is not ahead.
+        self._fedUntil = 0.0
 
     def pause(self, switch):
         try:
