@@ -919,3 +919,29 @@ def test_cancel_during_a_streamed_utterance_leaves_the_engine_usable(driver):
     time.sleep(0.5)
     _feeds, spoken = _speakAndWait(driver, ["still here"])
     assert spoken > 0, "the driver went silent after cancelling a stream"
+
+
+def test_an_engine_that_cannot_stream_still_speaks(driver, monkeypatch):
+    """New driver, old engine: the one combination that could go silent.
+
+    A host that does not know 'TGR4' exits rather than answer it, which the
+    driver sees as a closed pipe -- and its answer to that is to respawn.  Ask
+    again, refused again, for every utterance: nothing is ever heard, which is
+    the worst failure this driver has and precisely what an add-on update
+    whose executable failed to copy would produce.
+
+    Simulated by asking for a magic no host will ever know.  The driver must
+    notice, stop asking, say so where somebody will see it, and speak.
+    """
+    import tigerspeech
+    _warm(driver)
+    monkeypatch.setattr(tigerspeech, "REQ_MAGIC_STREAM", 0x54475239)  # 'TGR9'
+    assert driver._streaming, "streaming should start on"
+
+    _feeds, spoken = _speakAndWait(driver, ["can you still hear me"])
+    assert spoken > 0, "a host that cannot stream left the driver silent"
+    assert not driver._streaming, "it kept asking for a request it was refused"
+
+    # And it stays working afterwards, without asking again.
+    _feeds, again = _speakAndWait(driver, ["and again"])
+    assert again > 0, "it spoke once and then went silent"
