@@ -188,12 +188,48 @@ typedef struct {
     HANDLE      thread;
 } mptask;
 
+/* Darwin's i386 ABI requires ESP to be 16-byte aligned at every call
+ * instruction.  Windows requires four.  Apple's compiler took that guarantee
+ * and used it: `MTBEWorker::Timestamp` stores a pair of doubles into its own
+ * frame with `movapd`, and `movapd` faults outright on a misaligned address.
+ *
+ * Inside the engine this can never break, because every frame it builds keeps
+ * the alignment it was given.  It breaks where we hand control over -- and a
+ * thread entry point is the worst place for it, since the alignment a Windows
+ * thread starts with is neither ours to choose nor the same every run.
+ * Leopard's engine starts two worker tasks and dies at the first `movapd` one
+ * of them reaches.
+ *
+ * Tiger's engine never showed this.  That is not evidence that it was safe --
+ * only that one compiler declined to vectorise one function.
+ */
+static __declspec(naked) int call_aligned1(mp_taskproc fn, void *arg)
+{
+    __asm {
+        push ebp
+        mov  ebp, esp
+        push ebx                     /* callee-saved in both ABIs */
+        mov  ebx, esp                /* remember the real stack */
+        mov  eax, [ebp + 8]          /* fn  */
+        mov  ecx, [ebp + 12]         /* arg */
+        and  esp, -16                /* 16-byte aligned from here */
+        sub  esp, 16                 /* room for one argument, still aligned */
+        mov  [esp], ecx
+        call eax                     /* ESP is 0 mod 16 at the call */
+        mov  esp, ebx                /* give back whatever alignment cost */
+        pop  ebx
+        pop  ebp
+        ret
+    }
+}
+
 /* CreateThread wants __stdcall; the engine's entry point is Mach-O i386 and so
- * is __cdecl.  This trampoline is the whole reason it exists. */
+ * is __cdecl.  This trampoline is the whole reason it exists -- and the place
+ * the alignment above has to be established. */
 static DWORD WINAPI mp_thunk(LPVOID arg)
 {
     mptask *t = (mptask *)arg;
-    int status = t->entry(t->param);
+    int status = call_aligned1(t->entry, t->param);
     if (t->notify)
         sh_mp_notify_queue(t->notify, t->t1, t->t2, (void *)(intptr_t)status);
     return (DWORD)status;
