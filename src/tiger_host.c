@@ -161,6 +161,7 @@ static unsigned bswap(unsigned v)
 #include "tiger_host_aac.c"
 #include "tiger_host_cxx.c"
 #include "tiger_host_accel.c"
+#include "tiger_host_sqlite.c"
 #include "tiger_host_shimtab.c"
 #include "tiger_host_fault.c"
 #include "tiger_host_macho.c"

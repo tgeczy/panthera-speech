@@ -165,6 +165,7 @@ static int serve(image *mt, void *chan, const char *voicesdir)
         g_dup_slices = 0; g_have_last = 0; g_p_drops = 0;
         g_epoch_base = 0; g_last_stime = 0.0;
         g_sc.sessions = 0; g_sc.resets = 0; g_sc.lost = 0; g_pkts_fed = 0;
+        g_sql_rows = 0;
         if (!err) err = call_aligned4((void *)speak, chan, text,
                                       (void *)textlen, (void *)0);
         free(text);
@@ -232,6 +233,9 @@ static int serve(image *mt, void *chan, const char *voicesdir)
             fprintf(stderr, "  [aac] %u session(s), %u reset(s), %u packet(s) "
                             "fed, %u lost\n",
                     g_sc.sessions, g_sc.resets, g_pkts_fed, g_sc.lost);
+        if (g_float_stats)
+            fprintf(stderr, "  [sql] %u database(s) open, %u phrasing row(s) "
+                            "matched\n", g_sql_opens, g_sql_rows);
 
         nframes = g_pcm_n;
         magic = RSP_MAGIC;

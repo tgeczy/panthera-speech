@@ -75,6 +75,16 @@ static const shim g_shims[] = {
     { "_AudioUnitAddPropertyListener",
                                   (void *)sh_AudioUnitAddPropertyListener },
     { "_AudioUnitReset",          (void *)sh_AudioUnitReset          },
+    /* Leopard's SpeechDictionary keeps its text normalisation in an SQLite
+     * database; Tiger's imports no SQLite at all. */
+    { "_sqlite3_open",            (void *)sh_sqlite3_open            },
+    { "_sqlite3_close",           (void *)sh_sqlite3_close           },
+    { "_sqlite3_prepare",         (void *)sh_sqlite3_prepare         },
+    { "_sqlite3_bind_text",       (void *)sh_sqlite3_bind_text       },
+    { "_sqlite3_step",            (void *)sh_sqlite3_step            },
+    { "_sqlite3_column_int",      (void *)sh_sqlite3_column_int      },
+    { "_sqlite3_reset",           (void *)sh_sqlite3_reset           },
+    { "_sqlite3_finalize",        (void *)sh_sqlite3_finalize        },
     { "_SoundConverterOpen",      (void *)sh_SoundConverterOpen      },
     { "_SoundConverterSetInfo",   (void *)sh_SoundConverterSetInfo   },
     { "_SoundConverterClose",     (void *)sh_SoundConverterClose     },
