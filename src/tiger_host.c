@@ -202,8 +202,19 @@ int main(int argc, char **argv)
         argv++; argc--;                  /* shift so the paths line up */
         /* Quiet from the very first line, not from the point serve() takes
          * over: the driver puts everything this writes into NVDA's log, and
-         * the loader's commentary is several hundred lines of it. */
-        g_verbose = 0;
+         * the loader's commentary is several hundred lines of it.
+         *
+         * Unless the user has actually asked for debug logging, in which case
+         * they should get ours too.  A synthesizer that stays silent when
+         * someone has deliberately turned the logging up is no easier to
+         * diagnose than one with no logging at all -- and the driver only
+         * passes this when NVDA's own level is DEBUG, so nobody pays for it by
+         * accident. */
+        if (getenv("TIGER_HOST_VERBOSE"))
+            fprintf(stderr, "tiger_host: verbose logging on, at NVDA's "
+                            "request\n");
+        else
+            g_verbose = 0;
     }
     voicedir = (argc > 3) ? argv[3] : NULL;
     if (argc > 4 && !servedir) creator = (unsigned)strtoul(argv[4], NULL, 16);
@@ -410,6 +421,13 @@ int main(int argc, char **argv)
             if (g_sc.magic || g_sc.sessions || g_sc.resets)
                 printf("  [ac] %u decoder stream(s), %u reset(s)\n",
                        g_sc.sessions, g_sc.resets);
+            if (g_pkts_fed)
+                printf("  [ac] %u packets fed = %u samples of compressed "
+                       "audio; %u samples handed to the engine (%+d)\n",
+                       g_pkts_fed, g_pkts_fed * 1024, g_frames_out,
+                       (int)g_frames_out - (int)(g_pkts_fed * 1024));
+            if (g_dup_slices)
+                printf("  [au] %u repeated slice(s) refused\n", g_dup_slices);
             if (g_fstat_n)
                 printf("  [flt] engine float output roughness %.3f over %u "
                        "samples\n",

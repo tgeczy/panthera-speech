@@ -95,6 +95,12 @@ static sndconv g_sc;
 static double g_pcmstat_abs, g_pcmstat_d;
 static unsigned g_pcmstat_n;
 
+/* Packets fed to the decoder, and samples handed to the engine.  One AAC
+ * packet is 1024 samples, so if the second exceeds the first times 1024 we
+ * are giving the engine audio twice -- which is what an inserted phantom
+ * fragment inside a word would be. */
+static unsigned g_pkts_fed, g_frames_out;
+
 /* ---- AAC, through the decoder Windows already ships -------------------- */
 /*
  * Bound at run time rather than linked: a Windows N install without the Media
@@ -1012,6 +1018,8 @@ static int __cdecl sh_AudioConverterFillComplexBuffer(void *conv,
                     if (!aac_feed(base + (unsigned)descs[i].mStartOffset,
                                   descs[i].mDataByteSize))
                         g_sc.lost++;
+                    else
+                        g_pkts_fed++;
                 }
                 /* Collect what is ready without ending the stream.
                  *
@@ -1078,6 +1086,7 @@ static int __cdecl sh_AudioConverterFillComplexBuffer(void *conv,
             give = outdata->mBuffers[0].mDataByteSize / 2;
         memcpy(outdata->mBuffers[0].mData, g_sc.pcm + g_sc.pcm_pos, give * 2);
         g_sc.pcm_pos += give;
+        g_frames_out += give;
     }
     outdata->mBuffers[0].mDataByteSize = give * 2;
     *iopackets = give;

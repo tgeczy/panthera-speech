@@ -132,6 +132,7 @@ static unsigned g_empty_run;          /* consecutive slices carrying nothing */
 static int      g_float_stats;
 static double   g_fstat_abs, g_fstat_d;
 static unsigned g_fstat_n;
+static unsigned g_last_hash, g_have_last, g_dup_slices;
 /*
  * The spin guard counts *silent* slices, not slices.
  *
@@ -294,6 +295,40 @@ static void take_slice(unsigned char *slice)
                     g_fstat_abs += a < 0 ? -a : a;
                     g_fstat_d   += (b - a) < 0 ? (a - b) : (b - a);
                     g_fstat_n++;
+                }
+            }
+            /* Is any slice delivered twice?  "It inserts phantom fragments"
+             * is exactly what a repeated slice sounds like, so hash each one
+             * and count exact repeats rather than reasoning about it. */
+            /* Refuse a slice whose audio is bit-identical to the one
+             * before it.
+             *
+             * The engine works a ring of slice buffers and refills them from
+             * its worker.  When the worker has not produced anything new it
+             * schedules the previous buffer again, unchanged, and we were
+             * recording every one: "leopardspeech-0.1.0.nvda-addon  7 of 11"
+             * came to 679 slices of which 62 were exact repeats, which is
+             * heard as a fragment stuttering over and over in the middle of a
+             * word.  The existing guard counts *empty* slices and never sees
+             * this, because these are full of perfectly good audio -- just the
+             * same audio twice.
+             *
+             * Two hundred-odd floats of synthesised speech matching to the bit
+             * by coincidence is not a thing that happens; identical means
+             * resent.  The slice is still completed either way, because
+             * completion is the engine's clock and skipping that is what once
+             * left the channel wedged mid-utterance. */
+            {
+                unsigned h = 2166136261u, k;
+                const unsigned char *b8 = (const unsigned char *)data;
+                for (k = 0; k < n * 4; k++)
+                    h = (h ^ b8[k]) * 16777619u;
+                if (g_have_last && h == g_last_hash && n) {
+                    g_dup_slices++;
+                    n = 0;                      /* record nothing, still tick */
+                } else {
+                    g_last_hash = h;
+                    g_have_last = 1;
                 }
             }
             for (j = 0; j < n && g_pcm_n < PCM_CAP; j++)

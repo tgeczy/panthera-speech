@@ -280,10 +280,25 @@ class SynthDriver(SynthDriver):
                 return self._proc
             si = subprocess.STARTUPINFO()
             si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            # Follow NVDA's own log level. Someone who has turned debug
+            # logging on has asked for detail, and a synthesizer that stays
+            # quiet then is no easier to diagnose than one with no logging at
+            # all -- the host's commentary is the only view of what the engine
+            # is doing. At any other level it says nothing, because it is
+            # several hundred lines per utterance.
+            env = dict(os.environ)
+            try:
+                import logging
+                if log.isEnabledFor(logging.DEBUG):
+                    env["TIGER_HOST_VERBOSE"] = "1"
+                else:
+                    env.pop("TIGER_HOST_VERBOSE", None)
+            except Exception:
+                env.pop("TIGER_HOST_VERBOSE", None)
             self._proc = subprocess.Popen(
                 [HOST_EXE, "--serve", self._mt, self._sd, self._voicesdir],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, startupinfo=si)
+                stderr=subprocess.PIPE, startupinfo=si, env=env)
             self._watchStderr(self._proc)
             return self._proc
 

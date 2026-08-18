@@ -162,6 +162,7 @@ static int serve(image *mt, void *chan, const char *voicesdir)
         (void)flags;
 
         g_pcm_n = 0; g_slices = 0; g_stopped = 0; g_empty_run = 0;
+        g_dup_slices = 0; g_have_last = 0;
         if (!err) err = call_aligned4((void *)speak, chan, text,
                                       (void *)textlen, (void *)0);
         free(text);
@@ -176,6 +177,23 @@ static int serve(image *mt, void *chan, const char *voicesdir)
                 else quiet++;
             }
         }
+
+        /* Anything the engine did that a user would notice goes out at a
+         * level they will actually see.
+         *
+         * The driver files a line beginning "tiger_host:" at WARNING and
+         * everything else at DEBUG, and DEBUG is off by default and awkward to
+         * turn on -- which is precisely how a broken start-up dialog sat in a
+         * log for months.  A diagnostic nobody can read has not been reported.
+         * So say it once per affected utterance, plainly, and stay silent when
+         * there is nothing wrong. */
+        if (g_dup_slices)
+            fprintf(stderr, "tiger_host: %u repeated slice(s) refused in this "
+                            "utterance -- the engine re-sent audio it had "
+                            "already given us\n", g_dup_slices);
+        if (g_empty_run >= SLICE_EMPTY_LIMIT)
+            fprintf(stderr, "tiger_host: the engine stopped producing audio "
+                            "after %u frames\n", g_pcm_n);
 
         nframes = g_pcm_n;
         magic = RSP_MAGIC;

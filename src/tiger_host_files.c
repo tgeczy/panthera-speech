@@ -336,6 +336,6 @@ static int __cdecl sh_sprintf(char *buf, const char *fmt, ...)
 static int __cdecl sh_vsprintf(char *buf, const char *fmt, va_list ap)
 {
     int n = vsprintf(buf, fmt, ap);
-    printf("  [engine vsprintf] %s\n", buf);
+    if (g_verbose) printf("  [engine vsprintf] %s\n", buf);
     return n;
 }

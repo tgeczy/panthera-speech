@@ -141,7 +141,7 @@ static int __cdecl sh_pread(int fd, void *buf, unsigned n,
 
     g_preads++;
     if (got > 0) g_pread_bytes += got;
-    if (g_preads <= 6)
+    if (g_verbose && g_preads <= 6)
         printf("  [pread] fd %d %u bytes at %lld -> %u\n", fd, n, want,
                (unsigned)got);
     return (int)got;
