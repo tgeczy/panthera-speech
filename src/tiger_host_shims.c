@@ -1,0 +1,430 @@
+/* tiger_host_shims.c -- libc, pthreads, Multiprocessing, the rune locale and the BLAS.
+ *
+ * Part of tiger_host.c, which includes it; see there for why this is one
+ * translation unit. */
+
+/* ---- shims ------------------------------------------------------------- */
+/*
+ * Anything not in this table gets a thunk that records the call and returns 0.
+ * Aborting on the first miss would tell us one name per run; recording and
+ * carrying on tells us the whole runtime set in one go, and the engine's own
+ * error handling usually turns a NULL into a clean OSErr rather than a crash.
+ * Which of the ~96 Apple imports actually matter is a question for measurement,
+ * not for reading the import table.
+ */
+#define MAX_MISSING 512
+static const char *g_missing[MAX_MISSING];
+static int g_missing_hits[MAX_MISSING];
+static int g_nmissing;
+
+static int __cdecl shim_missing(int idx)
+{
+    if (idx >= 0 && idx < g_nmissing) {
+        if (g_missing_hits[idx]++ == 0 && g_verbose)
+            printf("  [shim] first call: %s\n", g_missing[idx]);
+    }
+    return 0;
+}
+
+/* bcopy and bzero take their arguments in an order memcpy/memset do not. */
+static void  __cdecl sh_bcopy(const void *s, void *d, size_t n) { memmove(d, s, n); }
+static void  __cdecl sh_bzero(void *d, size_t n)                { memset(d, 0, n); }
+static int   __cdecl sh_abort_(void) { die("engine called abort()"); return 0; }
+
+/* pthreads, on top of critical sections.
+ *
+ * Darwin's pthread_mutex_t is 44 bytes of opaque storage, which is room enough
+ * to keep a CRITICAL_SECTION inside it rather than off to the side.  The magic
+ * word means a mutex that was never passed to pthread_mutex_init -- a static
+ * PTHREAD_MUTEX_INITIALIZER -- still works, because lock initialises it on
+ * first use. */
+#define MTX_MAGIC 0x5449474d            /* 'TIGM' */
+typedef struct { unsigned magic; CRITICAL_SECTION cs; } mtx;
+
+static void mtx_ready(mtx *m)
+{
+    if (m->magic != MTX_MAGIC) {
+        InitializeCriticalSection(&m->cs);
+        m->magic = MTX_MAGIC;
+    }
+}
+static int __cdecl sh_mutex_init(void *m, void *attr)
+{ (void)attr; ((mtx *)m)->magic = 0; mtx_ready((mtx *)m); return 0; }
+static int __cdecl sh_mutex_lock(void *m)
+{ mtx_ready((mtx *)m); EnterCriticalSection(&((mtx *)m)->cs); return 0; }
+static int __cdecl sh_mutex_unlock(void *m)
+{ mtx_ready((mtx *)m); LeaveCriticalSection(&((mtx *)m)->cs); return 0; }
+static int __cdecl sh_mutexattr_init(void *a) { (void)a; return 0; }
+/* pthread_once_t is NOT zero-initialised on Darwin: PTHREAD_ONCE_INIT puts the
+ * signature 0x30B1BCBA in the first word.  Treating that word as a boolean
+ * makes every once-routine look as though it had already run -- which silently
+ * skipped the one that allocates MacinTalk's global scheduler objects, and
+ * showed up much later as a null dereference in the speak path. */
+#define ONCE_SIG_INIT 0x30b1bcbau
+#define ONCE_SIG_DONE 0x54494731u       /* 'TIG1' */
+static int __cdecl sh_once(unsigned *ctl, void (__cdecl *fn)(void))
+{
+    if (!ctl) return 0;
+    if (*ctl != ONCE_SIG_DONE) {
+        *ctl = ONCE_SIG_DONE;           /* before the call, against recursion */
+        if (fn) fn();
+    }
+    return 0;
+}
+
+/* Multiprocessing Services critical regions, which are just mutexes with a
+ * timeout argument the engine always passes as kDurationForever. */
+static int __cdecl sh_mp_create_region(void **id)
+{
+    CRITICAL_SECTION *cs = (CRITICAL_SECTION *)calloc(1, sizeof(*cs));
+    if (!cs) return -108;               /* memFullErr */
+    InitializeCriticalSection(cs);
+    if (id) *id = cs;
+    return 0;
+}
+static int __cdecl sh_mp_enter_region(void *id, int timeout)
+{ (void)timeout; if (id) EnterCriticalSection((CRITICAL_SECTION *)id); return 0; }
+static int __cdecl sh_mp_exit_region(void *id)
+{ if (id) LeaveCriticalSection((CRITICAL_SECTION *)id); return 0; }
+
+/* Multiprocessing Services tasks and queues.
+ *
+ * The engine's back end is not a function you call and wait on -- it starts
+ * worker tasks and talks to them through message queues (MTBEWorkerStartMPTask
+ * is one of its own exports).  Stubbing these out returns success while
+ * handing back a null queue, which is worse than failing: the engine believes
+ * it has a worker and dereferences the queue later.
+ *
+ * A queue is a bounded FIFO of three-word messages guarded by a critical
+ * section, with a semaphore for the waiter.  MP messages are always exactly
+ * three pointers wide.
+ */
+#define MPQ_CAP 256
+typedef struct {
+    CRITICAL_SECTION cs;
+    HANDLE           sem;
+    void            *msg[MPQ_CAP][3];
+    int              head, tail, count;
+} mpqueue;
+
+static int __cdecl sh_mp_create_queue(mpqueue **out)
+{
+    mpqueue *q = (mpqueue *)calloc(1, sizeof(*q));
+    if (!q) return -108;
+    InitializeCriticalSection(&q->cs);
+    q->sem = CreateSemaphoreA(NULL, 0, MPQ_CAP, NULL);
+    if (!q->sem) { free(q); return -108; }
+    if (out) *out = q;
+    if (g_verbose) printf("  [mp] CreateQueue -> %p\n", (void *)q);
+    return 0;
+}
+
+static int __cdecl sh_mp_notify_queue(mpqueue *q, void *p1, void *p2, void *p3)
+{
+    if (!q) return -50;                         /* paramErr */
+    EnterCriticalSection(&q->cs);
+    if (q->count >= MPQ_CAP) { LeaveCriticalSection(&q->cs); return -1; }
+    q->msg[q->tail][0] = p1;
+    q->msg[q->tail][1] = p2;
+    q->msg[q->tail][2] = p3;
+    q->tail = (q->tail + 1) % MPQ_CAP;
+    q->count++;
+    LeaveCriticalSection(&q->cs);
+    ReleaseSemaphore(q->sem, 1, NULL);
+    return 0;
+}
+
+/* How much faster than real time the engine is allowed to run.
+ *
+ * The engine schedules against the wall clock: its worker computes a delay
+ * from UpTime to its next event and waits that long.  Completing slices early
+ * therefore does nothing on its own -- the engine simply waits and emits empty
+ * slices, which is why every pace below 100% rendered silence.  Speed up its
+ * clock by the same factor and the whole timeline compresses with it.
+ *
+ * 128 is measured, not chosen: output is byte-identical to a 1x render for
+ * every voice, and the time curve flattens just past here because what is
+ * left is the actual synthesis rather than any waiting.  TIGER_SPEED overrides
+ * it -- 1 renders in true real time, which is the honest baseline to compare
+ * against if audio ever looks wrong. */
+static double g_speed = 128.0;
+
+/* Duration: positive is milliseconds, negative is negated microseconds,
+ * kDurationForever is 0x7fffffff and kDurationImmediate is 0.  Engine
+ * durations are in engine time, so a real wait is that divided by g_speed. */
+static DWORD duration_ms(int d)
+{
+    double ms;
+    if (d == 0x7fffffff) return INFINITE;
+    ms = (d < 0) ? (-(double)d / 1000.0) : (double)d;
+    ms /= g_speed;
+    return (DWORD)(ms + 0.999);
+}
+
+static int __cdecl sh_mp_wait_on_queue(mpqueue *q, void **p1, void **p2,
+                                       void **p3, int timeout)
+{
+    if (!q) return -50;
+    if (g_mp_waits++ < 6)
+        if (g_verbose) printf("  [mp] WaitOnQueue %p timeout=%d\n", (void *)q, timeout);
+    if (WaitForSingleObject(q->sem, duration_ms(timeout)) != WAIT_OBJECT_0)
+        return -30988;                          /* kMPTimeoutErr */
+    EnterCriticalSection(&q->cs);
+    if (p1) *p1 = q->msg[q->head][0];
+    if (p2) *p2 = q->msg[q->head][1];
+    if (p3) *p3 = q->msg[q->head][2];
+    q->head = (q->head + 1) % MPQ_CAP;
+    q->count--;
+    LeaveCriticalSection(&q->cs);
+    return 0;
+}
+
+typedef int (__cdecl *mp_taskproc)(void *param);
+typedef struct {
+    mp_taskproc entry;
+    void       *param;
+    mpqueue    *notify;
+    void       *t1, *t2;
+    HANDLE      thread;
+} mptask;
+
+/* CreateThread wants __stdcall; the engine's entry point is Mach-O i386 and so
+ * is __cdecl.  This trampoline is the whole reason it exists. */
+static DWORD WINAPI mp_thunk(LPVOID arg)
+{
+    mptask *t = (mptask *)arg;
+    int status = t->entry(t->param);
+    if (t->notify)
+        sh_mp_notify_queue(t->notify, t->t1, t->t2, (void *)(intptr_t)status);
+    return (DWORD)status;
+}
+
+static int __cdecl sh_mp_create_task(mp_taskproc entry, void *param,
+                                     unsigned stacksize, mpqueue *notify,
+                                     void *t1, void *t2, unsigned options,
+                                     mptask **out)
+{
+    mptask *t;
+    (void)options;
+    if (!entry) return -50;
+    t = (mptask *)calloc(1, sizeof(*t));
+    if (!t) return -108;
+    t->entry = entry; t->param = param;
+    t->notify = notify; t->t1 = t1; t->t2 = t2;
+    if (g_verbose) printf("  [mp] CreateTask entry=%p param=%p notify=%p\n",
+           (void *)entry, param, (void *)notify);
+    t->thread = CreateThread(NULL, stacksize, mp_thunk, t, 0, NULL);
+    if (!t->thread) { free(t); return -108; }
+    if (out) *out = t;
+    return 0;
+}
+
+static int __cdecl sh_mp_terminate_task(mptask *t, int status)
+{
+    (void)status;
+    if (t && t->thread) { CloseHandle(t->thread); t->thread = NULL; }
+    return 0;
+}
+
+/* UpTime returns an AbsoluteTime, a 64-bit value in an unspecified unit; the
+ * Duration converters below define what it means.  QPC is the same shape. */
+static long long qpc_freq(void)
+{
+    static long long f;
+    if (!f) { LARGE_INTEGER l; QueryPerformanceFrequency(&l); f = l.QuadPart; }
+    return f;
+}
+static long long __cdecl sh_uptime(void)
+{
+    LARGE_INTEGER c;
+    QueryPerformanceCounter(&c);
+    return (long long)(c.QuadPart * g_speed);
+}
+
+/* A Duration is milliseconds when positive and negated microseconds when
+ * negative, so sub-millisecond intervals survive.  Everything below shares one
+ * clock, so the absolute unit does not matter as long as it is consistent. */
+static int ticks_to_duration(long long ticks)
+{
+    double ms = (double)ticks * 1000.0 / (double)qpc_freq();
+    if (ms > 2147483000.0) return 0x7fffffff;
+    if (ms < -2147483000.0) return -0x7ffffffe;
+    if (ms > -1.0 && ms < 1.0) return (int)(-ms * 1000.0);   /* microseconds */
+    return (int)ms;
+}
+static long long duration_to_ticks(int d)
+{
+    if (d == 0x7fffffff) return qpc_freq() * 3600;
+    if (d < 0) return (long long)(-(double)d * (double)qpc_freq() / 1e6);
+    return (long long)((double)d * (double)qpc_freq() / 1e3);
+}
+
+/* AbsoluteDeltaToDuration takes TWO AbsoluteTimes -- four words on the stack.
+ * Declaring it with one made the worker compute a wake-up 52 hours out and
+ * sleep through every utterance, which presents as an engine that runs
+ * perfectly and emits nothing. */
+static int __cdecl sh_abs_delta_to_duration(long long a, long long b)
+{ return ticks_to_duration(a - b); }
+static int __cdecl sh_abs_to_duration(long long a)
+{ return ticks_to_duration(a); }
+static long long __cdecl sh_add_duration(int d, long long a)
+{ return a + duration_to_ticks(d); }
+static long long __cdecl sh_sub_duration(int d, long long a)
+{ return a - duration_to_ticks(d); }
+
+/* ---- __DefaultRuneLocale ----------------------------------------------- */
+/*
+ * BSD ctype is a table lookup the compiler inlines, so this is a *data*
+ * symbol the engine indexes directly -- a function shim cannot stand in for
+ * it.  The layout is not guessed: MacinTalk's inlined isalpha() reads
+ *
+ *      test byte ptr [rune + edx*4 + 0x35], 1
+ *
+ * so __runetype is at 0x34 and the tested bit is 0x100, which the slow path
+ * confirms by calling ___maskrune(c, 0x100).  __maplower and __mapupper follow
+ * it, each 256 entries of 4 bytes.
+ */
+#define RUNE_RUNETYPE 0x34
+#define RUNE_MAPLOWER (RUNE_RUNETYPE + 256 * 4)
+#define RUNE_MAPUPPER (RUNE_MAPLOWER + 256 * 4)
+#define RUNE_SIZE     (RUNE_MAPUPPER + 256 * 4 + 64)
+
+#define _CTYPE_A 0x00000100  /* alpha  */
+#define _CTYPE_C 0x00000200  /* control*/
+#define _CTYPE_D 0x00000400  /* digit  */
+#define _CTYPE_G 0x00000800  /* graph  */
+#define _CTYPE_L 0x00001000  /* lower  */
+#define _CTYPE_P 0x00002000  /* punct  */
+#define _CTYPE_S 0x00004000  /* space  */
+#define _CTYPE_U 0x00008000  /* upper  */
+#define _CTYPE_X 0x00010000  /* xdigit */
+#define _CTYPE_B 0x00020000  /* blank  */
+#define _CTYPE_R 0x00040000  /* print  */
+
+static unsigned char g_rune_locale[RUNE_SIZE];
+
+static unsigned rune_mask(int c)
+{
+    unsigned m = 0;
+    if (c < 0 || c > 255) return 0;
+    if (isalpha(c))  m |= _CTYPE_A;
+    if (iscntrl(c))  m |= _CTYPE_C;
+    if (isdigit(c))  m |= _CTYPE_D;
+    if (isgraph(c))  m |= _CTYPE_G;
+    if (islower(c))  m |= _CTYPE_L;
+    if (ispunct(c))  m |= _CTYPE_P;
+    if (isspace(c))  m |= _CTYPE_S;
+    if (isupper(c))  m |= _CTYPE_U;
+    if (isxdigit(c)) m |= _CTYPE_X;
+    if (c == ' ' || c == '\t') m |= _CTYPE_B;
+    if (isprint(c))  m |= _CTYPE_R;
+    /* The low eight bits carry the digit value, which is how the xdigit
+     * conversions read a hex digit straight out of the table. */
+    if (isdigit(c))  m |= (unsigned)(c - '0');
+    else if (isxdigit(c)) m |= (unsigned)(tolower(c) - 'a' + 10);
+    return m;
+}
+
+static void init_rune_locale(void)
+{
+    int c;
+    memcpy(g_rune_locale, "RuneMagi", 8);
+    strcpy((char *)g_rune_locale + 8, "NONE");
+    for (c = 0; c < 256; c++) {
+        *(unsigned *)(g_rune_locale + RUNE_RUNETYPE + c * 4) = rune_mask(c);
+        *(unsigned *)(g_rune_locale + RUNE_MAPLOWER + c * 4) =
+            (unsigned)tolower(c);
+        *(unsigned *)(g_rune_locale + RUNE_MAPUPPER + c * 4) =
+            (unsigned)toupper(c);
+    }
+}
+
+static unsigned __cdecl sh_maskrune(int c, unsigned f) { return rune_mask(c) & f; }
+static int __cdecl sh_tolower_(int c) { return tolower(c); }
+static int __cdecl sh_toupper_(int c) { return toupper(c); }
+static int __cdecl sh_isdigit_(int c) { return isdigit(c); }
+
+/* ---- the BLAS the engine actually uses --------------------------------- */
+/*
+ * Single-precision level 1 and 2, no vDSP.  These are not optional: the
+ * synthesiser calls isamax to find a block's peak and sscal to scale by it,
+ * so stubbing them leaves every sample unnormalised and the output pins to
+ * full scale.  That sounds like a synthesiser working perfectly into a
+ * clipped channel -- which is exactly what it is.
+ */
+#define CBLAS_ROWMAJOR 101
+#define CBLAS_NOTRANS  111
+
+static int __cdecl sh_isamax(int n, const float *x, int incx)
+{
+    int i, best = 0;
+    float bv;
+    if (n < 1 || incx <= 0 || !x) return 0;
+    bv = (float)fabs(x[0]);
+    for (i = 1; i < n; i++) {
+        float v = (float)fabs(x[i * incx]);
+        if (v > bv) { bv = v; best = i; }
+    }
+    return best;
+}
+static void __cdecl sh_sscal(int n, float a, float *x, int incx)
+{
+    int i;
+    if (n < 1 || incx <= 0 || !x) return;
+    for (i = 0; i < n; i++) x[i * incx] *= a;
+}
+static void __cdecl sh_scopy(int n, const float *x, int incx, float *y, int incy)
+{
+    int i;
+    if (!x || !y) return;
+    for (i = 0; i < n; i++) y[i * incy] = x[i * incx];
+}
+static void __cdecl sh_saxpy(int n, float a, const float *x, int incx,
+                             float *y, int incy)
+{
+    int i;
+    if (!x || !y) return;
+    for (i = 0; i < n; i++) y[i * incy] += a * x[i * incx];
+}
+static float __cdecl sh_sdot(int n, const float *x, int incx,
+                             const float *y, int incy)
+{
+    int i; double s = 0.0;
+    if (!x || !y) return 0.0f;
+    for (i = 0; i < n; i++) s += (double)x[i * incx] * y[i * incy];
+    return (float)s;
+}
+static float __cdecl sh_snrm2(int n, const float *x, int incx)
+{
+    int i; double s = 0.0;
+    if (!x) return 0.0f;
+    for (i = 0; i < n; i++) { double v = x[i * incx]; s += v * v; }
+    return (float)sqrt(s);
+}
+static void __cdecl sh_sgemv(int order, int trans, int m, int n, float alpha,
+                             const float *a, int lda, const float *x, int incx,
+                             float beta, float *y, int incy)
+{
+    int i, j;
+    int leny = (trans == CBLAS_NOTRANS) ? m : n;
+    int lenx = (trans == CBLAS_NOTRANS) ? n : m;
+    if (!a || !x || !y) return;
+    for (i = 0; i < leny; i++) y[i * incy] *= beta;
+    for (i = 0; i < leny; i++) {
+        double s = 0.0;
+        for (j = 0; j < lenx; j++) {
+            const float *e;
+            if (order == CBLAS_ROWMAJOR)
+                e = (trans == CBLAS_NOTRANS) ? &a[i * lda + j] : &a[j * lda + i];
+            else
+                e = (trans == CBLAS_NOTRANS) ? &a[j * lda + i] : &a[i * lda + j];
+            s += (double)(*e) * x[j * incx];
+        }
+        y[i * incy] += (float)(alpha * s);
+    }
+}
+
+static char * __cdecl sh_getenv(const char *n) { (void)n; return NULL; }
+static long   __cdecl sh_random(void)          { return rand(); }
+static void   __cdecl sh_srandom(unsigned s)   { srand(s); }
+static void   __cdecl sh_usleep(unsigned us)   { Sleep(us / 1000); }
