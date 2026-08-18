@@ -140,6 +140,11 @@ def _install_fake_nvda():
         def __init__(self, index): self.index = index
     class BreakCommand(object):
         def __init__(self, time=0): self.time = time
+    class PitchCommand(object):
+        def __init__(self, offset=0, multiplier=1):
+            self.offset = offset
+            self.isDefault = offset == 0 and multiplier == 1
+    commands.PitchCommand = PitchCommand
     commands.IndexCommand = IndexCommand
     commands.BreakCommand = BreakCommand
     speech.commands = commands

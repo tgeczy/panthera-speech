@@ -237,7 +237,8 @@ class SynthDriver(SynthDriver):
         ),
     )
     supportedCommands = {speech.commands.IndexCommand,
-                         speech.commands.BreakCommand}
+                         speech.commands.BreakCommand,
+                         speech.commands.PitchCommand}
     supportedNotifications = {synthIndexReached, synthDoneSpeaking}
 
     @classmethod
@@ -413,9 +414,17 @@ class SynthDriver(SynthDriver):
     def _wpm(self):
         return RATE_MIN + int(self._rate * (RATE_MAX - RATE_MIN) / 100)
 
-    def _pitchOffset(self):
-        """-> tenths of a semitone away from the voice's own pitch."""
-        return int((self._pitch - 50) * PITCH_SEMITONES * 10 / 50)
+    def _pitchOffset(self, adj=0):
+        """-> tenths of a semitone away from the voice's own pitch.
+
+        `adj` is what NVDA asked for on top of the user's setting, on its own
+        0-100 scale: a PitchCommand carrying the "capital pitch change
+        percentage", which is how a capital letter is meant to be marked.  The
+        driver used to drop those commands, so that setting did nothing at all
+        no matter what it was set to.
+        """
+        pitch = min(100, max(0, self._pitch + adj))
+        return int((pitch - 50) * PITCH_SEMITONES * 10 / 50)
 
     def _render(self, text, wpm, voice, pitch=0):
         """-> PCM bytes, or None.  One request, one utterance."""
@@ -483,7 +492,11 @@ class SynthDriver(SynthDriver):
             item = self._queue.get()
             if item is None:
                 break
-            wpm, voice, pitch = self._wpm(), self._voiceId, self._pitchOffset()
+            wpm, voice = self._wpm(), self._voiceId
+            #: What NVDA has asked us to add to the user's pitch for the text
+            #: that follows -- how "capital pitch change percentage" is
+            #: expressed.  0 means the user's own setting.
+            adj = 0
             run = []
             for kind, value in item:
                 if self._stopped:
@@ -491,16 +504,18 @@ class SynthDriver(SynthDriver):
                 if kind == "text":
                     run.append(value)
                     continue
-                self._flush(run, wpm, voice, pitch)
+                self._flush(run, wpm, voice, adj)
                 if kind == "index":
                     self._audioQueue.put(("index", value))
                 elif kind == "break":
                     self._audioQueue.put(("audio", _silence(value)))
+                elif kind == "pitch":
+                    adj = value
             if not self._stopped:
-                self._flush(run, wpm, voice, pitch)
+                self._flush(run, wpm, voice, adj)
             self._audioQueue.put(("done", None))
 
-    def _flush(self, run, wpm, voice, pitch):
+    def _flush(self, run, wpm, voice, adj=0):
         """Render the text collected so far as ONE utterance.
 
         **Adjacent strings in a speech sequence are not separate utterances.**
@@ -520,7 +535,7 @@ class SynthDriver(SynthDriver):
             return
         text = _joinFragments(run)
         del run[:]
-        pcm = self._render(text, wpm, voice, pitch)
+        pcm = self._render(text, wpm, voice, self._pitchOffset(adj))
         if pcm:
             self._audioQueue.put(("audio", pcm))
             gap = self.PAUSE_MS.get(self._pauseMode, 0)
@@ -562,6 +577,12 @@ class SynthDriver(SynthDriver):
                 # until now, which meant the one place a pause was *wanted*
                 # was the one place it did not happen.
                 items.append(("break", item.time))
+            elif isinstance(item, speech.commands.PitchCommand):
+                # How NVDA marks a capital letter: an offset on its own 0-100
+                # pitch scale, 0 meaning the user's setting again.  Dropped
+                # until now, so "capital pitch change percentage" did nothing
+                # whatever it was set to.
+                items.append(("pitch", item.offset))
         self._queue.put(items)
 
     def cancel(self):

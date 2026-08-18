@@ -603,3 +603,28 @@ def test_fragments_are_joined_without_gluing_words_together(driver):
     assert join(["Read more about it ", "here"]) == "Read more about it here"
     assert join([" on our site.", " Next"]) == " on our site. Next"
     assert join(["only"]) == "only"
+
+
+def test_capital_pitch_change_reaches_the_engine(driver, monkeypatch):
+    """NVDA's "capital pitch change percentage" is a PitchCommand.
+
+    Tomi set it to 30 and heard no change on capitals at all, because the
+    driver kept only IndexCommands and dropped every other command in the
+    sequence -- so the setting was inert whatever it was set to.
+    """
+    import speech.commands
+    seen = []
+    original = driver._render
+
+    def spy(text, wpm, voice, pitch=0):
+        seen.append(pitch)
+        return original(text, wpm, voice, pitch)
+
+    _warm(driver)
+    monkeypatch.setattr(driver, "_render", spy)
+    _speakAndWait(driver, ["a",
+                           speech.commands.PitchCommand(offset=30), "B",
+                           speech.commands.PitchCommand(), "c"])
+    assert len(seen) == 3, "expected three renders, got %r" % (seen,)
+    assert seen[1] > seen[0], "the capital was not raised in pitch: %r" % (seen,)
+    assert seen[2] == seen[0], "pitch did not come back down: %r" % (seen,)
