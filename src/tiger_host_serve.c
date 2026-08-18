@@ -162,7 +162,8 @@ static int serve(image *mt, void *chan, const char *voicesdir)
         (void)flags;
 
         g_pcm_n = 0; g_slices = 0; g_stopped = 0; g_empty_run = 0;
-        g_dup_slices = 0; g_have_last = 0;
+        g_dup_slices = 0; g_have_last = 0; g_p_drops = 0;
+        g_epoch_base = 0; g_last_stime = 0.0;
         if (!err) err = call_aligned4((void *)speak, chan, text,
                                       (void *)textlen, (void *)0);
         free(text);
@@ -176,6 +177,29 @@ static int serve(image *mt, void *chan, const char *voicesdir)
                 if (g_slices != last) { last = g_slices; quiet = 0; }
                 else quiet++;
             }
+            /* The engine has stopped *scheduling*, which is not the same as
+             * the audio having been read.
+             *
+             * g_slices counts slices as they arrive; collect_slice runs a beat
+             * later on the pacer thread, because a ScheduledSoundPlayer's
+             * completion fires when the audio has played rather than when it
+             * was queued.  Returning as soon as scheduling goes quiet takes a
+             * snapshot of a timeline the pacer is still filling in, so the
+             * tail of the utterance is missing -- and then the next request
+             * sets g_pcm_n back to 0 while the pacer is still writing, which
+             * drops one utterance's audio into the middle of the next.
+             *
+             * It is timing, so it did not look like a bug: the same text came
+             * back 2.29 s in a warm session and 4.49 s in a cold one, and only
+             * the long one had all the words in it.
+             *
+             * Wait for the queue to drain.  Two-millisecond ticks, a second's
+             * worth: an utterance's worth of slices drains in a few of them at
+             * the default clock, and if it ever does not, say so. */
+            for (ticks = 0; !pacer_idle() && ticks < 500; ticks++) Sleep(2);
+            if (!pacer_idle())
+                fprintf(stderr, "tiger_host: the pacer was still collecting "
+                                "audio a second after the engine stopped\n");
         }
 
         /* Anything the engine did that a user would notice goes out at a
@@ -194,6 +218,10 @@ static int serve(image *mt, void *chan, const char *voicesdir)
         if (g_empty_run >= SLICE_EMPTY_LIMIT)
             fprintf(stderr, "tiger_host: the engine stopped producing audio "
                             "after %u frames\n", g_pcm_n);
+        if (g_p_drops)
+            fprintf(stderr, "tiger_host: %u slice(s) dropped -- the pacer "
+                            "queue overflowed and that audio is lost\n",
+                    g_p_drops);
 
         nframes = g_pcm_n;
         magic = RSP_MAGIC;

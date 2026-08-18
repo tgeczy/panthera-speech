@@ -130,6 +130,11 @@ static int __cdecl sh_DisposeAUGraph(void *g)
 #define PCM_CAP (22050 * 240)
 static float    g_pcm[PCM_CAP];
 static unsigned g_pcm_n;
+/* Where the engine's current scheduling epoch starts in g_pcm, and the last
+ * sample time we saw, which is how a new epoch is recognised.  Both reset per
+ * utterance, in serve(). */
+static unsigned g_epoch_base;
+static double   g_last_stime;
 static unsigned g_slices;
 static unsigned g_frames_seen;
 static unsigned g_empty_run;          /* consecutive slices carrying nothing */
@@ -188,6 +193,14 @@ static pending  g_pending[PACE_QCAP];
 static int      g_p_head, g_p_tail, g_p_count;
 static CRITICAL_SECTION g_p_cs;
 static volatile LONG    g_pacer_stop;
+/* Set while the pacer holds a job it has not finished collecting.  An
+ * utterance is complete only when the queue is empty *and* this is clear;
+ * reading g_pcm before then is a snapshot of a half-collected timeline. */
+static volatile LONG    g_p_busy;
+/* A dropped slice is audio the engine produced and we threw away, and its
+ * completion never fires, so the engine waits on a slice that will never
+ * finish.  Count it and say it out loud rather than absorbing it. */
+static unsigned         g_p_drops;
 
 static void queue_completion(slice_done_t p, void *u, void *s, unsigned frames)
 {
@@ -199,8 +212,20 @@ static void queue_completion(slice_done_t p, void *u, void *s, unsigned frames)
         g_pending[g_p_tail].frames = frames;
         g_p_tail = (g_p_tail + 1) % PACE_QCAP;
         g_p_count++;
+    } else {
+        g_p_drops++;
     }
     LeaveCriticalSection(&g_p_cs);
+}
+
+/* True when the pacer has nothing left to collect. */
+static int pacer_idle(void)
+{
+    int n;
+    EnterCriticalSection(&g_p_cs);
+    n = g_p_count;
+    LeaveCriticalSection(&g_p_cs);
+    return n == 0 && !g_p_busy;
 }
 
 /* Read a slice's audio at the moment it finishes "playing", not when it was
@@ -225,6 +250,27 @@ static void collect_slice(unsigned char *slice)
     unsigned tsflags = *(unsigned *)(slice + SLICE_TSFLAGS_OFF);
     unsigned nbufs, i;
     if (!bl || !frames) return;
+    /* The engine schedules an utterance in epochs, and each epoch starts its
+     * sample clock again at zero.
+     *
+     * A real ScheduledSoundPlayer does not care: it is playing into a device
+     * that keeps running, and AudioUnitReset plus a fresh schedule simply
+     * means "now play this".  We are accumulating into one buffer instead, so
+     * an epoch that restarts at zero lands on top of everything collected so
+     * far and silently erases it.  That is where the missing words went --
+     * "One, two, three." was complete, and then the second sentence was
+     * written over it from sample zero.
+     *
+     * It only bit half the time because the engine does not always split: the
+     * same sentence came back as one continuous timeline of 98900 frames or
+     * as two epochs of 48505 and 50395, run to run, and only the continuous
+     * one had all the words.  Rebasing makes the two identical.
+     *
+     * Detected by the clock going backwards rather than by AudioUnitReset,
+     * because the restart is what actually breaks us and it is visible right
+     * here; a reset we failed to notice would put us straight back. */
+    if (stime < g_last_stime) g_epoch_base = g_pcm_n;
+    g_last_stime = stime;
     nbufs = *(unsigned *)bl;
     for (i = 0; i < nbufs; i++) {
         unsigned char *b = bl + 4 + i * 12;
@@ -233,7 +279,7 @@ static void collect_slice(unsigned char *slice)
         unsigned n = bytes / sizeof(float), j, pos;
         if (i != 0 || !data) continue;
         if (frames < n) n = frames;
-        pos = (stime > 0.0) ? (unsigned)(stime + 0.5) : 0;
+        pos = g_epoch_base + ((stime > 0.0) ? (unsigned)(stime + 0.5) : 0);
         if (!(tsflags & kAudioTimeStampSampleTimeValid))
             pos = g_pcm_n;
         if (pos > g_pcm_n && pos < PCM_CAP)
@@ -257,6 +303,11 @@ static DWORD WINAPI pacer_thread(LPVOID arg)
             g_p_head = (g_p_head + 1) % PACE_QCAP;
             g_p_count--;
             have = 1;
+            /* Marked inside the lock: otherwise there is a window where the
+             * job is off the queue but not yet accounted for, and an observer
+             * sees an empty queue with an idle pacer while a slice is in
+             * flight. */
+            g_p_busy = 1;
         }
         LeaveCriticalSection(&g_p_cs);
         if (!have) { Sleep(2); continue; }
@@ -280,6 +331,7 @@ static DWORD WINAPI pacer_thread(LPVOID arg)
          * movapd almost as soon as it is entered, and faults outright if this
          * thread hands it a stack Windows aligned to four. */
         call_aligned2((void *)job.proc, job.udata, job.slice);
+        g_p_busy = 0;
     }
     return 0;
 }
