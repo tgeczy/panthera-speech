@@ -248,6 +248,60 @@ static __declspec(naked) int call_aligned2(void *fn, void *a, void *b)
     }
 }
 
+/* Three and four.  Sixteen bytes covers both without a second adjustment, and
+ * these are the shapes the exported entry points take: SEUseVoice and
+ * SESetSpeechInfo are three, SESpeakBuffer is four. */
+static __declspec(naked) int call_aligned3(void *fn, void *a, void *b, void *c)
+{
+    __asm {
+        push ebp
+        mov  ebp, esp
+        push ebx
+        mov  ebx, esp
+        mov  eax, [ebp + 8]
+        mov  ecx, [ebp + 12]
+        mov  edx, [ebp + 16]
+        and  esp, -16
+        sub  esp, 16
+        mov  [esp], ecx
+        mov  [esp + 4], edx
+        mov  ecx, [ebp + 20]
+        mov  [esp + 8], ecx
+        call eax
+        mov  esp, ebx
+        pop  ebx
+        pop  ebp
+        ret
+    }
+}
+
+static __declspec(naked) int call_aligned4(void *fn, void *a, void *b, void *c,
+                                           void *d)
+{
+    __asm {
+        push ebp
+        mov  ebp, esp
+        push ebx
+        mov  ebx, esp
+        mov  eax, [ebp + 8]
+        mov  ecx, [ebp + 12]
+        mov  edx, [ebp + 16]
+        and  esp, -16
+        sub  esp, 16
+        mov  [esp], ecx
+        mov  [esp + 4], edx
+        mov  ecx, [ebp + 20]
+        mov  edx, [ebp + 24]
+        mov  [esp + 8], ecx
+        mov  [esp + 12], edx
+        call eax
+        mov  esp, ebx
+        pop  ebx
+        pop  ebp
+        ret
+    }
+}
+
 /* CreateThread wants __stdcall; the engine's entry point is Mach-O i386 and so
  * is __cdecl.  This trampoline is the whole reason it exists -- and the place
  * the alignment above has to be established. */

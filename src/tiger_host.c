@@ -312,7 +312,10 @@ int main(int argc, char **argv)
     if (!open_chan) die("SEOpenSpeechChannel not found");
     if (g_verbose) printf("\nSEOpenSpeechChannel at %p\n", (void *)open_chan);
 
-    err = open_chan(&chan);
+    /* Every entry into the engine goes through an aligning trampoline:
+     * Darwin i386 guarantees ESP is 16-byte aligned at each call and
+     * Leopard's engine spends that guarantee on movapd. */
+    err = call_aligned1((void *)open_chan, &chan);
     if (g_verbose) printf("  -> OSErr %d, channel %p\n", err, chan);
     if (err || !chan) goto report;
 
@@ -340,7 +343,7 @@ int main(int argc, char **argv)
         printf("\nSEUseVoice at %p, spec {'%c%c%c%c', %d}\n  bundle %s\n",
                (void *)use, (creator >> 24) & 0xff, (creator >> 16) & 0xff,
                (creator >> 8) & 0xff, creator & 0xff, voiceid, voicedir);
-        err = use(chan, &spec, bundle);
+        err = call_aligned3((void *)use, chan, &spec, bundle);
         printf("  -> OSErr %d\n", err);
         if (err) goto report;
     }
@@ -357,7 +360,8 @@ int main(int argc, char **argv)
         if (!speak) die("SESpeakBuffer not found");
         printf("\nSESpeakBuffer at %p, %d bytes of text\n",
                (void *)speak, (int)(sizeof(text) - 1));
-        err = speak(chan, text, (long)(sizeof(text) - 1), 0);
+        err = call_aligned4((void *)speak, chan, (void *)text,
+                            (void *)(sizeof(text) - 1), (void *)0);
         printf("  -> OSErr %d\n", err);
 
         /* SESpeakBuffer returns as soon as the utterance is accepted; the

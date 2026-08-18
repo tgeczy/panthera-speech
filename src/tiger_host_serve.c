@@ -109,13 +109,15 @@ static int serve(image *mt, void *chan, const char *voicesdir)
             _snprintf(dir, sizeof(dir), "%s/%s.SpeechVoice", voicesdir, name);
             dir[sizeof(dir) - 1] = 0;
             if (voice_spec(dir, &spec.creator, &spec.id)) {
-                err = use(chan, &spec, cf_pinned(dir));
+                err = call_aligned3((void *)use, chan, &spec,
+                                    cf_pinned(dir));
                 if (!err) {
                     strcpy(curvoice, name);
                     voicechanged = 1;
                     /* Ask the voice what it sounds like before changing it. */
                     basepitch = 0;
-                    if (getinfo && getinfo(chan, SEL_PITCH, &basepitch) != 0)
+                    if (getinfo && call_aligned3((void *)getinfo, chan,
+                            (void *)SEL_PITCH, &basepitch) != 0)
                         basepitch = 0;
                     if (g_verbose)
                         printf("  [pitch] %s base %.2f\n", name,
@@ -131,7 +133,8 @@ static int serve(image *mt, void *chan, const char *voicesdir)
          * setter calls buy immunity from that. */
         if (!err && wpm > 0 && setinfo) {
             unsigned fixed = (unsigned)wpm << 16;       /* Fixed 16.16 wpm */
-            if (setinfo(chan, SEL_RATE, &fixed) == 0) currate = wpm;
+            if (call_aligned3((void *)setinfo, chan, (void *)SEL_RATE,
+                              &fixed) == 0) currate = wpm;
         }
         /* Pitch is re-applied whenever it changes *or* the voice changed: a
          * new voice arrives with its own pitch and would otherwise keep it
@@ -139,7 +142,8 @@ static int serve(image *mt, void *chan, const char *voicesdir)
         if (!err && setinfo && basepitch) {
             /* offset is tenths of a semitone, and the scale is semitones */
             unsigned fx = (unsigned)((int)basepitch + (pitch * 65536) / 10);
-            if (setinfo(chan, SEL_PITCH, &fx) == 0) curpitch = pitch;
+            if (call_aligned3((void *)setinfo, chan, (void *)SEL_PITCH,
+                              &fx) == 0) curpitch = pitch;
         }
 
         /* Embedded commands -- "[[rate 100]]", "[[volm 0.5]]", even
@@ -158,7 +162,8 @@ static int serve(image *mt, void *chan, const char *voicesdir)
         (void)flags;
 
         g_pcm_n = 0; g_slices = 0; g_stopped = 0; g_empty_run = 0;
-        if (!err) err = speak(chan, text, (long)textlen, 0);
+        if (!err) err = call_aligned4((void *)speak, chan, text,
+                                      (void *)textlen, (void *)0);
         free(text);
 
         /* AUGraphStop is the engine's own end-of-utterance signal, with a
