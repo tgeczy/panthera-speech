@@ -82,6 +82,7 @@ typedef struct {
     short        *pcm;                  /* decoded, priming already dropped */
     unsigned      pcm_cap, pcm_n, pcm_pos;      /* in samples */
     unsigned      sessions;
+    unsigned      prime_left;           /* priming still to drop this stream */
     int           ac_live;              /* an AudioConverter stream is open  */
     unsigned      resets;               /* AudioConverterReset calls */
     unsigned      lost;                 /* access units the decoder refused */
@@ -1019,6 +1020,7 @@ static int __cdecl sh_AudioConverterFillComplexBuffer(void *conv,
                     aac_begin();
                     g_sc.ac_live = 1;
                     g_sc.sessions++;
+                    g_sc.prime_left = AAC_PRIMING;
                 }
                 for (i = 0; i < packets; i++) {
                     if (descs[i].mStartOffset < 0 || !descs[i].mDataByteSize)
@@ -1042,12 +1044,37 @@ static int __cdecl sh_AudioConverterFillComplexBuffer(void *conv,
                  * payload, and it was -- one packet arrived three times over
                  * and the engine got the third copy.
                  *
-                 * Nothing is trimmed either.  Apple sets
+                 * The priming, though, does have to come off, and for a long
+                 * time it did not.
+                 *
+                 * The argument for leaving it was that Apple sets
                  * kAudioConverterPrimeMethod to None on this converter -- the
-                 * 'prmm' SetProperty above -- so there is no priming to drop,
-                 * and taking Vicki's 2112 off a 1024-sample refill deletes it
-                 * outright. */
+                 * 'prmm' SetProperty above -- so there is no priming to drop.
+                 * That confuses two different things.  'prmm' None describes
+                 * what *Apple's* decoder does; Media Foundation's emits the
+                 * 2112-sample codec delay whatever Apple's API was told, and
+                 * the engine sizes its buffer at frameCount * 1024 - 2112,
+                 * which is Apple's priming written into the arithmetic.  So
+                 * every unit reached the engine 2112 samples -- 96 ms -- late,
+                 * 23 units to an utterance.  Individually the words survive
+                 * that, which is why it stayed intelligible and merely sounded
+                 * as though it were skipping.
+                 *
+                 * The other half of the old argument was real: taking 2112 off
+                 * a 1024-sample refill would delete it outright.  So the trim
+                 * belongs to the *stream*, not the refill -- carried across
+                 * refills until it is used up, which is exactly what
+                 * aac_decode_unit does on the SoundConverter side, and that
+                 * side is byte-perfect. */
                 aac_drain();
+                if (g_sc.prime_left && g_sc.pcm_n) {
+                    unsigned drop = g_sc.prime_left < g_sc.pcm_n
+                                  ? g_sc.prime_left : g_sc.pcm_n;
+                    memmove(g_sc.pcm, g_sc.pcm + drop,
+                            (g_sc.pcm_n - drop) * sizeof(short));
+                    g_sc.pcm_n      -= drop;
+                    g_sc.prime_left -= drop;
+                }
                 /* Is the noise already here, or does the engine add it?
                  *
                  * Roughness -- mean|x[n+1]-x[n]| over mean|x[n]| -- separates

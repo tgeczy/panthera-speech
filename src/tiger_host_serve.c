@@ -164,6 +164,7 @@ static int serve(image *mt, void *chan, const char *voicesdir)
         g_pcm_n = 0; g_slices = 0; g_stopped = 0; g_empty_run = 0;
         g_dup_slices = 0; g_have_last = 0; g_p_drops = 0;
         g_epoch_base = 0; g_last_stime = 0.0;
+        g_sc.sessions = 0; g_sc.resets = 0; g_sc.lost = 0; g_pkts_fed = 0;
         if (!err) err = call_aligned4((void *)speak, chan, text,
                                       (void *)textlen, (void *)0);
         free(text);
@@ -222,6 +223,15 @@ static int serve(image *mt, void *chan, const char *voicesdir)
             fprintf(stderr, "tiger_host: %u slice(s) dropped -- the pacer "
                             "queue overflowed and that audio is lost\n",
                     g_p_drops);
+        /* The two decoder drivers side by side.  Tiger's engine drives
+         * SoundConverter, which decodes one self-contained unit at a time and
+         * is byte-perfect; Leopard's drives AudioConverter, which streams.
+         * Same voice bytes, same decode core -- so the profile is where the
+         * difference has to show. */
+        if (g_float_stats)
+            fprintf(stderr, "  [aac] %u session(s), %u reset(s), %u packet(s) "
+                            "fed, %u lost\n",
+                    g_sc.sessions, g_sc.resets, g_pkts_fed, g_sc.lost);
 
         nframes = g_pcm_n;
         magic = RSP_MAGIC;
