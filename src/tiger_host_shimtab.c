@@ -150,5 +150,17 @@ static const shim g_shims[] = {
     { "_OSMemoryBarrier", (void *)sh_memory_barrier },
     { "_getenv",  (void *)sh_getenv  }, { "_random",  (void *)sh_random  },
     { "_srandom", (void *)sh_srandom }, { "_usleep",  (void *)sh_usleep  },
+
+    /* Accelerate, for Alex.  Leopard's concatenative voice time-scales
+     * recorded speech with WSOLA and sends the search to vDSP -- fifty-eight
+     * million calls for one short utterance, every one of them landing in an
+     * empty stub until now.  See tiger_host_accel.c; each signature there was
+     * counted off its call site rather than remembered. */
+    { "_vDSP_svemg",       (void *)sh_vDSP_svemg       },
+    { "_vDSP_vmsb",        (void *)sh_vDSP_vmsb        },
+    { "_vDSP_vmma",        (void *)sh_vDSP_vmma        },
+    { "_vmul",             (void *)sh_vmul             },
+    { "_vDSP_hann_window", (void *)sh_vDSP_hann_window },
+    { "_lrintf",           (void *)sh_lrintf           },
     { NULL, NULL }
 };
