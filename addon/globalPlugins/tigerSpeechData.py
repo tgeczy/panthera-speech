@@ -123,10 +123,19 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
             log.error("Tiger-speech: engine check failed", exc_info=True)
 
     def _ask(self, folder):
-        """Ask, and only record a refusal when the user actually gives one."""
+        """Ask, and only record a refusal when the user actually gives one.
+
+        The style is `wx.YES_NO | wx.CANCEL`. It was `YES_NO_CANCEL`, which
+        wxWidgets has in C++ and wxPython does not, so this raised
+        AttributeError every single time and the dialog had never once appeared
+        in any release of either add-on. It presented as nothing happening --
+        which is also what a missing add-on, a suppressed reminder and a
+        too-early timer all look like, so it was blamed on each of those in
+        turn. A user's log gave it up in one line.
+        """
         try:
             answer = gui.messageBox(_MESSAGE, "Tiger-speech",
-                                    wx.YES_NO_CANCEL | wx.ICON_INFORMATION)
+                                    wx.YES_NO | wx.CANCEL | wx.ICON_INFORMATION)
             if answer == wx.YES:
                 os.startfile(folder)
             elif answer == wx.NO:

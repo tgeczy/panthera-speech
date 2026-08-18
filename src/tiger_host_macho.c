@@ -229,6 +229,29 @@ static void *lookup_in(image *dep, const char *name)
     return NULL;
 }
 
+/* The same, across every image loaded so far except the one being bound.
+ *
+ * One dependency was enough while MacinTalk only ever needed SpeechDictionary.
+ * Leopard's pair also import GCC 4.0.1's C++ runtime -- std::string, the
+ * _List_node_base helpers, __dynamic_cast and the RTTI that makes it answer
+ * anything but null -- and those must come from Leopard's own
+ * libstdc++.6.0.4.dylib rather than a reimplementation: the engine inlines code
+ * that walks basic_string's copy-on-write layout, so the bytes have to agree
+ * exactly.  Searching the whole set costs nothing and stops the order images
+ * are loaded in from mattering.
+ */
+static void *lookup_loaded(const image *self, const char *name)
+{
+    int i;
+    for (i = 0; i < g_nimages; i++) {
+        void *p;
+        if (g_images[i] == self) continue;
+        p = lookup_in(g_images[i], name);
+        if (p) return p;
+    }
+    return NULL;
+}
+
 /* External relocations, which the pointer tables do not cover.
  *
  * These are the references that carry an addend, and the addend is sitting in
@@ -266,7 +289,7 @@ static void apply_ext_relocs(image *im, image *dep)
         nm = im->strs + im->syms[symnum].n_strx;
         target = lookup_shim(nm);
         if (!target) target = lookup_in(im, nm);      /* self first */
-        if (!target) target = lookup_in(dep, nm);
+        if (!target) target = lookup_loaded(im, nm);
         if (!target) { missed++; continue; }
         at = (unsigned *)(base + r[i].r_address + im->slide);
         /* Normally the stored value is the addend.  In a prebound image it is
@@ -318,7 +341,7 @@ static void bind(image *im, image *dep)
                 nm = im->strs + im->syms[isym].n_strx;
                 fn = lookup_shim(nm);
                 if (!fn) fn = lookup_in(im, nm);
-                if (!fn && dep) fn = lookup_in(dep, nm);
+                if (!fn) { fn = lookup_loaded(im, nm); if (fn) fromdep++; }
                 if (fn) { bound++; stubs++; }
                 else {
                     if (nm[0] == '_' && nm[1] == '_' && nm[2] == 'Z')
@@ -354,20 +377,7 @@ static void bind(image *im, image *dep)
              * SpeechDictionary with no dependency to search turned every one
              * of its own C++ symbols, vtables included, into a thunk. */
             if (!fn) fn = lookup_in(im, nm);
-            if (!fn && dep) {
-                unsigned k;
-                for (k = 0; k < dep->nsyms; k++) {
-                    const nlist *sy = &dep->syms[k];
-                    if (sy->n_type & N_STAB) continue;
-                    if ((sy->n_type & N_TYPE) == N_UNDF) continue;
-                    if (!(sy->n_type & N_EXT)) continue;
-                    if (!strcmp(dep->strs + sy->n_strx, nm)) {
-                        fn = (void *)(sy->n_value + dep->slide);
-                        fromdep++;
-                        break;
-                    }
-                }
-            }
+            if (!fn) { fn = lookup_loaded(im, nm); if (fn) fromdep++; }
             if (fn) bound++;
             else {
                 /* A thunked C++ symbol is never harmless: the engine will use

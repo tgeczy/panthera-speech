@@ -203,20 +203,45 @@ typedef struct {
  * Tiger's engine never showed this.  That is not evidence that it was safe --
  * only that one compiler declined to vectorise one function.
  */
-static __declspec(naked) int call_aligned1(mp_taskproc fn, void *arg)
+static __declspec(naked) int call_aligned1(void *fn, void *a)
 {
     __asm {
         push ebp
         mov  ebp, esp
         push ebx                     /* callee-saved in both ABIs */
         mov  ebx, esp                /* remember the real stack */
-        mov  eax, [ebp + 8]          /* fn  */
-        mov  ecx, [ebp + 12]         /* arg */
+        mov  eax, [ebp + 8]          /* fn */
+        mov  ecx, [ebp + 12]         /* a  */
         and  esp, -16                /* 16-byte aligned from here */
-        sub  esp, 16                 /* room for one argument, still aligned */
+        sub  esp, 16                 /* room for the argument, still aligned */
         mov  [esp], ecx
         call eax                     /* ESP is 0 mod 16 at the call */
         mov  esp, ebx                /* give back whatever alignment cost */
+        pop  ebx
+        pop  ebp
+        ret
+    }
+}
+
+/* The same for two arguments.  Eight bytes of argument and eight of padding:
+ * the ABI cares that ESP is 16-byte aligned at the call, not that the
+ * arguments fill the space. */
+static __declspec(naked) int call_aligned2(void *fn, void *a, void *b)
+{
+    __asm {
+        push ebp
+        mov  ebp, esp
+        push ebx
+        mov  ebx, esp
+        mov  eax, [ebp + 8]          /* fn */
+        mov  ecx, [ebp + 12]         /* a  */
+        mov  edx, [ebp + 16]         /* b  */
+        and  esp, -16
+        sub  esp, 16
+        mov  [esp], ecx
+        mov  [esp + 4], edx
+        call eax
+        mov  esp, ebx
         pop  ebx
         pop  ebp
         ret

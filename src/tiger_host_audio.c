@@ -217,7 +217,12 @@ static DWORD WINAPI pacer_thread(LPVOID arg)
         }
         *(unsigned *)((unsigned char *)job.slice + SLICE_FLAGS_OFF)
             |= SLICE_FLAG_COMPLETE;
-        job.proc(job.udata, job.slice);
+        /* Into engine code, so the stack must be 16-byte aligned at the call --
+         * see call_aligned1.  Leopard's
+         * MTBEAudioUnitSoundOutput::QueueSamples stores a pair of doubles with
+         * movapd almost as soon as it is entered, and faults outright if this
+         * thread hands it a stack Windows aligned to four. */
+        call_aligned2((void *)job.proc, job.udata, job.slice);
     }
     return 0;
 }

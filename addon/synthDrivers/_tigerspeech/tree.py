@@ -35,12 +35,25 @@ HOST_EXE = os.path.join(_HERE, "tiger_host.exe")
 
 
 def config_base():
-    """NVDA's user configuration directory, or a sensible stand-in."""
+    """NVDA's user configuration directory, or a stand-in outside NVDA.
+
+    `globalVars.appArgs.configPath` is the only correct source. NVDA's own
+    `NVDAState.WritePaths.configDir` is a property wrapping exactly this value,
+    so it already accounts for a portable copy and for a config directory given
+    on the command line with `-c`. Expanding `%APPDATA%` ourselves would be
+    right on one machine and wrong on every portable one.
+
+    The fallback exists for running outside NVDA -- the tests, and anything
+    driven from a command line -- and for nothing else.
+    """
     try:
         import globalVars
-        return globalVars.appArgs.configPath
+        path = globalVars.appArgs.configPath
+        if path:
+            return str(path)
     except Exception:
-        return os.path.join(os.path.expanduser("~"), ".nvda")
+        pass
+    return os.path.join(os.path.expanduser("~"), ".nvda")
 
 
 def config_dir():

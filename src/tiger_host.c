@@ -171,7 +171,8 @@ typedef int (__cdecl *SEOpen_t)(void **chan);
 
 int main(int argc, char **argv)
 {
-    image mt, sd;
+    image mt, sd, ls;
+    int have_ls = 0;
     SEOpen_t open_chan;
     void *chan = NULL;
     int err, i;
@@ -246,6 +247,19 @@ int main(int argc, char **argv)
 
     AddVectoredExceptionHandler(1, on_fault);
 
+    /* An optional third image, which so far only Leopard has wanted.  Loaded
+     * first so its initializers run before anything that calls into it. */
+    {
+        char lspath[CFPATH];
+        if (find_libstdcxx(argv[2], lspath, sizeof(lspath))) {
+            load(&ls, lspath);
+            g_images[g_nimages++] = &ls;
+            have_ls = 1;
+        } else if (g_verbose) {
+            printf("no libstdc++ beside the engine; Tiger needs none\n");
+        }
+    }
+
     load(&sd, argv[2]);
     load(&mt, argv[1]);
     g_images[g_nimages++] = &sd;
@@ -277,6 +291,11 @@ int main(int argc, char **argv)
         if (g_verbose) printf("dictionary bundle: %s\n", dir);
     }
 
+    if (have_ls) {
+        if (g_verbose) printf("binding libstdc++:\n");
+        bind(&ls, NULL);
+        apply_ext_relocs(&ls, NULL);
+    }
     if (g_verbose) printf("binding SpeechDictionary:\n");
     bind(&sd, NULL);
     apply_ext_relocs(&sd, NULL);
@@ -285,6 +304,7 @@ int main(int argc, char **argv)
     apply_ext_relocs(&mt, &sd);
 
     if (g_verbose) printf("running initializers:\n");
+    if (have_ls) run_initializers(&ls);
     run_initializers(&sd);
     run_initializers(&mt);
 

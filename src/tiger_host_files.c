@@ -104,6 +104,45 @@ static int __cdecl sh_open(const char *path, int flags, int mode)
     return fd;
 }
 static int __cdecl sh_close(int fd) { return _close(fd); }
+
+/* Leopard's engine imports GCC 4.0.1's C++ runtime -- std::string, the
+ * _List_node_base helpers, __dynamic_cast and the RTTI behind it -- and those
+ * have to be Leopard's own libstdc++ rather than a reimplementation: the engine
+ * inlines code that walks basic_string's copy-on-write layout, so the bytes
+ * have to agree exactly.
+ *
+ * Tiger's engine imports none of it, so this is entirely optional.  Found, it
+ * is loaded and bound like any other image; absent, nothing changes.  Search
+ * upwards from the dictionary, since the extracted tree keeps it at the root
+ * and a real install keeps it in usr/lib.
+ */
+static int find_libstdcxx(const char *start, char *out, size_t n)
+{
+    static const char *names[] = {
+        "libstdc++.6.0.4.dylib",              /* the real file */
+        "libstdc++.6.dylib",                  /* usually a link to it */
+        "usr/lib/libstdc++.6.0.4.dylib",
+        "usr/lib/libstdc++.6.dylib",
+    };
+    char dir[CFPATH];
+    int level, i;
+    if (!start) return 0;   /* `near` is still a keyword to MSVC */
+    strncpy(dir, start, sizeof(dir) - 1);
+    dir[sizeof(dir) - 1] = 0;
+    for (level = 0; level < 6; level++) {
+        char *a = strrchr(dir, '/');
+        char *b = strrchr(dir, '\\');
+        char *cut = (a > b) ? a : b;
+        if (!cut) break;
+        *cut = 0;
+        for (i = 0; i < (int)(sizeof(names) / sizeof(names[0])); i++) {
+            _snprintf(out, n, "%s/%s", dir, names[i]);
+            out[n - 1] = 0;
+            if (_access(out, 4) == 0) return 1;
+        }
+    }
+    return 0;
+}
 static int __cdecl sh_read(int fd, void *b, unsigned n)
 { return _read(fd, b, n); }
 static int __cdecl sh_write(int fd, const void *b, unsigned n)
