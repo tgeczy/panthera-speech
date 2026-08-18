@@ -10,7 +10,88 @@
  * size from [ebp-0x48], and 0x78 - 0x48 is 0x30.
  */
 #define DARWIN_STAT_SIZE   96
+#define DARWIN_ST_DEV_OFF   0
+#define DARWIN_ST_INO_OFF   4
+#define DARWIN_ST_MODE_OFF  8
 #define DARWIN_ST_SIZE_OFF 48
+
+/* st_dev and st_ino are not decoration: SpeechDictionary's SLMMapCache keys
+ * its whole mapping cache on them.  SLMMapCache::Map(const char *) stats the
+ * path and then walks its list comparing exactly the first eight bytes of the
+ * stat buffer against each node -- nothing else, not the path.
+ *
+ * So a stat that leaves those bytes zero says "every file is the same file".
+ * Under Leopard that is fatal and almost undetectable: the first dictionary
+ * maps correctly, and the six after it are served the first one's bytes from
+ * the cache without ever reaching open().  The engine then builds an SLCartDict
+ * over a prefix dictionary, reads a length that is not a length, and walks
+ * fifteen megabytes past the end.  The visible symptom -- one open() for seven
+ * resources -- looks like five lookups failing when it is really five cache
+ * hits succeeding.
+ *
+ * Tiger never noticed, because nothing in it asks twice for two different
+ * files.  See the comment on file_ident() for why the answer is a table.
+ */
+#define DARWIN_S_IFREG 0x81a4                /* S_IFREG | 0644 */
+#define DARWIN_S_IFDIR 0x41ed                /* S_IFDIR | 0755 */
+
+/* Windows has a real file identity -- volume serial plus the 64-bit index from
+ * GetFileInformationByHandle -- but it does not fit in the 32 bits Darwin has
+ * for st_ino, and folding it down invites exactly the collision this code
+ * exists to prevent.  So hand out small sequential ids instead and remember the
+ * mapping: distinct files always differ, and the same file (by any path, or
+ * through a hard link) always agrees, which is the contract the cache wants.
+ */
+#define MAX_IDENT 128
+static struct { unsigned vol, hi, lo; } g_ident[MAX_IDENT];
+static int g_nident;
+
+static unsigned file_ident(HANDLE fh, unsigned *dev)
+{
+    BY_HANDLE_FILE_INFORMATION bi;
+    int i;
+    if (fh == INVALID_HANDLE_VALUE || !GetFileInformationByHandle(fh, &bi))
+        return 0;
+    for (i = 0; i < g_nident; i++)
+        if (g_ident[i].vol == bi.dwVolumeSerialNumber &&
+            g_ident[i].hi  == bi.nFileIndexHigh &&
+            g_ident[i].lo  == bi.nFileIndexLow) break;
+    if (i == g_nident) {
+        if (g_nident >= MAX_IDENT) return 0;
+        g_ident[i].vol = bi.dwVolumeSerialNumber;
+        g_ident[i].hi  = bi.nFileIndexHigh;
+        g_ident[i].lo  = bi.nFileIndexLow;
+        g_nident++;
+    }
+    *dev = bi.dwVolumeSerialNumber ? bi.dwVolumeSerialNumber : 1;
+    return (unsigned)i + 1;              /* never 0; 0 means "no identity" */
+}
+
+/* A filesystem that reports no file index still has to produce distinct keys,
+ * so fold the path.  Case and separators are normalised because Windows would
+ * hand back the same file under either. */
+static unsigned path_ident(const char *path)
+{
+    unsigned h = 2166136261u;
+    for (; path && *path; path++) {
+        char c = *path;
+        if (c == '\\') c = '/';
+        if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+        h = (h ^ (unsigned char)c) * 16777619u;
+    }
+    return h | 0x80000000u;              /* clear of the table's small ids */
+}
+
+static void darwin_stat_fill(unsigned char *st, long long size,
+                             unsigned dev, unsigned ino, int isdir)
+{
+    memset(st, 0, DARWIN_STAT_SIZE);
+    *(unsigned *)(st + DARWIN_ST_DEV_OFF) = dev;
+    *(unsigned *)(st + DARWIN_ST_INO_OFF) = ino;
+    *(unsigned short *)(st + DARWIN_ST_MODE_OFF) =
+        (unsigned short)(isdir ? DARWIN_S_IFDIR : DARWIN_S_IFREG);
+    *(long long *)(st + DARWIN_ST_SIZE_OFF) = size;
+}
 
 static int __cdecl sh_open(const char *path, int flags, int mode)
 {
@@ -31,10 +112,32 @@ static int __cdecl sh_write(int fd, const void *b, unsigned n)
 static int __cdecl sh_fstat(int fd, unsigned char *st)
 {
     struct _stat64 s;
+    unsigned dev = 1, ino;
     if (!st) return -1;
     if (_fstat64(fd, &s) != 0) return -1;
-    memset(st, 0, DARWIN_STAT_SIZE);
-    *(long long *)(st + DARWIN_ST_SIZE_OFF) = s.st_size;
+    ino = file_ident((HANDLE)_get_osfhandle(fd), &dev);
+    if (!ino) { dev = 1; ino = (unsigned)fd | 0x40000000u; }
+    darwin_stat_fill(st, s.st_size, dev, ino, (s.st_mode & _S_IFDIR) != 0);
+    return 0;
+}
+
+/* stat() by path, which is the one SLMMapCache actually calls.  Opening for
+ * FILE_READ_ATTRIBUTES alone needs no read permission and does not disturb
+ * anything; BACKUP_SEMANTICS is what lets the same call work on a directory. */
+static int __cdecl sh_stat(const char *path, unsigned char *st)
+{
+    struct _stat64 s;
+    HANDLE fh;
+    unsigned dev = 1, ino;
+    if (!path || !st) return -1;
+    if (_stat64(path, &s) != 0) return -1;
+    fh = CreateFileA(path, FILE_READ_ATTRIBUTES,
+                     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                     NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    ino = file_ident(fh, &dev);
+    if (fh != INVALID_HANDLE_VALUE) CloseHandle(fh);
+    if (!ino) { dev = 1; ino = path_ident(path); }
+    darwin_stat_fill(st, s.st_size, dev, ino, (s.st_mode & _S_IFDIR) != 0);
     return 0;
 }
 

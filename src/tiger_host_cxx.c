@@ -105,15 +105,9 @@ static int __cdecl sh_cond_destroy(void *c) { (void)c; return 0; }
 static int __cdecl sh_mutex_destroy(void *m) { (void)m; return 0; }
 static unsigned __cdecl sh_pthread_self(void) { return GetCurrentThreadId(); }
 
-static int __cdecl sh_stat(const char *path, unsigned char *st)
-{
-    struct _stat64 s;
-    if (!path || !st) return -1;
-    if (_stat64(path, &s) != 0) return -1;
-    memset(st, 0, DARWIN_STAT_SIZE);
-    *(long long *)(st + DARWIN_ST_SIZE_OFF) = s.st_size;
-    return 0;
-}
+/* sh_stat sits with the rest of the file layer, in tiger_host_files.c: what it
+ * reports about a file's identity is a file-layer concern, and a subtle one. */
+
 /* pread must not disturb the descriptor's own offset, and SpeechDictionary
  * interleaves it with ordinary reads. */
 static int __cdecl sh_pread(int fd, void *buf, unsigned n,
