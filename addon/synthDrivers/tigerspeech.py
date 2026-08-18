@@ -778,15 +778,15 @@ class SynthDriver(SynthDriver):
                     continue
                 self._flush(run, wpm, voice, adj, pending)
                 if kind == "break":
-                    self._audioQueue.put(("audio", _silence(value)))
+                    self._audioQueue.put(("audio", _silence(value), self._cancels))
                 elif kind == "pitch":
                     adj = value
             if not self._stopped:
                 self._flush(run, wpm, voice, adj, pending)
             for index in pending:               # nothing left to speak
-                self._audioQueue.put(("index", index))
+                self._audioQueue.put(("index", index, None))
             del pending[:]
-            self._audioQueue.put(("done", None))
+            self._audioQueue.put(("done", None, None))
 
     def _flush(self, run, wpm, voice, adj=0, pending=None):
         """Render the text collected so far as ONE utterance.
@@ -813,7 +813,7 @@ class SynthDriver(SynthDriver):
         if not run:
             if pending:
                 for index in pending:
-                    self._audioQueue.put(("index", index))
+                    self._audioQueue.put(("index", index, None))
                 del pending[:]
             return
         text = _joinFragments(run)
@@ -830,7 +830,7 @@ class SynthDriver(SynthDriver):
         # moment that would still be the head.
         if pending:
             for index in pending:
-                self._audioQueue.put(("index", index))
+                self._audioQueue.put(("index", index, None))
             del pending[:]
         mark = self._cancels
         fed = []
@@ -847,7 +847,7 @@ class SynthDriver(SynthDriver):
             if not firstAt:
                 firstAt.append(time.perf_counter())
             fed.append(len(chunk))
-            self._audioQueue.put(("audio", chunk))
+            self._audioQueue.put(("audio", chunk, mark))
             return True
 
         pcm = self._render(text, wpm, voice, self._pitchOffset(adj), sink=sink)
@@ -872,7 +872,7 @@ class SynthDriver(SynthDriver):
         if pcm is not None and fed and self._cancels == mark:
             gap = self.PAUSE_MS.get(self._pauseMode, 0)
             if gap:
-                self._audioQueue.put(("audio", _silence(gap)))
+                self._audioQueue.put(("audio", _silence(gap), mark))
 
     def _feed(self):
         """Playback lives on its own thread because `feed()` blocks.
@@ -884,7 +884,27 @@ class SynthDriver(SynthDriver):
             item = self._audioQueue.get()
             if item is None:
                 break
-            kind, value = item
+            kind, value, tag = item
+            # Audio carries the cancel count it was rendered under, and it is
+            # checked *here*, after it comes off the queue -- which is the only
+            # place a cancel cannot slip past.
+            #
+            # cancel() bumps the count and then drains this queue; the worker
+            # checks the count and then puts.  A chunk landing between those
+            # two steps survives the drain and plays against whatever the user
+            # asked for next.  With a whole utterance per put that was one
+            # narrow window an utterance; streaming made it twenty to seventy,
+            # and it started being heard -- a sentence from the post above
+            # bleeding into the one below it.
+            #
+            # This is not the generation stamp rule 3 forbids.  That decided
+            # whether to *render*, and losing the race meant silence with
+            # nothing to recover it.  This only drops audio the user has
+            # already cancelled, and "index" and "done" are never tagged, so
+            # NVDA is always told the utterance finished and always asks for
+            # the next one.
+            if tag is not None and tag != self._cancels:
+                continue
             try:
                 if kind == "audio":
                     # The last hop, and the only part of the wait this driver

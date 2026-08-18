@@ -1012,3 +1012,38 @@ def test_interrupting_does_not_delay_the_next_utterance(driver):
     assert waited < 400.0, (
         "interrupting still costs %.0f ms before the next utterance is heard"
         % waited)
+
+
+def test_audio_from_a_cancelled_utterance_is_dropped_by_the_feeder(driver):
+    """The post above bleeding into the post below.
+
+    `cancel()` bumps the count and then drains the audio queue; the worker
+    checks the count and then puts.  A chunk landing between those two steps
+    survived the drain and played against whatever the user asked for next --
+    heard as a sentence from one message repeating over the next one.  With a
+    whole utterance per put that was one narrow window an utterance, and
+    streaming made it twenty to seventy.
+
+    Hammering interrupts does not reproduce it -- twelve rounds hit the window
+    no more reliably than a user does, and a test that passes either way is
+    worse than none.  So the invariant is tested where the fix lives: audio
+    tagged with a superseded cancel count must never be fed, and audio tagged
+    with the current one must be.
+    """
+    _warm(driver)
+    driver.cancel()
+    stale = driver._cancels - 1
+    time.sleep(0.05)
+
+    before = driver._player.bytes
+    driver._audioQueue.put(("audio", bytes(4000), stale))
+    time.sleep(0.2)
+    assert driver._player.bytes == before, (
+        "audio from a cancelled utterance was played anyway")
+
+    # And the guard must not eat what is still wanted, or it would be silence.
+    driver._audioQueue.put(("audio", bytes(4000), driver._cancels))
+    end = time.perf_counter() + 2.0
+    while time.perf_counter() < end and driver._player.bytes == before:
+        time.sleep(0.005)
+    assert driver._player.bytes > before, "current audio was dropped too"
