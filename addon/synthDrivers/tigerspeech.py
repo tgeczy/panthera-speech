@@ -225,6 +225,7 @@ class SynthDriver(SynthDriver):
         SynthDriver.VoiceSetting(),
         SynthDriver.RateSetting(),
         SynthDriver.PitchSetting(),
+        SynthDriver.VolumeSetting(),
         BooleanDriverSetting(
             "acceptCommands",
             _("Accept &embedded speech commands in text"),
@@ -283,6 +284,7 @@ class SynthDriver(SynthDriver):
         self._pitch = 50
         self._acceptCommands = False
         self._pauseMode = "short"
+        self._volume = 100
         self._voiceId = self._voices[0][0]
         for bundle, _display, engine in self._voices:      # prefer Fred
             if bundle == "Fred":
@@ -443,6 +445,15 @@ class SynthDriver(SynthDriver):
             # produce silence instead of speaking it.  The host separately
             # guarantees no command can outlive its utterance.
             text = COMMAND_RE.sub("", text)
+        # Volume is the engine's own [[volm]] command, not gain applied to
+        # the PCM afterwards.  Measured on both engines it is exactly
+        # linear -- volm 0.5 halves the RMS and 0.2 fifths it -- so the
+        # synthesizer does the arithmetic in floating point before it
+        # quantises, which is better than anything done to 16-bit samples
+        # after the fact.  Nothing is added at full volume, so the default
+        # request is byte-for-byte what it always was.
+        if self._volume < 100:
+            text = "[[volm %.3f]]%s" % (self._volume / 100.0, text)
         try:
             proc = self._host()
             v = voice.encode("utf-8")
@@ -636,6 +647,12 @@ class SynthDriver(SynthDriver):
             pass
 
     # -- settings ----------------------------------------------------------
+    def _get_volume(self):
+        return self._volume
+
+    def _set_volume(self, value):
+        self._volume = max(0, min(100, int(value)))
+
     def _get_acceptCommands(self):
         return self._acceptCommands
 

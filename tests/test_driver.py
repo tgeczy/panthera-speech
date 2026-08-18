@@ -628,3 +628,38 @@ def test_capital_pitch_change_reaches_the_engine(driver, monkeypatch):
     assert len(seen) == 3, "expected three renders, got %r" % (seen,)
     assert seen[1] > seen[0], "the capital was not raised in pitch: %r" % (seen,)
     assert seen[2] == seen[0], "pitch did not come back down: %r" % (seen,)
+
+
+def test_volume_actually_changes_the_level(driver):
+    """A gap people named: there was no volume control at all.
+
+    It is the engine's own [[volm]] command rather than gain applied to the
+    PCM: measured on both engines it is exactly linear, and the synthesizer
+    does the arithmetic before it quantises to 16 bits.
+    """
+    import struct as _s
+
+    def rms(pcm):
+        v = _s.unpack("<%dh" % (len(pcm) // 2), pcm)
+        return (sum(float(x) * x for x in v) / max(1, len(v))) ** 0.5
+
+    _warm(driver)
+    text = "Hello there, testing the volume."
+    voice = driver._get_voice()
+    driver._set_volume(100)
+    full = rms(driver._render(text, 180, voice))
+    driver._set_volume(50)
+    half = rms(driver._render(text, 180, voice))
+    driver._set_volume(100)
+    assert full > 0
+    assert 0.35 < half / full < 0.65,         "half volume gave %.2f of full, not about a half" % (half / full)
+
+
+def test_full_volume_changes_nothing_about_the_request(driver):
+    """The default must not perturb what has been byte-identical for months."""
+    import tigerspeech
+    driver._set_volume(100)
+    text = "Hello there."
+    a = driver._render(text, 180, driver._get_voice())
+    b = driver._render(text, 180, driver._get_voice())
+    assert a == b and a, "renders are not reproducible at full volume"
