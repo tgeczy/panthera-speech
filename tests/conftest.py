@@ -163,6 +163,7 @@ def _install_fake_nvda():
             self.id, self.name, self.language = id, name, language
     class SynthDriver(object):
         VoiceSetting = RateSetting = PitchSetting = VolumeSetting = _Setting
+        InflectionSetting = _Setting
         def __init__(self): pass
     class _Notifier(object):
         """Counts, and lets a test wait for the next notification.

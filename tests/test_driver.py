@@ -7,6 +7,7 @@ porting their tests would have been the same mistake in a new repository.
 """
 import time
 
+import numpy as np
 import pytest
 
 
@@ -768,3 +769,60 @@ def test_rate_boost_actually_speaks_faster(driver):
 def test_rate_boost_is_off_by_default(driver):
     """Upgrading must not change how fast anybody's screen reader talks."""
     assert driver._get_rateBoost() is False
+
+
+def test_inflection_flattens_and_exaggerates_the_voice(driver):
+    """Asked for by a tester, and it is the engine's own 'pmod'.
+
+    It reaches the two engine families differently, which is why this checks
+    the mean and not the wander.  On the concatenative voices it opens the
+    voice right up -- Vicki's spread runs 7.1 to 31.2 across the range, Alex's
+    8.6 to 22.5 -- while formant Fred barely changes spread (24.2 to 28.8) and
+    climbs in pitch instead, 101.4 Hz to 125.9.  Mean F0 rises on every voice.
+    """
+    import struct as _s
+    import tigerspeech
+
+    def meanF0(pcm):
+        v = np.frombuffer(pcm, dtype="<i2").astype(float) / 32768.0
+        sr, N, H = 22050, 1024, 512
+        lo, hi = sr // 300, sr // 60
+        out = []
+        for i in range(0, len(v) - N, H):
+            f = v[i:i + N]
+            if np.abs(f).max() < 0.02:
+                continue
+            g = f - f.mean()
+            ac = np.correlate(g, g, "full")[N - 1:]
+            if ac[0] <= 0:
+                continue
+            lag = lo + int(np.argmax(ac[lo:hi]))
+            if ac[lag] / ac[0] > 0.3:
+                out.append(sr / lag)
+        return float(np.mean(out)) if out else 0.0
+
+    _warm(driver)
+    text = "This is a test of the inflection parameter today."
+    voice = driver._get_voice()
+    driver._set_inflection(0)
+    flat = meanF0(driver._render(text, 180, voice))
+    driver._set_inflection(100)
+    lively = meanF0(driver._render(text, 180, voice))
+    driver._set_inflection(50)
+    assert lively > flat * 1.05, ("inflection did not move the voice: "
+                                  "%.1f Hz flat, %.1f Hz lively" % (flat, lively))
+
+
+def test_the_default_utterance_carries_no_embedded_commands(driver):
+    """Defaults must leave the engine exactly as it comes.
+
+    Volume at full and inflection at the halfway point add nothing to the
+    text, which is what keeps the default render byte-for-byte what it has
+    always been -- and what the Tiger regression baseline depends on.
+    """
+    import tigerspeech
+    driver._set_volume(100)
+    driver._set_inflection(50)
+    a = driver._render("hello there", 180, driver._get_voice())
+    b = driver._render("hello there", 180, driver._get_voice())
+    assert a and a == b

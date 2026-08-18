@@ -87,7 +87,7 @@ RATE_MIN, RATE_MAX = 80, 400
 #: It is a separate switch rather than a wider slider because widening the
 #: slider would silently make everyone's existing setting faster -- the
 #: same mistake as a volume control that defaults to half.
-RATE_MAX_BOOST = 800
+RATE_MAX_BOOST = 1200
 
 #: NVDA's 0-100 pitch onto an offset from the voice's own pitch, in tenths of
 #: a semitone.  50 is the voice as Apple recorded it; the ends are an octave
@@ -98,6 +98,20 @@ RATE_MAX_BOOST = 800
 #: scale would make the middle of the slider mean something different for each.
 #: The host asks the engine for the voice's own 'pbas' and adds this to it.
 PITCH_SEMITONES = 12
+
+#: NVDA's 0-100 inflection onto the engine's 'pmod', which is a percentage:
+#: 0 is a monotone, 100 is roughly the voice as recorded, 200 is twice its
+#: usual movement.  Measured on Alex over one sentence, mean F0 and how far
+#: it wanders:
+#:
+#:     pmod   0    100.0 Hz, spread  8.6   (flat)
+#:     pmod 100    111.3 Hz, spread 13.7
+#:     pmod 200    121.5 Hz, spread 22.5   (very expressive)
+#:
+#: Nothing is sent at the halfway point, because no command at all is not
+#: quite the same as pmod 100 -- untouched measures 117.0 Hz and 16.8 --
+#: and the default has to be the engine exactly as it comes.
+INFLECTION_MAX_PMOD = 200
 
 #: An embedded speech command, as Tiger's front end parses it.  Non-greedy, and
 #: it will not run past a newline, so an unclosed "[[" cannot eat a paragraph.
@@ -265,6 +279,7 @@ class SynthDriver(SynthDriver):
         SynthDriver.RateSetting(),
         SynthDriver.PitchSetting(),
         _fullVolumeByDefault(SynthDriver.VolumeSetting()),
+        SynthDriver.InflectionSetting(),
         BooleanDriverSetting(
             "acceptCommands",
             _("Accept &embedded speech commands in text"),
@@ -330,6 +345,7 @@ class SynthDriver(SynthDriver):
         self._acceptCommands = False
         self._pauseMode = "short"
         self._rateBoost = False
+        self._inflection = 50
         self._volume = 100
         self._voiceId = self._voices[0][0]
         for bundle, _display, engine in self._voices:      # prefer Fred
@@ -505,6 +521,14 @@ class SynthDriver(SynthDriver):
         # quantises, which is better than anything done to 16-bit samples
         # after the fact.  Nothing is added at full volume, so the default
         # request is byte-for-byte what it always was.
+        # Inflection is the engine's own 'pmod', as an embedded command --
+        # the same trick as volume, and for the same reason: no protocol
+        # change, and the engine does the work.  Nothing is sent at the
+        # halfway point so the default utterance is byte-for-byte what it
+        # has always been.
+        if self._inflection != 50:
+            pmod = int(self._inflection * INFLECTION_MAX_PMOD / 100)
+            text = "[[pmod %d]]%s" % (pmod, text)
         if self._volume < 100:
             text = "[[volm %.3f]]%s" % (self._volume / 100.0, text)
         try:
@@ -755,6 +779,12 @@ class SynthDriver(SynthDriver):
             pass
 
     # -- settings ----------------------------------------------------------
+    def _get_inflection(self):
+        return self._inflection
+
+    def _set_inflection(self, value):
+        self._inflection = max(0, min(100, int(value)))
+
     def _get_rateBoost(self):
         return self._rateBoost
 
