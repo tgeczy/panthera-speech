@@ -272,8 +272,13 @@ _MISSING = (
 )
 
 
-def _explainLater(folder):
+def _explainLater(folder, reason=None):
     """Show the engine-missing dialog once NVDA has finished failing.
+
+    With a `reason`, that is shown instead: a tree which is present but cannot
+    run must not be told its engine is missing. Someone who has already
+    extracted an engine and is then sent back to the folder to put one there
+    has been given a wrong instruction and no way to know it.
 
     Never straight from `__init__`: a modal dialog there would stall the
     synthesizer switch with speech half torn down. Queued instead, so it
@@ -293,6 +298,10 @@ def _explainLater(folder):
 
     def show():
         try:
+            if reason:
+                gui.messageBox(reason, "Tiger-speech",
+                               wx.OK | wx.ICON_INFORMATION)
+                return
             answer = gui.messageBox(_MISSING % folder, "Tiger-speech",
                                     wx.YES_NO | wx.ICON_INFORMATION)
             if answer == wx.YES:
@@ -364,7 +373,9 @@ class SynthDriver(SynthDriver):
         ok, lines = tree.explain()
         if not ok:
             log.warning("tiger-speech cannot start:\n  %s" % "\n  ".join(lines))
-            _explainLater(tree.config_dir())
+            found = find_tree()
+            _explainLater(tree.config_dir(),
+                          tree.unsupported_build(found) if found else None)
             raise RuntimeError("tiger-speech has no engine to run")
         self._tree = find_tree()
         if not self._tree:

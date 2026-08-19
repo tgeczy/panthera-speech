@@ -371,6 +371,45 @@ def verify(outdir):
             ok = False
         print("  %-18s %s" % ("engine build", kind))
 
+    if ok:
+        # And *which* MacinTalk this is, which decides whether it can run here
+        # at all.
+        #
+        # 3.4 -- Tiger from 10.4.5 onwards -- calls Apple's "Don't Steal Mac
+        # OS X" routine, which is answered by the kernel extension of that
+        # name and keyed from the SMC on genuine Apple hardware.  Off that
+        # hardware the call goes nowhere and the engine dies, and because the
+        # driver restarts a crashed host quietly it arrives as total silence
+        # with no error at all (issue #1).
+        #
+        # Answering it would mean reproducing a value that only exists on a
+        # real Mac, so we do not.  Saying so here, while the image is still in
+        # front of them, is the whole of the fix.
+        #
+        # The same check is `needs_dsmos` in `_tigerspeech/tree.py`.  Copied
+        # rather than imported on purpose: this script has to run before the
+        # add-on is installed.
+        protected = []
+        for label, path in (("engine", mt), ("dictionary", sd)):
+            try:
+                with open(path, "rb") as f:
+                    if b"___commpage_dsmos" in f.read():
+                        protected.append(label)
+            except Exception:
+                pass
+        if protected:
+            ok = False
+            print("  %-18s MacinTalk 3.4 -- cannot run here" % "engine version")
+            print("\n  This image's %s uses Apple's copy protection, which only"
+                  "\n  answers on a real Mac.  Nothing is wrong with your disc"
+                  "\n  or with this extraction.\n"
+                  "\n  Two ways on:\n"
+                  "    * an earlier Tiger image, which carries MacinTalk 3.3\n"
+                  "    * the leopard-speech add-on, which has Fred and the\n"
+                  "      rest of the MacinTalk 3 voices as well as Alex, and\n"
+                  "      is not affected by this"
+                  % " and ".join(protected))
+
     voices = read_voices(voicesdir)
     print("  %-18s %d" % ("voices", len(voices)))
     for engine, label in (("mtk3", "MacinTalk 3"), ("gala", "MacinTalk Pro"),

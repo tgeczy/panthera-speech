@@ -110,6 +110,59 @@ def engine_paths(tree):
             os.path.join(tree, "Speech", "Voices"))
 
 
+#: The symbol that says a build cannot run here, and why.
+#:
+#: MacinTalk 3.4 -- what Tiger shipped from 10.4.5 -- calls Apple's "Don't
+#: Steal Mac OS X" routine from six places in the dictionary and three in the
+#: engine.  It is satisfied by the kernel extension of that name, keyed from
+#: the SMC on genuine Apple hardware; off that hardware the call goes nowhere
+#: and the process dies.  Reported as total silence with no error at all
+#: (issue #1), because the driver restarts a crashed host quietly.
+#:
+#: **We are not going to answer it.**  Doing so means reproducing a value that
+#: exists on a real Mac, which is the fake-SMC problem and the thing Apple sued
+#: Psystar over.  Saying so plainly and early costs nothing and implements
+#: nothing.
+#:
+#: MacinTalk 3.3 -- earlier Tiger -- does not call it, and neither does
+#: Leopard's 3.6, which is why leopard-speech is the answer for anyone whose
+#: disc is 10.4.5 or later.
+DSMOS_SYMBOL = b"___commpage_dsmos"
+
+
+def needs_dsmos(path):
+    """-> True if this Mach-O calls the Don't Steal Mac OS X routine.
+
+    The symbol is in the string table whether or not it is ever reached, so
+    reading the file answers it -- no need to load the engine and find out by
+    crashing.  A read failure answers False: a check that cannot run must not
+    be the thing that stops someone using an engine that would have worked.
+    """
+    try:
+        with open(path, "rb") as f:
+            return DSMOS_SYMBOL in f.read()
+    except Exception:
+        return False
+
+
+def unsupported_build(tree):
+    """-> a sentence naming the problem, or None if the tree is fine."""
+    engine, dictionary, _voices = engine_paths(tree)
+    hits = [name for name, path in (("engine", engine),
+                                    ("dictionary", dictionary))
+            if os.path.isfile(path) and needs_dsmos(path)]
+    if not hits:
+        return None
+    return (
+        "This is MacinTalk 3.4, from Mac OS X 10.4.5 or later, and it cannot "
+        "run here: its %s calls Apple's copy-protection routine, which only "
+        "answers on genuine Apple hardware. Nothing is wrong with your "
+        "extraction. Either use an earlier Tiger image, which has MacinTalk "
+        "3.3, or use the leopard-speech add-on -- it has Fred and the rest of "
+        "the MacinTalk 3 voices as well as Alex, and is unaffected."
+        % " and ".join(hits))
+
+
 #: Engines the host can actually render with -- all three, since 0.5.
 #:
 #: `meow` -- Vicki, and only Vicki -- keeps its sample bank as **AAC**, which
@@ -245,6 +298,15 @@ def explain():
         lines.append("%s: %s %s" % (what, path, "found" if good else "MISSING"))
         if not good:
             ok = False
+
+    #: Before the voices, because if this is a 3.4 tree nothing else matters:
+    #: every voice will be listed, chosen, and then silent.  A voice that is
+    #: selectable and mute is the worst failure this add-on has, and this is
+    #: the one cause of it we can name from the file alone.
+    protected = unsupported_build(found_tree)
+    if protected:
+        ok = False
+        lines.append("engine: %s" % protected)
 
     playable = read_voices(voices, playable_only=True)
     present = read_voices(voices)

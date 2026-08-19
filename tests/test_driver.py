@@ -173,10 +173,15 @@ def test_missing_tree_refuses_to_load_rather_than_going_silent(monkeypatch,
 
     # And refuses to load, so NVDA falls back and speech carries on.
     told = []
-    monkeypatch.setattr(tigerspeech, "_explainLater", told.append)
+    monkeypatch.setattr(tigerspeech, "_explainLater",
+                        lambda *a, **k: told.append(a))
     with pytest.raises(Exception):
         tigerspeech.SynthDriver()
     assert told, "it refused to load and told the user nothing"
+
+    # Nothing was found, so there is no build to blame: the dialog is the
+    # missing-engine one rather than a message about MacinTalk 3.4.
+    assert told[0][1] is None, "nothing found, so nothing should be named"
 
 
 # -- the rules ------------------------------------------------------------
