@@ -382,20 +382,40 @@ static int serve(image *mt, void *chan, const char *voicesdir)
                      * A hundred milliseconds against 2255 ms of the original
                      * fault is a trade worth making, but it is a delay, and
                      * calling it a status check would be a lie. */
-                    if (getinfo) {
-                        long info[4];
+                    {
+                        /* Wait for the stragglers to stop, rather than for a
+                         * fixed time.
+                         *
+                         * The engine keeps handing over slices for a little
+                         * while after being stopped -- the host counts them,
+                         * and it is four or five -- and any that arrive once
+                         * the next request has begun are stamped as *its*
+                         * audio and are heard at the head of it.  A fixed
+                         * hundred milliseconds caught most and missed some:
+                         * the residue was two words, "after that.", still
+                         * riding in front of the next post.
+                         *
+                         * So watch the slice counter instead and leave when it
+                         * has been still for a moment.  Usually quicker than
+                         * the fixed wait, and it does not guess. */
+                        unsigned last = g_slices, quiet = 0;
                         int spin;
-                        for (spin = 0; spin < 50; spin++) {
-                            memset(info, 0, sizeof(info));
-                            if (call_aligned3((void *)getinfo, chan,
-                                              (void *)SEL_STATUS, info) != 0)
-                                break;
-                            if (info[0] == 0) break;    /* outputBusy */
+                        long info[4];
+                        for (spin = 0; spin < 100 && quiet < 15; spin++) {
                             Sleep(2);
+                            if (g_slices != last) { last = g_slices; quiet = 0; }
+                            else quiet++;
+                            if (getinfo) {
+                                memset(info, 0, sizeof(info));
+                                if (call_aligned3((void *)getinfo, chan,
+                                                  (void *)SEL_STATUS,
+                                                  info) == 0 && info[0] == 0)
+                                    break;      /* it says it is idle */
+                            }
                         }
                         if (g_float_stats)
-                            fprintf(stderr, "  [se] channel idle after %d poll(s)\n",
-                                    spin);
+                            fprintf(stderr, "  [se] settled after %d ms\n",
+                                    spin * 2);
                     }
                     cancelled = 1;
                     break;

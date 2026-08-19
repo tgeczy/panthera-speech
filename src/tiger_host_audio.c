@@ -334,7 +334,23 @@ static void collect_slice(unsigned char *slice)
      * is placed relative to it. */
     if (!g_have_origin) { g_time_origin = stime; g_have_origin = 1; }
     stime -= g_time_origin;
-    if (stime < 0.0) stime = 0.0;
+    if (stime < 0.0) {
+        /* Earlier than what we took for the start of this utterance.
+         *
+         * That happens when a slice left over from the utterance just
+         * abandoned arrives after the next request has begun: it carries the
+         * old clock, which may be seconds ahead, and it set the origin.  The
+         * real slices then compute a negative position.
+         *
+         * Clamping them to zero was wrong and audible -- every one of them
+         * piled onto position zero, overwriting the opening of the post, so
+         * it was heard starting partway through.  Treat it as a fresh epoch
+         * instead: re-take the origin here and append.  Nothing is lost; at
+         * worst the stray frames stay in front. */
+        g_epoch_base = g_pcm_n;
+        g_time_origin += stime;         /* i.e. back to this slice's own time */
+        stime = 0.0;
+    }
     if (stime < g_last_stime) g_epoch_base = g_pcm_n;
     g_last_stime = stime;
     nbufs = *(unsigned *)bl;
