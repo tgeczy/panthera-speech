@@ -10,6 +10,82 @@ i386 process; what it needs is a *loader*.
 
 ---
 
+## 0. Which MacinTalk this is, and why it matters to how Fred sounds
+
+Everything below is **MacinTalk 3.3**, and that is not a detail. Tiger shipped
+two different engines, and the difference is audible in principle even though
+we cannot demonstrate it.
+
+| | 3.3 | 3.4 | Leopard's 3.6 |
+|---|---|---|---|
+| source version | 30382 | 30404 | — |
+| `__DATA,__cfstring` | **none at all** | **480 bytes, 30 constants** | 4528, 283 |
+| `__TEXT,__text` | 223,860 | 206,491 | 438,012 |
+| symbols shared with 3.6 | 971 | **1250** | — |
+| calls `___commpage_dsmos` | no | **yes** | no |
+
+**3.4 is not 3.3 with a version bump.** It is a rebuild, and it is the turn
+toward Leopard.
+
+The `__cfstring` row is the one that carries the argument, because a section
+that does not exist cannot be a naming difference or a toolchain artefact.
+3.3 has **no tunable parameters whatever** — there is nowhere for them to
+live. 3.4 has thirty, and they are recognisably the beginning of the set
+Leopard grows to 283: `UnitCost.SpectralWeight`, `UnitCost.AccentCostWeight`,
+`UnitCost.DurationWeight`, `UnitCost.VoicedPitchWeight`,
+`SegmentAssembly.DurationSlack`, `SegmentAssembly.PitchSlack`,
+`PitchDecrease.{Target,Linear,Window,MinWin}`, `PitchIncrease.Window`,
+`PitchChange.DetectExcitation`. Those are the knobs of a prosody layer:
+how strongly a unit is penalised for the wrong accent, how far a segment's
+duration and pitch may be stretched to fit a target, how a pitch fall is
+shaped.
+
+`MEOW_DEBUG` and `MTX_DEBUG` are in 3.4 as well, so the engine's own narration
+predates Leopard by a generation.
+
+3.4's code is also **smaller** than 3.3's while sharing more symbols with 3.6,
+which says rewritten rather than extended.
+
+### What that does and does not license you to say
+
+**It does not prove Fred sounds different in 3.4.** Be careful with the symbol
+count in particular: most of the +742 is RTTI and destructors, an artefact of
+3.3 having been built with an older GCC that did not emit those into the symbol
+table. Do not read a newly *named* function as a new feature.
+
+What is fair to say is this. The machinery that distinguishes Leopard's voice —
+a cost model over unit selection, slack on duration and pitch, an explicit
+shape for pitch movement — **exists in 3.4 and does not exist in 3.3 at all.**
+An engine cannot apply a prosody model it has no parameters for. So 3.4 sits
+between the two by construction, and it is likely, though unproven, that its
+Fred leans toward Leopard's.
+
+**Why it will probably stay unproven.** 3.4 calls `___commpage_dsmos` — Apple's
+"Don't Steal Mac OS X" routine — from six places in the dictionary and three in
+the engine, and that call is on the speak path. Off genuine Apple hardware the
+engine dies before it produces a sample, so 3.4 cannot be rendered here at all.
+Nor can it be heard in emulation: PowerPC Tiger stayed on **3.3** for its whole
+life (checked on a real 10.4.11 guest, which reports 3.3), and went straight to
+3.6 in Leopard. **3.4 was the Intel port, and Intel-only** — an interlude of
+about eighteen months. Only period Intel Apple hardware still running Tiger
+could settle it.
+
+### Which is good news, not a consolation
+
+Because PowerPC was Tiger's platform for its entire life, and Intel Tiger
+shipped on early Intel Macs for well under two years, **3.3 is not a lucky
+variant found on an old disc — it is the Tiger Fred nearly everyone ever
+heard.** It is what this project runs, on both architectures, and the engine
+described in the rest of this document is the canonical article rather than a
+near-miss.
+
+The practical consequence for anyone extracting a disc is in the README: it
+must be an **Intel** image (PowerPC discs carry a thin PowerPC MacinTalk with
+no i386 slice), and it must be an **early** one, because from 10.4.5 Apple
+shipped 3.4. `tools/extract_tiger.py` checks both and names what it found.
+
+---
+
 ## 1. What the engine actually is
 
 `MacinTalk.SpeechSynthesizer/Contents/MacOS/MacinTalk` is a **universal**
