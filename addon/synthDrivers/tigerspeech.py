@@ -427,6 +427,15 @@ class SynthDriver(SynthDriver):
         #: state in both without synchronising them, and the two are called
         #: from different threads here -- the feeder and NVDA's main thread.
         self._playerLock = threading.Lock()
+        #: Whether the next stream start follows an interruption rather than an
+        #: utterance that finished on its own.
+        #:
+        #: NVDA's feed() waits while the device buffer is more than half full,
+        #: and its stop() defers clearing that buffer to the next feed().  A
+        #: start measured at 2052 ms is the whole of the remaining lag, and
+        #: those two paths would explain it very differently -- so record which
+        #: one it was rather than reason about it.
+        self._afterCancel = False
         #: How `cancel()` reaches the engine.
         #:
         #: Stopping the sound is instant, but the host went on synthesising the
@@ -994,8 +1003,14 @@ class SynthDriver(SynthDriver):
                             self._player.feed(value)
                             ms = (time.perf_counter() - t0) * 1000.0
                             if ms >= 20.0 and log.isEnabledFor(log.DEBUG):
-                                log.debug("tigerspeech: the audio device took "
-                                          "%.0f ms to start playing" % ms)
+                                log.debug(
+                                    "tigerspeech: the audio device took %.0f ms "
+                                    "to start playing (%.0f ms of audio, after "
+                                    "%s)"
+                                    % (ms, len(value) / 2.0 / OUT_RATE * 1000.0,
+                                       "an interruption" if self._afterCancel
+                                       else "the previous utterance ended"))
+                            self._afterCancel = False
                         else:
                             self._player.feed(value)
                 elif kind == "index":
@@ -1107,6 +1122,7 @@ class SynthDriver(SynthDriver):
         # start it again -- which is exactly the wait after an interruption
         # that a user feels most sharply.
         self._playerIdle = True
+        self._afterCancel = True
         # Nothing is queued at the device any more, so the feeder is not ahead.
         self._fedUntil = 0.0
 

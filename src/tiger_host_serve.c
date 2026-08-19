@@ -63,6 +63,14 @@
  * so it must never block, and SetEvent cannot.  The name comes in on the
  * environment when the host is started. */
 static HANDLE g_cancel_ev;
+/* Whether an interrupted channel is reset with soReset.
+ *
+ * It flushes what is left, but it resets the channel to its defaults --
+ * and for Alex that means the voice, whose sample bank is 701 MB.  The
+ * driver's own test caught it: interrupting cost 2887 ms afterwards.
+ * TIGER_RESET=1 puts it back for measuring; the settle below is what
+ * carries the load. */
+static int g_use_reset;
 
 static int cancel_requested(void)
 {
@@ -362,7 +370,7 @@ static int serve(image *mt, void *chan, const char *voicesdir)
                      * after being stopped, and the wait alone was hiding the
                      * fault by giving the engine time to drain.  A fix that
                      * works by being slow is the fault wearing a hat. */
-                    if (setinfo) {
+                    if (setinfo && g_use_reset) {
                         unsigned zero = 0;
                         call_aligned3((void *)setinfo, chan, (void *)SEL_RESET,
                                       &zero);

@@ -228,6 +228,8 @@ int main(int argc, char **argv)
     { const char *e = getenv("TIGER_SPEED");
       if (e && atof(e) > 0.0) g_speed = atof(e);
       g_pace = 100.0 / g_speed;              /* pacer follows the clock */
+      e = getenv("TIGER_RESET");
+      if (e) g_use_reset = atoi(e) != 0;
       e = getenv("TIGER_PACE_FLOOR");
       if (e) g_pace_floor = atof(e); }
     /* Windows sleeps in 15.6 ms steps by default, so a 1 ms pace tick really
