@@ -39,8 +39,46 @@ REFUSING to package -- these are not ours to distribute:
 
 ## Getting the engine
 
-You need an Intel Tiger install image, which is the only architecture this
-runs. Everything needed is inside one package on the disc:
+### Check your image before anything else
+
+Two things have to be true of the disc, and the second one turns away most
+Tiger media in circulation. **Check what you already have first**, and only go
+looking elsewhere if it does not match.
+
+**It must be an Intel image.** This loads i386 code, and that is the only
+architecture it can load. A PowerPC Tiger disc is not a slower option, it is
+not an option: its `MacinTalk` is a thin big-endian PowerPC binary with no
+i386 slice in it. Intel discs carry a fat `i386, ppc` binary, which is the one
+that works.
+
+**It must carry MacinTalk 3.3, which means the earliest Intel Tiger** — the
+10.4.4-era disc that shipped with the first Intel Macs. From 10.4.5 onward
+Apple shipped **MacinTalk 3.4**, which calls `___commpage_dsmos`, Apple's
+"Don't Steal Mac OS X" routine, from six places in the dictionary and three in
+the engine. On a genuine Apple machine a kernel extension answers that from
+the SMC. Off it, the call goes nowhere and the engine dies.
+
+**We are not going to answer it.** Providing that routine means shipping a
+fake SMC response whose only purpose is to defeat a copy-protection check —
+the thing Psystar was sued over — and that is a different category from
+shimming `mmap` or `printf`, even though you supply your own licensed disc.
+So 3.4 is not a "not yet"; it is a no.
+
+`tools/extract_tiger.py` checks both of these while it extracts and names what
+it found, so you learn this in a second rather than from a silent synthesizer.
+
+**If your disc is 10.4.5 or later**, the answer is not a different add-on
+setting, it is [leopard-speech][leopard] — Leopard's MacinTalk 3.6 dropped the
+check again, and it carries Fred and the whole MacinTalk 3 roster as well as
+Alex. What you lose is that Leopard's Fred is a later engine; see
+[docs/macintalk-3.3.md](docs/macintalk-3.3.md) for what changed and why 3.3 is
+the Fred nearly everyone remembers.
+
+[leopard]: https://github.com/tgeczy/leopard-speech
+
+### Where it lives on the disc
+
+Everything needed is inside one package:
 
 ```
 Mac OS X 10.4 Tiger for Intel .iso
