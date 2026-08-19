@@ -134,6 +134,8 @@ static volatile long g_stopped; /* AUGraphStop: the engine's end-of-utterance */
 /* "Expand abbreviations", off by TIGER_NO_ABBREV; see tiger_host_regex.c.
  * Read once at startup so the answer cannot change mid-utterance. */
 static int g_no_abbrev;
+/* TIGER_PREF_LOG: name every tuning parameter the engine asks for. */
+static int g_pref_log;
 
 static void die(const char *fmt, ...)
 {
@@ -271,6 +273,7 @@ int main(int argc, char **argv)
     g_float_stats = getenv("TIGER_FLOAT_STATS") ? 1 : 0;
     cf_params_init();       /* TIGER_PARAMS; does nothing when it is unset */
     g_no_abbrev = getenv("TIGER_NO_ABBREV") ? 1 : 0;
+    g_pref_log  = getenv("TIGER_PREF_LOG") ? 1 : 0;
     if (g_no_abbrev)
         fprintf(stderr, "tiger_host: abbreviation rules are off\n");
 

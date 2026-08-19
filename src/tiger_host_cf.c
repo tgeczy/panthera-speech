@@ -414,6 +414,19 @@ static void * __cdecl sh_CFPreferencesCopyAppValue(const void *key,
     const char *k = cf_cstr(key);
     int i;
     (void)appid;
+    /* Which of the 283 are *actually* consulted is not the same question as
+     * which exist, and the difference matters: a setting the engine never asks
+     * for cannot be changed by answering it.
+     *
+     * TIGER_PREF_LOG rather than g_verbose, because serve mode turns g_verbose
+     * off the moment it starts answering requests -- and every one of these
+     * lookups happens during an utterance, so gating on it prints nothing at
+     * all and reads as "the engine never asks".  Logged before the null check
+     * too: behind it, a key we failed to read is indistinguishable from a key
+     * that was never asked for. */
+    if (g_pref_log)
+        fprintf(stderr, "  [pref] asked for %s\n",
+                k ? k : "(unreadable key)");
     if (!k) return NULL;
     for (i = 0; i < g_nparams; i++)
         if (!strcmp(g_params[i].key, k)) {

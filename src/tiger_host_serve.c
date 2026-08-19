@@ -284,7 +284,7 @@ static int serve(image *mt, void *chan, const char *voicesdir)
          * What the host does guarantee is that a command cannot outlive its
          * utterance: rate and pitch are re-applied above, every time.
          */
-        (void)flags;
+
 
         g_pcm_n = 0; g_slices = 0; g_stopped = 0; g_empty_run = 0;
         g_dup_slices = 0; g_have_last = 0; g_p_drops = 0;
@@ -309,6 +309,14 @@ static int serve(image *mt, void *chan, const char *voicesdir)
         g_sql_rows = 0;
         g_back_slices = 0; g_back_max = 0;
         g_utt_t0 = wall_ms(); g_first_slice_ms = -1.0; g_last_slice_ms = 0.0;
+        /* SESpeakBuffer's fourth argument is the Speech Manager's own flags
+         * word, and kNoEndingProsody (1) looked like the lever for a screen
+         * reader: NVDA speaks in fragments, and each one gets the falling
+         * pitch that ends a sentence whether or not one ended.  Measured, it
+         * changes nothing at all -- byte-identical on a fragment and on a
+         * paragraph -- and this request's own flags word already means
+         * REQF_COMMANDS, so forwarding it would have made "accept embedded
+         * commands" quietly mean kNoEndingProsody as well.  Zero it stays. */
         if (!err) err = call_aligned4((void *)speak, chan, text,
                                       (void *)textlen, (void *)0);
         speak_ms = wall_ms() - g_utt_t0;
