@@ -262,6 +262,7 @@ int main(int argc, char **argv)
     if (!g_thunks) die("cannot allocate thunk area");
 
     g_float_stats = getenv("TIGER_FLOAT_STATS") ? 1 : 0;
+    cf_params_init();       /* TIGER_PARAMS; does nothing when it is unset */
 
     AddVectoredExceptionHandler(1, on_fault);
 

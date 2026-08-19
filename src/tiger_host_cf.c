@@ -35,7 +35,16 @@ typedef struct { void *isa; unsigned flags; const char *cstr; unsigned len; }
  * and our accessors cast straight to cfstring.  Burying it behind a header
  * made every lookup read `flags` as the char pointer and return NULL, which
  * looked exactly like "the resource is missing". */
-typedef struct { cfstring str; unsigned magic; long rc; char buf[CFPATH]; }
+/* `kind` and `num` carry the tuning parameters further down: the engine wants
+ * a CFNumber or a CFBoolean back from a preference lookup, not a string, and
+ * it type-checks before reading.  A string object leaves both at zero, so
+ * every path that existed before sees exactly what it saw before. */
+#define CF_STRING  0
+#define CF_NUMBER  1
+#define CF_BOOLEAN 2
+
+typedef struct { cfstring str; unsigned magic; long rc; char buf[CFPATH];
+                 int kind; double num; }
         cfobj;
 
 /* Bundles handed back by CFBundleGetBundleWithIdentifier are *not* owned by
@@ -223,3 +232,180 @@ static void * __cdecl sh_CFURLCopyFileSystemPath(void *url, int style)
  * variant MacinTalk uses.  Same thing here -- our URLs only ever hold a path. */
 static void * __cdecl sh_CFURLCopyPath(void *url)
 { return url ? cf_new(cf_cstr(url)) : NULL; }
+
+/* ---- the engine's own tuning parameters ------------------------------- */
+/*
+ * Leopard's MacinTalk looks up 283 named settings while it speaks -- see
+ * docs/engine-tunables.md for the list and how to regenerate it -- and until
+ * now every one of them was answered with nothing, so the engine used its
+ * compiled-in defaults.  Two of them decide when a phrase gets a break:
+ *
+ *     Boundaries.PhrThreshold      how strong a candidate has to be
+ *     Boundaries.SilThreshold      the same before a silence is inserted
+ *     Boundaries.Debug             makes the engine report what it decided
+ *
+ * and six more, BreathIntake.*, decide where it breathes.  Listeners describe
+ * the defaults as putting words "into quotes" -- a break arriving mid-clause
+ * where an author wrote none.
+ *
+ * The engine reaches them by asking an override dictionary first and
+ * CFPreferences second.  Both are ours, and CFPreferences is the documented
+ * fallback rather than a side door, so that is where the answer goes.
+ *
+ * **Empty unless asked.**  With no TIGER_PARAMS set the lookup returns NULL
+ * exactly as the generic thunk did, so nothing changes for anyone who has not
+ * opted in.  That is also what keeps Tiger safe by construction: MacinTalk 3.3
+ * has no __cfstring section at all and never asks a single one of these.
+ *
+ *     set TIGER_PARAMS=Boundaries.Debug=1;Boundaries.SilThreshold=0.9
+ *
+ * Values are read as numbers, or as booleans when written true/false/yes/no/
+ * on/off.  The engine type-checks with CFGetTypeID before reading, so what
+ * comes back has to be a real CFNumber or CFBoolean.
+ */
+#define CF_TYPEID_NUMBER      22        /* the real CoreFoundation values, so */
+#define CF_TYPEID_BOOLEAN     21        /* a stray comparison cannot collide  */
+#define CF_TYPEID_DICTIONARY  18
+#define CF_MAX_PARAMS         64
+
+typedef struct { char key[64]; cfobj *val; } cfparam;
+static cfparam g_params[CF_MAX_PARAMS];
+static int     g_nparams;
+
+static cfobj *cf_value(int kind, double v)
+{
+    /* Pinned: these are returned over and over, once per utterance, and a
+     * "Copy" function hands ownership to the engine, which releases it.  A
+     * fresh object per lookup would be correct and would churn; one pinned
+     * object per key is bounded and outlives every release. */
+    cfobj *o = cf_make("", CF_PINNED);
+    if (!o) return NULL;
+    o->kind = kind;
+    o->num  = v;
+    return o;
+}
+
+/* TIGER_PARAMS=Name=Value;Name=Value -- ';' or ',' between, spaces ignored. */
+static void cf_params_init(void)
+{
+    const char *env = getenv("TIGER_PARAMS");
+    char buf[2048];
+    char *p;
+
+    if (!env || !*env) return;
+    strncpy(buf, env, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = 0;
+
+    for (p = buf; *p; ) {
+        char *name = p, *eq, *end;
+        int kind = CF_NUMBER;
+        double v = 0.0;
+
+        while (*p && *p != ';' && *p != ',') p++;
+        if (*p) *p++ = 0;
+        while (*name == ' ' || *name == '\t') name++;
+        if (!*name) continue;
+
+        eq = strchr(name, '=');
+        if (!eq) {
+            fprintf(stderr, "tiger_host: TIGER_PARAMS entry '%s' has no "
+                            "value, ignored\n", name);
+            continue;
+        }
+        *eq = 0;
+        end = eq + 1;
+        while (*end == ' ' || *end == '\t') end++;
+
+        if (!_stricmp(end, "true") || !_stricmp(end, "yes") ||
+            !_stricmp(end, "on"))   { kind = CF_BOOLEAN; v = 1.0; }
+        else if (!_stricmp(end, "false") || !_stricmp(end, "no") ||
+                 !_stricmp(end, "off")) { kind = CF_BOOLEAN; v = 0.0; }
+        else {
+            char *stop = NULL;
+            v = strtod(end, &stop);
+            if (!stop || stop == end) {
+                fprintf(stderr, "tiger_host: TIGER_PARAMS value '%s' for %s "
+                                "is not a number, ignored\n", end, name);
+                continue;
+            }
+        }
+        if (g_nparams >= CF_MAX_PARAMS) {
+            fprintf(stderr, "tiger_host: more than %d parameters, '%s' "
+                            "ignored\n", CF_MAX_PARAMS, name);
+            continue;
+        }
+        strncpy(g_params[g_nparams].key, name,
+                sizeof(g_params[0].key) - 1);
+        g_params[g_nparams].val = cf_value(kind, v);
+        if (!g_params[g_nparams].val) continue;
+        /* Say it out loud: a setting that silently failed to apply is the
+         * shape of half the bugs this project has had. */
+        if (kind == CF_BOOLEAN)
+            fprintf(stderr, "tiger_host: parameter %s = %s\n",
+                    g_params[g_nparams].key, v != 0.0 ? "true" : "false");
+        else
+            fprintf(stderr, "tiger_host: parameter %s = %g\n",
+                    g_params[g_nparams].key, v);
+        g_nparams++;
+    }
+}
+
+static void * __cdecl sh_CFPreferencesCopyAppValue(const void *key,
+                                                   const void *appid)
+{
+    const char *k = cf_cstr(key);
+    int i;
+    (void)appid;
+    if (!k) return NULL;
+    for (i = 0; i < g_nparams; i++)
+        if (!strcmp(g_params[i].key, k)) {
+            if (g_verbose)
+                printf("  [cf] parameter %s -> %g\n", k, g_params[i].val->num);
+            return g_params[i].val;
+        }
+    return NULL;                         /* what it has always answered */
+}
+
+static unsigned long __cdecl sh_CFGetTypeID(const void *o)
+{
+    if (!cf_ours(o)) return 0;
+    switch (((const cfobj *)o)->kind) {
+    case CF_NUMBER:  return CF_TYPEID_NUMBER;
+    case CF_BOOLEAN: return CF_TYPEID_BOOLEAN;
+    default:         return 0;
+    }
+}
+static unsigned long __cdecl sh_CFNumberGetTypeID(void)
+{ return CF_TYPEID_NUMBER; }
+static unsigned long __cdecl sh_CFBooleanGetTypeID(void)
+{ return CF_TYPEID_BOOLEAN; }
+static unsigned long __cdecl sh_CFDictionaryGetTypeID(void)
+{ return CF_TYPEID_DICTIONARY; }
+
+static int __cdecl sh_CFBooleanGetValue(const void *o)
+{ return cf_ours(o) && ((const cfobj *)o)->num != 0.0; }
+
+/* CFNumberType, from CFNumber.h.  The engine asks for whichever C type the
+ * variable it is filling happens to be, so all of them are answered. */
+static int __cdecl sh_CFNumberGetValue(const void *o, int type, void *out)
+{
+    double v;
+    if (!cf_ours(o) || !out) return 0;
+    v = ((const cfobj *)o)->num;
+    switch (type) {
+    case 1:  case 7:  *(char *)out           = (char)v;      break;
+    case 2:  case 8:  *(short *)out          = (short)v;     break;
+    case 3:  case 9:  case 14: case 15:
+                      *(int *)out            = (int)v;       break;
+    case 10:          *(long *)out           = (long)v;      break;
+    case 4:  case 11: *(__int64 *)out        = (__int64)v;   break;
+    case 5:  case 12: case 16:
+                      *(float *)out          = (float)v;     break;
+    case 6:  case 13: *(double *)out         = v;            break;
+    default:
+        fprintf(stderr, "tiger_host: CFNumberGetValue asked for type %d, "
+                        "which this does not know; leaving it alone\n", type);
+        return 0;
+    }
+    return 1;
+}

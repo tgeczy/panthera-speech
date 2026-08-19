@@ -57,6 +57,16 @@ static const shim g_shims[] = {
     { "_CFDictionaryGetValue",  (void *)sh_CFDictionaryGetValue  },
     { "_CFURLCopyFileSystemPath", (void *)sh_CFURLCopyFileSystemPath },
     { "_CFURLCopyPath",           (void *)sh_CFURLCopyPath           },
+    /* The engine's own tuning parameters.  With no TIGER_PARAMS set, the
+     * lookup answers NULL -- exactly what the generic thunk did -- so these
+     * change nothing until asked.  See tiger_host_cf.c. */
+    { "_CFPreferencesCopyAppValue", (void *)sh_CFPreferencesCopyAppValue },
+    { "_CFGetTypeID",             (void *)sh_CFGetTypeID             },
+    { "_CFNumberGetTypeID",       (void *)sh_CFNumberGetTypeID       },
+    { "_CFBooleanGetTypeID",      (void *)sh_CFBooleanGetTypeID      },
+    { "_CFDictionaryGetTypeID",   (void *)sh_CFDictionaryGetTypeID   },
+    { "_CFNumberGetValue",        (void *)sh_CFNumberGetValue        },
+    { "_CFBooleanGetValue",       (void *)sh_CFBooleanGetValue       },
     { "___CFConstantStringClassReference", (void *)&g_cfstring_class },
     { "_NewAUGraph",              (void *)sh_NewAUGraph              },
     { "_AUGraphNewNode",          (void *)sh_AUGraphNewNode          },
