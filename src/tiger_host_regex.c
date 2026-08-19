@@ -554,6 +554,42 @@ typedef struct {
 static re_slot *g_re;
 static int g_re_n, g_re_cap;
 
+/* The table is shared, and the framework does not keep one `regex_t` per
+ * pattern: every rule it compiles arrives at the *same* address --
+ *
+ *     [re] compile preg=0451F940 ^[[:digit:]]+ISH$
+ *     [re] compile preg=0451F940 ^((...(,[[:digit:]]{3})*)|...)[[:upper:]]+$
+ *
+ * -- so a table keyed by that pointer holds one entry, and each compile frees
+ * the program the previous one left there.  With the engine's own worker
+ * threads running, a compile can therefore free a program while another thread
+ * is matching against it: a use-after-free that reads as a rule which works
+ * sometimes and not others, on no pattern the user can see.
+ *
+ * Reproduced without touching a setting: say "1,234MB" and then "the file is
+ * 5KB" in the same host, and the second comes back 30800 frames or 27440
+ * depending on the run.
+ *
+ * One lock over every entry point fixes it.  Compiling happens a couple of
+ * times per utterance and matching a few dozen, so the contention is nothing
+ * beside a speech request. */
+static CRITICAL_SECTION g_re_lock;
+static int g_re_lock_ready;
+
+static void re_lock(void)
+{
+    if (!g_re_lock_ready) {          /* main() is single-threaded here */
+        InitializeCriticalSection(&g_re_lock);
+        g_re_lock_ready = 1;
+    }
+    EnterCriticalSection(&g_re_lock);
+}
+
+static void re_unlock(void)
+{
+    LeaveCriticalSection(&g_re_lock);
+}
+
 static re_slot *re_find(const void *preg)
 {
     int i;
@@ -637,10 +673,12 @@ static int __cdecl sh_regcomp(void *preg, const char *pattern, int cflags)
     re_prog *prog;
     re_slot *slot;
 
+    re_lock();
     if (g_no_abbrev && re_is_abbrev(pattern)) {
         if (g_verbose)
             printf("  [re] abbreviations off, so not compiled: %s\n", pattern);
         if ((slot = re_slot_for(preg))) slot->prog = NULL;
+        re_unlock();
         return 0;
     }
     prog = re_compile(pattern, cflags);
@@ -648,11 +686,15 @@ static int __cdecl sh_regcomp(void *preg, const char *pattern, int cflags)
         fprintf(stderr, "tiger_host: SpeechDictionary compiled a regular "
                         "expression this does not implement, so it will never "
                         "match: %s\n", pattern ? pattern : "(null)");
+    if (g_pref_log)
+        fprintf(stderr, "  [re] compile preg=%p %s -> %s\n", preg,
+                pattern ? pattern : "(null)", prog ? "ok" : "REFUSED");
     if ((slot = re_slot_for(preg))) slot->prog = prog;
     else re_prog_free(prog);
     if (g_verbose)
         printf("  [re] %s (cflags 0x%x): %s\n", prog ? "compiled" : "REFUSED",
                cflags, pattern ? pattern : "(null)");
+    re_unlock();
     return 0;                            /* the compile itself always succeeds */
 }
 
@@ -661,19 +703,75 @@ static int __cdecl sh_regcomp(void *preg, const char *pattern, int cflags)
 static int __cdecl sh_regexec(const void *preg, const char *string,
                               unsigned nmatch, void *pmatch, int eflags)
 {
-    const re_slot *slot = re_find(preg);
-    (void)eflags; (void)nmatch; (void)pmatch;   /* every use here is REG_NOSUB */
-    if (!slot || !slot->prog || !string) return REG_NOMATCH;
-    return re_search(slot->prog, string) ? 0 : REG_NOMATCH;
+    const re_slot *slot;
+    int result;
+    char bounded[512];
+    const char *subject = string;
+
+    /* **REG_STARTEND, and the reason a rule fired only sometimes.**
+     *
+     * The framework does not hand over a C string.  It passes a pointer into
+     * its own word buffer with `eflags = REG_STARTEND` and the bounds in
+     * pmatch[0], and that buffer is *not* terminated at the end of the word.
+     * Reading to the first NUL therefore matched the word plus whatever
+     * happened to follow it in memory:
+     *
+     *     [re] exec 5KBE                 -> MATCH   (the byte after was 'E')
+     *     [re] exec 5KBE<binary>         -> no      (the next run, it was not)
+     *
+     * Every pattern here is anchored with '$', so trailing rubbish decides the
+     * answer.  That is the whole of "sometimes KB expands and sometimes it
+     * does not": same text, same settings, same host, different memory.
+     *
+     * regoff_t is 64-bit on Darwin, so pmatch[0] is two int64s -- confirmed
+     * against the engine rather than assumed: "5KB" arrives as [0, 3],
+     * "1,234MB" as [0, 7], "20ISH" as [0, 5]. */
+    if ((eflags & 4) && pmatch && string) {
+        const __int64 *off = (const __int64 *)pmatch;
+        __int64 so = off[0], eo = off[1];
+        if (so >= 0 && eo >= so && eo - so < (__int64)sizeof(bounded)) {
+            memcpy(bounded, string + so, (size_t)(eo - so));
+            bounded[eo - so] = 0;
+            subject = bounded;
+        }
+    }
+    /* Held across the match, not merely across the lookup: the program can be
+     * freed by a compile on another thread, and a half-freed program is what
+     * made this rule fire on some utterances and not others. */
+    re_lock();
+    slot = re_find(preg);
+    if (!slot || !slot->prog || !subject) {
+        if (g_pref_log)
+            fprintf(stderr, "  [re] exec preg=%p on %.20s -> %s\n", preg,
+                    string ? string : "",
+                    slot ? "slot has no prog" : "NO SLOT");
+        re_unlock();
+        return REG_NOMATCH;
+    }
+    result = re_search(slot->prog, subject) ? 0 : REG_NOMATCH;
+    if (g_pref_log) {
+        const int *w = (const int *)pmatch;
+        fprintf(stderr, "  [re] exec eflags=%d nmatch=%u pmatch32=[%d %d %d %d]"
+                        " -> %s : %.24s\n", eflags, nmatch,
+                pmatch ? w[0] : -1, pmatch ? w[1] : -1,
+                pmatch ? w[2] : -1, pmatch ? w[3] : -1,
+                result == 0 ? "MATCH" : "no", subject);
+    }
+    re_unlock();
+    return result;
 }
 
 static void __cdecl sh_regfree(void *preg)
 {
-    re_slot *slot = re_find(preg);
-    if (!slot) return;
-    re_prog_free(slot->prog);
-    slot->prog = NULL;
-    slot->preg = NULL;
+    re_slot *slot;
+    re_lock();
+    slot = re_find(preg);
+    if (slot) {
+        re_prog_free(slot->prog);
+        slot->prog = NULL;
+        slot->preg = NULL;
+    }
+    re_unlock();
 }
 
 /* --------------------------------------------------------------- self test */
