@@ -74,9 +74,26 @@ static int cancel_requested(void)
  * stops producing, the wait loop below falls out, and the response ends -- so
  * the pipe stays in step and the driver is free for the next utterance. */
 typedef int (*SEStop_t)(void *chan, unsigned where);
+
+/* SpeechStatus: the first long of the struct is outputBusy.
+ *
+ * Needed because stopping is not the same as having stopped.  Proved with
+ * Whisper: interrupt a sentence, ask for the next one, and the engine speaks
+ * the *remainder of the abandoned text first* --
+ *
+ *   "or the one after that, or the one after that, what I read is that the
+ *    infrared cameras are intended to capture detail."
+ *
+ * -- which is the fragment of the post above arriving at the head of the post
+ * below, exactly as reported.  SEStopSpeechAt(kImmediate) returns before the
+ * channel is idle, and text handed to a still-busy channel queues behind what
+ * is already in it.  So wait for it. */
+typedef int (*SEStatus_t)(void *chan, void *info);
 #define SEL_RATE  0x72617465u           /* 'rate' -- soRate, Fixed wpm */
 #define SEL_PITCH 0x70626173u           /* 'pbas' -- soPitchBase, Fixed */
 #define SEL_DELIM 0x646c696du           /* 'dlim' -- soCommandDelimiter */
+#define SEL_RESET 0x72736574u           /* 'rset' -- soReset */
+#define SEL_STATUS 0x73746174u          /* 'stat' -- soStatus */
 
 /* Flags word in the request. */
 #define REQF_COMMANDS 0x1               /* honour [[...]] in the text */
@@ -147,6 +164,7 @@ static int serve(image *mt, void *chan, const char *voicesdir)
     SESetInfo_t  setinfo = (SESetInfo_t)find_export(mt, "_SESetSpeechInfo");
     SEGetInfo_t  getinfo = (SEGetInfo_t)find_export(mt, "_SEGetSpeechInfo");
     SEStop_t     stopnow = (SEStop_t)find_export(mt, "_SEStopSpeechAt");
+    SEStatus_t   status  = (SEStatus_t)find_export(mt, "_SESpeechStatus");
     {
         const char *evname = getenv("TIGER_CANCEL_EVENT");
         if (evname && *evname) {
@@ -223,8 +241,17 @@ static int serve(image *mt, void *chan, const char *voicesdir)
          * setter calls buy immunity from that. */
         if (!err && wpm > 0 && setinfo) {
             unsigned fixed = (unsigned)wpm << 16;       /* Fixed 16.16 wpm */
-            if (call_aligned3((void *)setinfo, chan, (void *)SEL_RATE,
-                              &fixed) == 0) currate = wpm;
+            int rc = call_aligned3((void *)setinfo, chan, (void *)SEL_RATE,
+                                   &fixed);
+            if (rc == 0) currate = wpm;
+            else
+                /* Worth saying out loud.  A rate that fails to apply is not a
+                 * subtle fault: the engine falls back to its own 180 wpm, and
+                 * someone reading at 400 hears the whole post crawl.  That was
+                 * reported as lag, and looked like one. */
+                fprintf(stderr, "tiger_host: the engine refused %d wpm "
+                                "(OSErr %d), so this utterance is at its own "
+                                "default rate\n", wpm, rc);
         }
         /* Pitch is re-applied whenever it changes *or* the voice changed: a
          * new voice arrives with its own pitch and would otherwise keep it
@@ -253,7 +280,7 @@ static int serve(image *mt, void *chan, const char *voicesdir)
 
         g_pcm_n = 0; g_slices = 0; g_stopped = 0; g_empty_run = 0;
         g_dup_slices = 0; g_have_last = 0; g_p_drops = 0;
-        g_epoch_base = 0; g_last_stime = 0.0;
+        g_epoch_base = 0; g_last_stime = 0.0; g_have_origin = 0;
         /* A new utterance: anything still in flight for the last one is stale
          * from here on, and the pacer will complete those slices without
          * collecting them. */
@@ -305,6 +332,71 @@ static int serve(image *mt, void *chan, const char *voicesdir)
                      * response ends, so finishing it politely *is* the lag. */
                     if (stopnow)
                         call_aligned2((void *)stopnow, chan, (void *)0);
+                    /* Stopping the channel loses its rate and pitch.
+                     *
+                     * These are cached so that an unchanged setting costs no
+                     * call, and the cache does not know the engine has been
+                     * reset underneath it -- so the utterance *after* an
+                     * interruption was spoken at the engine's own default.
+                     * Measured at 280 wpm: 1.64x and 2.66x longer than it
+                     * should be, which at a fast reading rate is the whole
+                     * post crawling.  Invisible at 180 wpm, because 180 is
+                     * what it falls back to.
+                     *
+                     * Forget what we think the channel holds; the next
+                     * utterance sets it again. */
+                    currate = -1;
+                    curpitch = -1;
+                    /* Stopping is not the same as having stopped.  Wait for
+                     * the channel to go idle, or the text of the *next*
+                     * utterance queues behind what is left of this one and is
+                     * spoken after it.  Bounded: an engine that never goes
+                     * idle must not wedge the driver, and speaking something
+                     * stale is better than speaking nothing ever again. */
+                    /* Then throw away what is left in the channel.
+                     *
+                     * 'rset' is the Speech Manager's own reset selector, and
+                     * it is what actually discards the remainder: waiting for
+                     * outputBusy to clear does not work, because it never
+                     * does -- measured, the channel still reports busy 400 ms
+                     * after being stopped, and the wait alone was hiding the
+                     * fault by giving the engine time to drain.  A fix that
+                     * works by being slow is the fault wearing a hat. */
+                    if (setinfo) {
+                        unsigned zero = 0;
+                        call_aligned3((void *)setinfo, chan, (void *)SEL_RESET,
+                                      &zero);
+                    }
+                    /* Then let the channel settle -- and this one is honest
+                     * about what it is.
+                     *
+                     * It asks GetSpeechInfo 'stat', whose first long is
+                     * outputBusy, and gives up after a hundred milliseconds.
+                     * Measured on this engine, outputBusy *never* clears: the
+                     * loop runs its full count every time.  So this is a
+                     * bounded wait wearing a poll's clothing, kept because
+                     * removing it brings the fragment back (0 of 8 with it,
+                     * 1 of 8 without) and because the poll costs nothing if a
+                     * future engine does report itself idle.
+                     *
+                     * A hundred milliseconds against 2255 ms of the original
+                     * fault is a trade worth making, but it is a delay, and
+                     * calling it a status check would be a lie. */
+                    if (getinfo) {
+                        long info[4];
+                        int spin;
+                        for (spin = 0; spin < 50; spin++) {
+                            memset(info, 0, sizeof(info));
+                            if (call_aligned3((void *)getinfo, chan,
+                                              (void *)SEL_STATUS, info) != 0)
+                                break;
+                            if (info[0] == 0) break;    /* outputBusy */
+                            Sleep(2);
+                        }
+                        if (g_float_stats)
+                            fprintf(stderr, "  [se] channel idle after %d poll(s)\n",
+                                    spin);
+                    }
                     cancelled = 1;
                     break;
                 }

@@ -135,6 +135,10 @@ static unsigned g_pcm_n;
  * utterance, in serve(). */
 static unsigned g_epoch_base;
 static double   g_last_stime;
+/* The sample time of this utterance's first slice, and whether one has
+ * been seen yet.  Both reset per utterance, in serve(). */
+static double   g_time_origin;
+static int      g_have_origin;
 static unsigned g_slices;
 static unsigned g_frames_seen;
 static unsigned g_empty_run;          /* consecutive slices carrying nothing */
@@ -317,6 +321,20 @@ static void collect_slice(unsigned char *slice)
      * Detected by the clock going backwards rather than by AudioUnitReset,
      * because the restart is what actually breaks us and it is visible right
      * here; a reset we failed to notice would put us straight back. */
+    /* Where this utterance's clock starts.
+     *
+     * The engine's sample clock does not necessarily go back to zero between
+     * utterances: it does when it resets the audio unit, and it does not when
+     * it has just been stopped mid-sentence.  Treating the time as absolute
+     * therefore prepended however far the clock had run -- seconds of silence
+     * before the next thing the user asked for, which is heard as the wait
+     * with no sound after interrupting.
+     *
+     * So the first slice of an utterance defines the origin, and everything
+     * is placed relative to it. */
+    if (!g_have_origin) { g_time_origin = stime; g_have_origin = 1; }
+    stime -= g_time_origin;
+    if (stime < 0.0) stime = 0.0;
     if (stime < g_last_stime) g_epoch_base = g_pcm_n;
     g_last_stime = stime;
     nbufs = *(unsigned *)bl;
