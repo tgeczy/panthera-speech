@@ -259,6 +259,17 @@ static void * __cdecl sh_CFURLCopyPath(void *url)
  *
  *     set TIGER_PARAMS=Boundaries.Debug=1;Boundaries.SilThreshold=0.9
  *
+ * or, when there is no useful environment to set one in, a `params.txt` beside
+ * this executable, one `Name = Value` per line and `#` to the end of a line
+ * for a comment.  **The file is the one that works from NVDA**: the driver
+ * starts this host as a child, so it inherits the environment NVDA itself was
+ * started with, and a variable set afterwards -- with `setx`, or in the System
+ * panel -- does not reach it until the whole session is restarted.  That cost
+ * a round of "it sounds exactly the same" before the log showed the host had
+ * never been told anything.  It is also the shape a checkbox wants: a driver
+ * setting writes the file, rather than trying to reach into a child's
+ * environment.
+ *
  * Values are read as numbers, or as booleans when written true/false/yes/no/
  * on/off.  The engine type-checks with CFGetTypeID before reading, so what
  * comes back has to be a real CFNumber or CFBoolean.
@@ -286,15 +297,53 @@ static cfobj *cf_value(int kind, double v)
 }
 
 /* TIGER_PARAMS=Name=Value;Name=Value -- ';' or ',' between, spaces ignored. */
+/* -> 1 if `params.txt` beside this executable was read into buf. */
+static int cf_params_file(char *buf, size_t n, char *shown, size_t shownlen)
+{
+    char path[CFPATH];
+    char *cut;
+    FILE *f;
+    size_t got;
+
+    if (!GetModuleFileNameA(NULL, path, (DWORD)sizeof(path) - 1)) return 0;
+    path[sizeof(path) - 1] = 0;
+    cut = strrchr(path, '\\');
+    if (!cut) cut = strrchr(path, '/');
+    if (!cut) return 0;
+    strncpy(cut + 1, "params.txt", sizeof(path) - (size_t)(cut + 1 - path) - 1);
+    path[sizeof(path) - 1] = 0;
+
+    f = fopen(path, "rb");
+    if (!f) return 0;
+    got = fread(buf, 1, n - 1, f);
+    fclose(f);
+    buf[got] = 0;
+    /* A comment runs to the end of its line, and a newline separates entries
+     * exactly as ';' does. */
+    for (; *buf ? 1 : 0; buf++) {
+        if (*buf == '#') { while (*buf && *buf != '\n') *buf++ = ' '; if (!*buf) break; }
+        if (*buf == '\r' || *buf == '\n') *buf = ';';
+    }
+    _snprintf(shown, shownlen, "%s", path);
+    shown[shownlen - 1] = 0;
+    return 1;
+}
+
 static void cf_params_init(void)
 {
     const char *env = getenv("TIGER_PARAMS");
     char buf[2048];
+    char from[CFPATH];
     char *p;
 
-    if (!env || !*env) return;
-    strncpy(buf, env, sizeof(buf) - 1);
-    buf[sizeof(buf) - 1] = 0;
+    if (env && *env) {
+        strncpy(buf, env, sizeof(buf) - 1);
+        buf[sizeof(buf) - 1] = 0;
+        strcpy(from, "TIGER_PARAMS");
+    } else if (!cf_params_file(buf, sizeof(buf), from, sizeof(from))) {
+        return;
+    }
+    fprintf(stderr, "tiger_host: reading engine parameters from %s\n", from);
 
     for (p = buf; *p; ) {
         char *name = p, *eq, *end;
@@ -315,6 +364,15 @@ static void cf_params_init(void)
         *eq = 0;
         end = eq + 1;
         while (*end == ' ' || *end == '\t') end++;
+        /* `Name = Value` from a file leaves spaces the environment form never
+         * had.  An untrimmed name never matches the key the engine asks for,
+         * and an untrimmed value is not the word "true". */
+        {
+            char *z = eq;
+            while (z > name && (z[-1] == ' ' || z[-1] == '\t')) *--z = 0;
+            z = end + strlen(end);
+            while (z > end && (z[-1] == ' ' || z[-1] == '\t')) *--z = 0;
+        }
 
         if (!_stricmp(end, "true") || !_stricmp(end, "yes") ||
             !_stricmp(end, "on"))   { kind = CF_BOOLEAN; v = 1.0; }

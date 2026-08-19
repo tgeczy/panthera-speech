@@ -598,10 +598,52 @@ static re_slot *re_slot_for(const void *preg)
     return &g_re[g_re_n - 1];
 }
 
+/* "Expand abbreviations", from the driver.
+ *
+ * The dictionary's rules *are* patterns, so declining to compile one turns
+ * that rule off -- and a refused pattern is a state this file already had,
+ * defined and tested: it never matches, and the word is spoken as written.
+ * The switch therefore needs no new machinery, only a list of which rules it
+ * covers.
+ *
+ * These are the shapes that rewrite a written form into different words: KB
+ * into kilobytes, III into three, SEPT into September.  The phone-number
+ * rules are deliberately *not* here -- reading digits as digits is not an
+ * abbreviation, and that is the one rule that already worked. */
+/* Taken from what the dictionary actually compiles, logged from a running
+ * channel -- not from a description of it.  The rule that turns "5KB" into
+ * kilobytes is the quantity-then-capitals pattern, *not* the bare unit one,
+ * which is the kind of thing only the log tells you. */
+static const char *k_abbrev_marks[] = {
+    "(,[[:digit:]]{3})*",       /* a quantity followed by a unit: 5KB, 1,234MB */
+    "(K|M|G|T|P)B",             /* a bare unit                                 */
+    "IVXLCDM",                  /* roman numerals                              */
+    "JAN",                      /* the month alternation                       */
+    "ISH",                      /* 20ish                                       */
+    "&",                        /* AT&T                                        */
+};
+
+static int re_is_abbrev(const char *pattern)
+{
+    size_t i;
+    if (!pattern) return 0;
+    for (i = 0; i < sizeof(k_abbrev_marks) / sizeof(*k_abbrev_marks); i++)
+        if (strstr(pattern, k_abbrev_marks[i])) return 1;
+    return 0;
+}
+
 static int __cdecl sh_regcomp(void *preg, const char *pattern, int cflags)
 {
-    re_prog *prog = re_compile(pattern, cflags);
+    re_prog *prog;
     re_slot *slot;
+
+    if (g_no_abbrev && re_is_abbrev(pattern)) {
+        if (g_verbose)
+            printf("  [re] abbreviations off, so not compiled: %s\n", pattern);
+        if ((slot = re_slot_for(preg))) slot->prog = NULL;
+        return 0;
+    }
+    prog = re_compile(pattern, cflags);
     if (!prog)
         fprintf(stderr, "tiger_host: SpeechDictionary compiled a regular "
                         "expression this does not implement, so it will never "
