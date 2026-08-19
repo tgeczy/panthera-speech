@@ -7,7 +7,7 @@ typedef struct { const char *name; void *fn; } shim;
 static const shim g_shims[] = {
     { "_malloc",    (void *)malloc  }, { "_free",    (void *)free    },
     { "_calloc",    (void *)calloc  }, { "_realloc", (void *)realloc },
-    { "_memset",    (void *)memset  }, { "_memmove", (void *)memmove },
+    { "_memset",    (void *)memset  }, { "_memmove", (void *)sh_memmove },
     { "_memchr",    (void *)memchr  }, { "_strcmp",  (void *)strcmp  },
     { "_strchr",    (void *)strchr  }, { "_atoi",    (void *)atoi    },
     { "_bcopy",     (void *)sh_bcopy}, { "_bzero",   (void *)sh_bzero},
@@ -156,7 +156,7 @@ static const shim g_shims[] = {
     { "___maskrune", (void *)sh_maskrune },
     { "___tolower",  (void *)sh_tolower_ }, { "___toupper", (void *)sh_toupper_ },
     { "_isdigit",    (void *)sh_isdigit_ },
-    { "_memcmp", (void *)memcmp }, { "_memcpy", (void *)memcpy },
+    { "_memcmp", (void *)memcmp }, { "_memcpy", (void *)sh_memcpy },
     { "_strcpy", (void *)strcpy }, { "_strlen", (void *)strlen },
     { "_atof",   (void *)atof   }, { "_atol",   (void *)atol   },
     { "_cosf",   (void *)cosf   }, { "_sinf",   (void *)sinf   },

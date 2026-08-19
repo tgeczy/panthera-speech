@@ -133,6 +133,63 @@ static int voice_spec(const char *dir, unsigned *creator, int *id)
     return 1;
 }
 
+/* Break a long unbroken run of one letter, because the morphology cannot
+ * survive one.
+ *
+ * `SLPrefixMorph::AddAffix` keeps a saved word's length in a signed byte and
+ * adds each affix to it unchecked (the disassembly is quoted in
+ * tiger_host_shims.c).  A run of the same letter is what makes that overflow
+ * reachable: every position in the run offers the morphology the same prefix
+ * match, so the decompositions multiply, the byte climbs past 127 and reads
+ * back negative.  Twenty x's followed by "the" is enough -- issue #4 -- and it
+ * fails two different ways depending on how far it gets: a memmove of four
+ * gigabytes, or a quieter overrun of one record into the next that surfaces
+ * later as a null dereference in the synthesis path.
+ *
+ * A run this long is not a word in any language.  The longest genuine repeat
+ * in English is two letters, three in a compound, and words that *are* long --
+ * `antidisestablishmentarianism`, `supercalifragilisticexpialidocious` -- do
+ * not trigger it, because they are not repetitive.  So ten is far above
+ * anything real and far below the threshold: measured, Alex survives twelve
+ * and dies at sixteen.
+ *
+ * A space rather than a truncation, deliberately: every character the user has
+ * on screen is still spoken, in the same order.  The engine sees two shorter
+ * tokens instead of one impossible one, which is the whole of the fix.
+ */
+#define MAX_LETTER_RUN 10
+
+static int is_letter(unsigned char c)
+{
+    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+}
+
+static char *break_letter_runs(char *text, unsigned *len)
+{
+    unsigned n = *len, i, j = 0, run = 0;
+    char *out;
+    if (!text || !n) return text;
+    out = (char *)malloc(n + n / MAX_LETTER_RUN + 2);
+    if (!out) return text;                  /* the crash is better than none */
+    for (i = 0; i < n; i++) {
+        if (i && text[i] == text[i - 1] && is_letter((unsigned char)text[i]))
+            run++;
+        else
+            run = 0;
+        if (run >= MAX_LETTER_RUN) { out[j++] = ' '; run = 0; }
+        out[j++] = text[i];
+    }
+    out[j] = 0;
+    if (j != n)
+        fprintf(stderr, "tiger_host: broke %u long letter run(s) in this "
+                        "utterance -- the dictionary's morphology overflows on "
+                        "them (issue #4); every character is still spoken\n",
+                j - n);
+    free(text);
+    *len = j;
+    return out;
+}
+
 /* 32-bit float to 16-bit PCM, the one place the conversion is written.
  *
  * Streamed and blocking responses have to produce identical bytes -- that is
@@ -217,6 +274,7 @@ static int serve(image *mt, void *chan, const char *voicesdir)
         text = (char *)malloc(textlen + 1);
         if (!text || !read_all(stdin, text, textlen)) { free(text); return 1; }
         text[textlen] = 0;
+        text = break_letter_runs(text, &textlen);
 
         voicechanged = 0;
         if (strcmp(name, curvoice) != 0) {

@@ -543,3 +543,58 @@ static char * __cdecl sh_getenv(const char *n) { (void)n; return NULL; }
 static long   __cdecl sh_random(void)          { return rand(); }
 static void   __cdecl sh_srandom(unsigned s)   { srand(s); }
 static void   __cdecl sh_usleep(unsigned us)   { Sleep(us / 1000); }
+
+/* ---- memmove and memcpy, with the engine's own arithmetic distrusted ---- */
+/*
+ * `SLPrefixMorph::AddAffix` keeps a saved word's length in a **signed byte**:
+ *
+ *     movsx eax, byte ptr [edi + 0xc]    ; length
+ *     lea   esi, [edi + 0xe]             ; the text
+ *     dec   eax                          ; n = length - 1
+ *     ...   call memmove                 ; shift it right by the affix
+ *     movzx eax, byte ptr [edx + 0x18]
+ *     add   byte ptr [edi + 0xc], al     ; length += affix, unchecked
+ *
+ * The record is 0x4c bytes with its text at +0xe, so there are 62 bytes behind
+ * that byte -- and every prefix the morphology tries adds to it. Feed it a long
+ * unbroken run of one letter ending in an affix the dictionary knows
+ * ("the", "ing", "pre", "able") and the byte climbs past 127, reads back
+ * negative, `dec` makes it worse, and memmove receives it unsigned: Brandon
+ * measured a single call asking for **4,294,956,106 bytes** (issue #4), which
+ * walks forward until it reaches an unmapped page.
+ *
+ * There is nothing to fix in that code -- it is Apple's, and the overflow is
+ * inside it. What we can do is decline to carry out an instruction that cannot
+ * be meant. A 32-bit process has no legitimate copy of a gigabyte, so a length
+ * that large is not a copy, it is a symptom; performing it destroys the heap
+ * and everything after it is noise.
+ *
+ * This is the `survive_divide_by_zero` bargain again: the engine is wrong, the
+ * wrongness is survivable, and dying helps nobody. It is a containment, not a
+ * cure -- a length between 63 and 127 still overruns one record into the next
+ * without tripping this -- so it is counted and reported rather than absorbed
+ * silently.
+ */
+#define COPY_SANITY_LIMIT 0x40000000u          /* 1 GB; see above */
+static unsigned g_bad_copies;
+
+static void refuse_copy(const char *what, unsigned n)
+{
+    g_bad_copies++;
+    if (g_bad_copies <= 4)
+        fprintf(stderr, "tiger_host: refused a %s of %u bytes -- the engine's "
+                        "word length overflowed its byte (issue #4); the "
+                        "word this came from will be wrong, the rest is "
+                        "unaffected\n", what, n);
+}
+
+static void * __cdecl sh_memmove(void *dst, const void *src, unsigned n)
+{
+    if (n > COPY_SANITY_LIMIT) { refuse_copy("memmove", n); return dst; }
+    return memmove(dst, src, n);
+}
+static void * __cdecl sh_memcpy(void *dst, const void *src, unsigned n)
+{
+    if (n > COPY_SANITY_LIMIT) { refuse_copy("memcpy", n); return dst; }
+    return memcpy(dst, src, n);
+}
