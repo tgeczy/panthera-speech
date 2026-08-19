@@ -258,6 +258,18 @@ static int serve(image *mt, void *chan, const char *voicesdir)
          * from here on, and the pacer will complete those slices without
          * collecting them. */
         g_utt++; g_stale_slices = 0;
+        /* Consume any cancel left over from before this request.
+         *
+         * The driver clears the event before it writes a request, but it
+         * cannot close the gap: arrowing quickly through a timeline sends
+         * cancels faster than requests, and one landing between that clear
+         * and this loop aborted an utterance nobody had cancelled.  The user
+         * hears nothing at all for it -- which is how a fix for the lag came
+         * to *be* the lag.
+         *
+         * A cancel that arrives from here on is genuinely for this utterance,
+         * because this is where it starts. */
+        (void)cancel_requested();
         g_sc.sessions = 0; g_sc.resets = 0; g_sc.lost = 0; g_pkts_fed = 0;
         g_sql_rows = 0;
         g_back_slices = 0; g_back_max = 0;

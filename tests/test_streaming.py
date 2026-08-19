@@ -138,3 +138,48 @@ def test_streaming_still_ends_cleanly_on_an_empty_utterance(tiger_tree):
     finally:
         proc.stdin.close()
         proc.wait(timeout=10)
+
+
+def test_a_stale_cancel_does_not_kill_the_next_utterance(tiger_tree):
+    """How a fix for the lag came to be the lag.
+
+    `cancel()` reaches the host through a Windows event, because it runs on
+    NVDA's main thread and must never block.  The driver clears that event
+    before writing a request, but it cannot close the gap: arrowing quickly
+    through a timeline sends cancels faster than requests, and one landing
+    between the clear and the host's wait loop aborted an utterance nobody
+    had cancelled.  The user hears nothing at all for it.
+
+    So the host consumes any pending cancel at the moment it starts an
+    utterance.  Signalled before the request, the audio must arrive whole.
+    """
+    import ctypes
+    import tigerspeech
+    k32 = ctypes.windll.kernel32
+    # chr(92) rather than a backslash escape: this file has been rewritten by
+    # shell heredocs more than once, and the escape does not survive that --
+    # it arrived here as a tab, which still names a valid event and so still
+    # passed.  A test that passes for the wrong reason is the thing to avoid.
+    name = "Local" + chr(92) + "tigerspeech-test-cancel-%d" % os.getpid()
+    ev = k32.CreateEventW(None, False, False, name)
+    assert ev, "could not create the event this test needs"
+
+    import subprocess as _sp
+    mt, sd, voices = tigerspeech.engine_paths(tiger_tree)
+    env = dict(os.environ)
+    env["TIGER_CANCEL_EVENT"] = name
+    proc = _sp.Popen([tigerspeech.HOST_EXE, "--serve", mt, sd, voices],
+                     stdin=_sp.PIPE, stdout=_sp.PIPE, env=env)
+    try:
+        _, want, _ = _streamed_response(proc, LONG_TEXT, "Fred", 180)
+        # A cancel with nothing rendering: it belongs to the past, not to the
+        # utterance that follows it.
+        k32.SetEvent(ev)
+        _, got, _ = _streamed_response(proc, LONG_TEXT, "Fred", 180)
+    finally:
+        proc.stdin.close()
+        proc.wait(timeout=10)
+
+    assert len(got) == len(want), (
+        "a cancel from before the request truncated it: %d bytes against %d"
+        % (len(got), len(want)))
