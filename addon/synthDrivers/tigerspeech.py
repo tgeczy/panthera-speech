@@ -423,6 +423,10 @@ class SynthDriver(SynthDriver):
         #: Wall-clock time the audio handed over so far will finish
         #: playing.  The feeder never runs more than FEED_LEAD past it.
         self._fedUntil = 0.0
+        #: Serialises feed() against stop().  NVDA's player changes its stream
+        #: state in both without synchronising them, and the two are called
+        #: from different threads here -- the feeder and NVDA's main thread.
+        self._playerLock = threading.Lock()
         #: How `cancel()` reaches the engine.
         #:
         #: Stopping the sound is instant, but the host went on synthesising the
@@ -974,24 +978,46 @@ class SynthDriver(SynthDriver):
                     if tag is not None and tag != self._cancels:
                         continue        # interrupted while we waited
                     self._fedUntil = max(self._fedUntil, now) +                         len(value) / 2.0 / OUT_RATE
-                    if self._playerIdle:
-                        self._playerIdle = False
-                        t0 = time.perf_counter()
-                        self._player.feed(value)
-                        ms = (time.perf_counter() - t0) * 1000.0
-                        if ms >= 20.0 and log.isEnabledFor(log.DEBUG):
-                            log.debug("tigerspeech: the audio device took "
-                                      "%.0f ms to start playing" % ms)
-                    else:
-                        self._player.feed(value)
+                    # Serialised against cancel()'s stop().
+                    #
+                    # NVDA's WASAPI player changes its stream state in both
+                    # feed() and stop() without synchronising the two, so a
+                    # stop landing while a feed is starting the stream leaves
+                    # the next start to stall -- measured at 1839 ms in one
+                    # session, which is the "two seconds and you hear nothing"
+                    # people reported -- and can let frames from the abandoned
+                    # utterance through into the stream that follows.
+                    with self._playerLock:
+                        if self._playerIdle:
+                            self._playerIdle = False
+                            t0 = time.perf_counter()
+                            self._player.feed(value)
+                            ms = (time.perf_counter() - t0) * 1000.0
+                            if ms >= 20.0 and log.isEnabledFor(log.DEBUG):
+                                log.debug("tigerspeech: the audio device took "
+                                          "%.0f ms to start playing" % ms)
+                        else:
+                            self._player.feed(value)
                 elif kind == "index":
                     synthIndexReached.notify(synth=self, index=value)
                 elif kind == "done":
-                    self._player.idle()
-                    self._playerIdle = True
-                    synthDoneSpeaking.notify(synth=self)
-            except Exception:
-                pass
+                    # idle() waits out the whole utterance, so it must NOT be
+                    # held under the player lock: cancel() would then wait for
+                    # playback to finish, and cancel must never block.
+                    #
+                    # The notification goes out whatever the audio device did.
+                    # NVDA's speech manager resumes on synthDoneSpeaking, so
+                    # losing it to an exception stalls everything queued behind
+                    # it -- including the echo of a character just typed.
+                    try:
+                        self._player.idle()
+                    finally:
+                        self._playerIdle = True
+                        synthDoneSpeaking.notify(synth=self)
+            except Exception as e:
+                # Never silently: a feed or idle that fails is exactly the
+                # failure nobody can account for afterwards.
+                log.debugWarning("tigerspeech: feeding audio: %s" % e)
 
     # -- NVDA interface ----------------------------------------------------
     def speak(self, speechSequence):
@@ -1045,16 +1071,38 @@ class SynthDriver(SynthDriver):
         # now is audio for an utterance already abandoned, and the next one
         # cannot start until that response ends.
         self._signalCancel()
+        pendingDone = None
         for q in (self._queue, self._audioQueue):
             while True:
                 try:
-                    q.get_nowait()
+                    item = q.get_nowait()
                 except queue.Empty:
                     break
+                if (q is self._audioQueue and isinstance(item, tuple)
+                        and item and item[0] == "done"):
+                    pendingDone = item
+        if pendingDone is not None:
+            # Do not throw the completion notice away with the audio.
+            #
+            # NVDA's speech manager resumes on synthDoneSpeaking, and with the
+            # feeder paced this item can sit behind seconds of queued audio --
+            # so a cancel was far more likely to swallow it than it used to be,
+            # and everything queued behind it waited, including the echo of the
+            # character being typed.
+            self._audioQueue.put(pendingDone)
+        # Stop under the player lock when it is free, so the stop cannot land
+        # inside a feed that is starting the stream -- the race that leaves the
+        # next start stalling for a second or more.  Never wait long for it:
+        # this is NVDA's main thread, and rule 4 says the player is stopped
+        # either way.
+        held = self._playerLock.acquire(timeout=0.02)
         try:
             self._player.stop()
         except Exception:
             pass
+        finally:
+            if held:
+                self._playerLock.release()
         # Stopping tears the output stream down, so the next chunk pays to
         # start it again -- which is exactly the wait after an interruption
         # that a user feels most sharply.
