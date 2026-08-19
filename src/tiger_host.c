@@ -194,6 +194,10 @@ int main(int argc, char **argv)
         setvbuf(stderr, NULL, _IONBF, 0);
         return aac_check();
     }
+    if (argc > 1 && !strcmp(argv[1], "--regex-check")) {
+        setvbuf(stderr, NULL, _IONBF, 0);
+        return re_check();
+    }
     if (argc > 1 && !strcmp(argv[1], "--serve")) {
         if (argc < 5) {
             fprintf(stderr, "usage: tiger_host --serve <MacinTalk> "
