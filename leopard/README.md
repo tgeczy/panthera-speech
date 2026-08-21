@@ -1,47 +1,40 @@
-# Leopard-speech
+# leopardspeech
 
 **Alex speaks, and he speaks cleanly.** Mac OS X 10.5 Leopard's speech engine
 running as native x86 code inside NVDA — no emulator, no virtual machine — and
 with it **Alex**, which is the voice people actually want.
 
-Its sibling [tiger-speech](https://github.com/tgeczy/tiger-speech) does the
-same job for 10.4: all twenty-three Tiger voices, natively, about twelve
-milliseconds an utterance. The loader there is the starting point here, and
-most of it transfers unchanged.
+One add-on of several in [panthera-speech](../README.md). Its sibling
+[tigerspeech](../tiger/README.md) does the same job for 10.4: all twenty-three
+Tiger voices, natively, about twelve milliseconds an utterance. The loader
+there is the starting point here, and most of it transfers unchanged.
 
-## How the two repositories fit together
+## One loader, at the root
 
-**There is one loader, and it lives in tiger-speech.** `build.sh` here builds
-that sibling checkout and copies the result in as `leopard_host.exe`, so the
-two add-ons ship the same binary under different names.
+**There is one loader in this repository and there will only ever be one.**
+`sh ../build.sh` builds it and stages it into every add-on, so all of them
+ship the same binary under different local names.
 
 That is deliberate, and it paid for itself twice in a single day. The defect
-that made Alex crackle was in a decoder path **only Leopard's engine takes** —
-Tiger's engine goes through a different API entirely — and fixing it left
+that made Alex crackle was in a decoder path **only Leopard's engine takes**
+— Tiger's engine goes through a different API entirely — and fixing it left
 Tiger's renders byte-for-byte identical. One loader, per-engine paths inside
 it. Forked, that fix would have had to be found twice.
 
 | | lives in |
 |---|---|
-| the loader, the shims, the host | **tiger-speech**, `src/` |
-| the Mach-O dissection tools | **tiger-speech**, `tools/` |
-| Tiger's driver, voice list and extractor | tiger-speech |
-| Leopard's driver, voice list and extractor | here, `tools/extract_leopard.py` |
+| the loader, the shims, the host | `../src/` |
+| the Mach-O dissection tools | `../tools/` |
+| Leopard's driver, voice list and extractor | here |
 
-Clone them as siblings, because `build.sh` looks next door for the loader:
-
-```
-C:\git\tiger-speech
-C:\git\leopard-speech
-```
-
-The dissection tools take a symbol name or an address and work on either
-engine, which is how nearly everything below was established:
+The dissection tools take a symbol name or an address and work on any
+engine in this repository, which is how nearly everything below was
+established:
 
 ```
-py -3 ..\tiger-speech\tools\machosyms.py <binary>
-py -3 ..\tiger-speech\tools\machodis.py <binary> <symbol-or-0xADDR> [length]
-py -3 ..\tiger-speech\tools\render_once.py "text" Alex 180 out.wav
+py -3 ..\tools\machosyms.py <binary>
+py -3 ..\tools\machodis.py <binary> <symbol-or-0xADDR> [length]
+py -3 ..\tools\render_once.py "text" Alex 180 out.wav
 ```
 
 `render_once.py` renders exactly one utterance in a fresh host. That matters
@@ -70,7 +63,7 @@ accepting the voice and then misreading it — an encouraging-looking dead end.
 
 ## What already works
 
-Carried over from tiger-speech, all of it measured against Leopard's own
+Carried over from tigerspeech, all of it measured against Leopard's own
 binaries:
 
 - **The images load.** Leopard's `MacinTalk` and `SpeechDictionary` map,
@@ -316,7 +309,7 @@ ellipsis, so encoding properly is the whole fix.
 
 ## Getting the engine
 
-The same rule as tiger-speech, and it is not a formality: **no part of Apple's
+The same rule as every add-on here, and it is not a formality: **no part of Apple's
 software will ever be distributed here.** You supply your own Leopard install
 disc and the extractor takes the engine out of it:
 
@@ -391,7 +384,7 @@ synthesizer list.
 
 ## Licence
 
-MIT, as with tiger-speech and outspoken-nvda. It covers the driver, the loader
+MIT, as with the rest of this repository and outspoken-nvda. It covers the driver, the loader
 and the shims — the work of making Apple's engine run somewhere it was never
 built to run — and **not the engine itself**, which is Apple's and is never
 distributed here.
