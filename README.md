@@ -56,6 +56,17 @@ An add-on folder is self-contained apart from the loader: its own `tests/`,
 its own extractor, its own `package.py`. `py -3 -m pytest tests/ -q` from
 inside one runs that add-on's suite.
 
+## Releases
+
+Each add-on versions and ships on its own, so **tags carry the add-on name** —
+`tigerspeech/v0.7.9`, `leopardspeech/v0.7.4` — and each release attaches only
+its own `.nvda-addon`. A bare `vN.N.N` tag here means nothing any more; the
+ones that predate the merge are Tiger's and are left alone.
+
+Releases published before this repository was renamed are still reachable:
+the old `tiger-speech` URL redirects, and `leopard-speech` is archived with
+its own six releases intact.
+
 ## Nothing of Apple's is here
 
 **No engine and no voice ships from this repository**, and none is committed
