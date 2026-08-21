@@ -90,6 +90,15 @@ Leopard's engine also needs Apple's C++ runtime, libstdc++.6.0.4.dylib, which
 is on the same disc under usr/lib. The extractor takes it. Without it nothing
 loads at all -- not one voice.
 
+The extractor is a single Python file. It is not bundled with the add-on --
+Leopard's reads the DVD image itself, but Tiger's needs 7-Zip and that cannot
+be shipped inside an NVDA add-on, so all of them are downloaded and run the
+same way:
+
+    https://github.com/tgeczy/panthera-speech/blob/main/leopard/tools/extract_leopard.py
+
+It needs Python 3.8 or newer installed (tested on 3.13).
+
 If you would rather keep the engine on another drive, put its full path into a
 file called leopardspeech-data.txt in the configuration folder instead.
 

@@ -74,6 +74,14 @@ It needs 7-Zip installed, reads your own installer image, and writes straight
 into this folder. You need an Intel Tiger image; the PowerPC discs carry the
 same voices but a PowerPC engine, which cannot run here.
 
+The extractor is a single Python file. It is not bundled with the add-on
+because reading an ISO or DMG needs 7-Zip, which cannot be shipped inside an
+NVDA add-on -- so you download and run it yourself:
+
+    https://github.com/tgeczy/panthera-speech/blob/main/tiger/tools/extract_tiger.py
+
+It needs Python 3.8 or newer installed (tested on 3.13), and 7-Zip.
+
 If you would rather keep the engine on another drive, put its full path into a
 file called tigerspeech-data.txt in the configuration folder instead.
 
