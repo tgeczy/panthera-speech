@@ -29,9 +29,16 @@ import math
 import sys
 import wave
 
-sys.path.insert(0, r"C:\git\leopard-speech\tests")
+#: Relative to this file rather than to one machine. These were absolute paths
+#: into the old leopard-speech checkout, which stopped existing the day the two
+#: repositories merged -- so the tool that rebuilds the per-voice volume table
+#: could not run at all, and nothing said so until `check_clean.py` started
+#: looking at Leopard's half of the tree for the first time.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ADDON = os.path.dirname(_HERE)
+sys.path.insert(0, os.path.join(_ADDON, "tests"))
 import conftest                                                # noqa: E402,F401
-sys.path.insert(0, r"C:\git\leopard-speech\addon\synthDrivers")
+sys.path.insert(0, os.path.join(_ADDON, "addon", "synthDrivers"))
 
 CEIL = 32767
 
