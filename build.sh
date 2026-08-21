@@ -1,5 +1,18 @@
 #!/bin/sh
-# Build tiger_host.exe.
+# Build the loader, and stage it into every add-on that runs on it.
+#
+# **There is one loader in this repository and there will only ever be one.**
+# It is the same program for Tiger and for Leopard -- the same Mach-O loader,
+# the same shims, the same AAC decoder -- pointed at a 10.4 tree or a 10.5 one.
+# Leopard needed three things Tiger did not (an optional third image for
+# libstdc++, 16-byte stack alignment at every entry, and the Accelerate
+# routines behind Alex's WSOLA), and all three live here because Tiger
+# benefits from two of them and is unharmed by the third.
+#
+# A second copy would mean fixing every future bug twice and discovering the
+# divergence months later, through a voice that sounds wrong in one add-on and
+# right in the other.  Each add-on gets the binary staged under a name that
+# says what it is locally; they are the same bytes.
 #
 # 32-bit, always.  Apple's MacinTalk is i386 code and this process has to be
 # able to call it, so the bitness is not a preference.  NVDA is 64-bit, which
@@ -44,8 +57,19 @@ eval "\"$CL\" -nologo -O2 -MT -W3 $INC \"$ROOT/src/tiger_host.c\" \
 
 echo "  -> build/tiger_host.exe"
 
-# Stage it into the add-on immediately.  The driver loads the add-on's copy,
-# not this one, and a stale copy there presents as "the fix did not work" --
-# which cost a confusing test failure once already.
-cp "$OUT/tiger_host.exe" "$ROOT/addon/synthDrivers/_tigerspeech/tiger_host.exe"
-echo "  -> addon/synthDrivers/_tigerspeech/tiger_host.exe"
+# Stage it into each add-on immediately.  A driver loads its own copy, not
+# this one, and a stale copy there presents as "the fix did not work" -- which
+# cost a confusing test failure once already.
+#
+# Add a line here when an add-on joins.  Missing one is silent: the add-on
+# simply keeps running last month's loader.
+stage() {                          # <add-on folder> <_private folder> <name>
+    dest="$ROOT/$1/addon/synthDrivers/$2/$3"
+    [ -d "$ROOT/$1" ] || return 0  # not checked out; nothing to stage into
+    mkdir -p "$(dirname "$dest")"
+    cp "$OUT/tiger_host.exe" "$dest"
+    echo "  -> $1/addon/synthDrivers/$2/$3"
+}
+
+stage tiger   _tigerspeech   tiger_host.exe
+stage leopard _leopardspeech leopard_host.exe

@@ -64,8 +64,18 @@ def scan_binary(path):
 def main():
     bad = 0
     # Everything that ships, plus the sources that build it.
-    roots = [os.path.join(ROOT, "addon"), os.path.join(ROOT, "src"),
-             os.path.join(ROOT, "tools"), os.path.join(ROOT, "tests")]
+    #
+    # **Every add-on, discovered rather than listed.** This repository holds
+    # one per engine generation and gains one whenever a new tree is decoded;
+    # a hardcoded list would quietly stop checking the newest add-on, which is
+    # exactly the one most likely to have a developer's path in it.
+    roots = [os.path.join(ROOT, "src"), os.path.join(ROOT, "tools")]
+    for name in sorted(os.listdir(ROOT)):
+        addon = os.path.join(ROOT, name, "addon")
+        if os.path.isdir(addon):
+            roots.append(addon)
+            roots.append(os.path.join(ROOT, name, "tests"))
+            roots.append(os.path.join(ROOT, name, "tools"))
     files = [os.path.join(ROOT, f) for f in os.listdir(ROOT)
              if f.endswith(TEXT_EXT)]
     for r in roots:
