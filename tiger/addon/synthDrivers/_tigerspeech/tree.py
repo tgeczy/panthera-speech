@@ -10,25 +10,38 @@ Updating an add-on deletes and recreates its directory, so a few hundred
 megabytes of extracted engine kept inside it would be destroyed on every
 upgrade.
 
-The folder is `tigerspeech-data` rather than anything shorter: it sits
-directly in NVDA's configuration directory alongside every other add-on's
-data, so a generic name would be a collision waiting to happen.
+**Every engine in the family shares one folder**, `macintalk`, with a
+subfolder per generation:
 
-    tigerspeech-data/
-        Speech/Synthesizers/MacinTalk.SpeechSynthesizer/
-        Speech/Voices/<name>.SpeechVoice/
-        SpeechDictionary.framework/Versions/A/
+    macintalk/
+        tiger/          <- here
+            Speech/Synthesizers/MacinTalk.SpeechSynthesizer/
+            Speech/Voices/<name>.SpeechVoice/
+            SpeechDictionary.framework/Versions/A/
+        leopard/
+        outspoken/
+
+That is a change from `tigerspeech-data` sitting loose in the configuration
+directory beside `leopardspeech-data` and `outspoken-roms`.  Three folders
+for one lineage was asked about the day the repositories merged, and the
+answer was the same one: they belong together.  `migrate` moves an older
+release's folder across, once.
 
 The extracted folder may also be dropped in whole, one level down, because
 that is what people actually do.  And because a Tiger tree is large and often
-kept on another drive, a text file of the same name works as a pointer.
+kept on another drive, a text file named for the folder works as a pointer.
 
 Kept free of NVDA imports on purpose: the synthesizer and the global plugin
 both need it, and so does anything run from a command line.
 """
 import os
 
-CONFIG_DIRNAME = "tigerspeech-data"
+CONFIG_DIRNAME = os.path.join("macintalk", "tiger")
+
+#: Where earlier releases kept it.  Searched after the new location and moved
+#: out of on first use.  **`tigerspeech-data` is also the pointer file's name**,
+#: which is what makes the breadcrumb `migrate` leaves work.
+LEGACY_DIRNAMES = ("tigerspeech-data",)
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 HOST_EXE = os.path.join(_HERE, "tiger_host.exe")
@@ -57,8 +70,57 @@ def config_base():
 
 
 def config_dir():
-    """`<nvda user config>/tigerspeech-data`."""
+    """`<nvda user config>/macintalk/tiger`."""
     return os.path.join(config_base(), CONFIG_DIRNAME)
+
+
+def legacy_dirs():
+    return [os.path.join(config_base(), n) for n in LEGACY_DIRNAMES]
+
+
+def migrate():
+    """Move an earlier release's folder under `macintalk`, once. -> path|None
+
+    **A rename, never a copy.** Old and new both sit inside NVDA's
+    configuration directory, so this is one volume and one metadata operation:
+    a Leopard tree is 717 MB and moves in milliseconds. A copy would have to
+    be resumable, verified and undoable, and would make this whole idea a bad
+    one.
+
+    Three things keep it safe:
+
+    * **It is lazy.** Called from `find_tree`, not at import, so nothing
+      happens while NVDA is starting and speech is waiting.
+    * **Failure changes nothing.** `os.rename` either moves the directory or
+      raises; there is no half-moved state. Windows refuses it outright if the
+      engine has a file open, so the answer to a locked tree is to go on using
+      it where it is -- which is why the old location stays in `find_tree`'s
+      candidates for good rather than for one release.
+    * **It leaves a breadcrumb**, and the breadcrumb is load-bearing. The
+      pointer file it writes is the one an *older* version of this add-on
+      already reads, so a user who rolls back, or who runs two add-ons of
+      different vintages, still finds the tree.
+    """
+    new = config_dir()
+    if os.path.isdir(new):
+        return None
+    for old in legacy_dirs():
+        if not os.path.isdir(old):
+            continue
+        try:
+            os.makedirs(os.path.dirname(new), exist_ok=True)
+            os.rename(old, new)
+        except OSError:
+            return None                  # in use, or not ours to move
+        pointer = os.path.join(config_base(), LEGACY_DIRNAMES[0] + ".txt")
+        try:
+            if not os.path.exists(pointer):
+                with open(pointer, "w", encoding="utf-8") as f:
+                    f.write(new)
+        except OSError:
+            pass
+        return new
+    return None
 
 
 def is_tree(path):
@@ -71,6 +133,7 @@ def find_tree():
     Deliberately quiet about failure.  The synthesizer reports itself as
     unavailable rather than appearing and then being silent.
     """
+    migrate()
     home = config_dir()
     cands = []
 
@@ -78,15 +141,20 @@ def find_tree():
     if env:
         cands.append(env)
 
-    cands.append(home)
-    try:
-        cands += [os.path.join(home, d) for d in sorted(os.listdir(home))
-                  if os.path.isdir(os.path.join(home, d))]
-    except OSError:
-        pass
+    # The shared folder first, then wherever earlier releases left it -- which
+    # is where it stays if the rename could not happen, so this is a permanent
+    # fallback rather than one release's courtesy.
+    for root in [home] + legacy_dirs():
+        cands.append(root)
+        try:
+            cands += [os.path.join(root, d) for d in sorted(os.listdir(root))
+                      if os.path.isdir(os.path.join(root, d))]
+        except OSError:
+            pass
 
-    for pointer in (home + ".txt",
-                    os.path.join(config_base(), "tiger-tree.txt")):
+    for pointer in ([os.path.join(config_base(), n + ".txt")
+                     for n in LEGACY_DIRNAMES] +
+                    [os.path.join(config_base(), "tiger-tree.txt")]):
         if os.path.isfile(pointer):
             try:
                 with open(pointer, encoding="utf-8") as f:
@@ -284,6 +352,12 @@ def explain():
                      % (", ".join(sorted(os.listdir(home))) or "(empty)"))
     except OSError as e:
         lines.append("  cannot list: %s" % e)
+    # Named rather than left to be guessed at: if the move could not happen --
+    # a file open, a permission -- the engine still works from the old folder,
+    # and the person reading this report is the one who needs to know which.
+    for old in legacy_dirs():
+        if os.path.isdir(old):
+            lines.append("  still in the pre-macintalk location: %s" % old)
 
     found_tree = find_tree()
     if not found_tree:

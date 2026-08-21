@@ -44,7 +44,7 @@ _MESSAGE = (
     "own Mac OS X 10.4 install disc, and until then the synthesizer will not "
     "appear in NVDA's list at all.\n\n"
     "Put the extracted Speech folder and SpeechDictionary.framework into the "
-    "tigerspeech-data folder. The extract_tiger.py tool in the project "
+    "macintalk\\tiger folder. The extract_tiger.py tool in the project "
     "repository will do that for you from an installer image; there is a "
     "README in the folder with the details.\n\n"
     "Yes  -  open the folder the engine goes in\n"
@@ -75,7 +75,7 @@ into this folder. You need an Intel Tiger image; the PowerPC discs carry the
 same voices but a PowerPC engine, which cannot run here.
 
 If you would rather keep the engine on another drive, put its full path into a
-file called tigerspeech-data.txt next to this folder instead.
+file called tigerspeech-data.txt in the configuration folder instead.
 
 Delete the file called "do-not-ask" here if you told NVDA to stop reminding
 you and would like the reminder back.

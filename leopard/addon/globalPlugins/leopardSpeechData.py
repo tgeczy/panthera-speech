@@ -56,7 +56,7 @@ _MESSAGE = (
     "own Mac OS X 10.5 install disc, and until then the synthesizer will not "
     "appear in NVDA's list at all.\n\n"
     "Put the extracted Speech folder and SpeechDictionary.framework into the "
-    "leopardspeech-data folder. The extract_leopard.py tool in the project "
+    "macintalk\\leopard folder. The extract_leopard.py tool in the project "
     "repository will do that for you from an installer image; there is a "
     "README in the folder with the details.\n\n"
     "Yes  -  open the folder the engine goes in\n"
@@ -91,7 +91,7 @@ is on the same disc under usr/lib. The extractor takes it. Without it nothing
 loads at all -- not one voice.
 
 If you would rather keep the engine on another drive, put its full path into a
-file called leopardspeech-data.txt next to this folder instead.
+file called leopardspeech-data.txt in the configuration folder instead.
 
 Delete the file called "do-not-ask" here if you told NVDA to stop reminding
 you and would like the reminder back.

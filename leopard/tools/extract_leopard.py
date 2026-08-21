@@ -6,7 +6,7 @@ from a Leopard install DVD you own.  Same posture as the sibling add-ons --
 ship the extractor, never the bits.
 
     py -3 tools/extract_leopard.py "Mac OS X Leopard Install DVD.iso"
-    py -3 tools/extract_leopard.py leopard.iso --out "%APPDATA%\\nvda\\leopard-data"
+    py -3 tools/extract_leopard.py leopard.iso --out "%APPDATA%\\nvda\\macintalk\\leopard"
     py -3 tools/extract_leopard.py leopard.iso --no-voices    (engine + Fred only)
 
 Leopard is an Intel-capable release, and the engine on the disc is a fat
@@ -453,10 +453,18 @@ def extract_voices(volume, entry, outdir, counts, label):
 
 
 def default_out():
+    # The shared folder every Macintosh engine writes into now; the
+    # drivers still read the old loose folder, so an extractor from
+    # before this change is not a problem, only untidy.
+    #
+    # **This used to write `leopard-data` and the driver only ever
+    # looked in `leopardspeech-data`**, so anyone who took the default
+    # ended up with a tree the add-on could not find. Both names are
+    # still searched; see leopardtree.LEGACY_DIRNAMES.
     appdata = os.environ.get("APPDATA")
     if appdata:
-        return os.path.join(appdata, "nvda", "leopard-data")
-    return os.path.join(os.getcwd(), "leopard-data")
+        return os.path.join(appdata, "nvda", "macintalk", "leopard")
+    return os.path.join(os.getcwd(), "macintalk", "leopard")
 
 
 def main():
@@ -464,7 +472,7 @@ def main():
         description="Extract Leopard's speech engine from your own install DVD.")
     ap.add_argument("image", help="the Leopard install DVD image (.iso)")
     ap.add_argument("--out", default=default_out(),
-                    help="where to write it (default: %%APPDATA%%\\nvda\\leopard-data)")
+                    help="where to write it (default: %%APPDATA%%\\nvda\\macintalk\\leopard)")
     ap.add_argument("--no-voices", action="store_true",
                     help="engine, dictionary and Fred only -- skips the 707 MB "
                          "package, and so skips Alex")

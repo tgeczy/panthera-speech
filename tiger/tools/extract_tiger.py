@@ -6,7 +6,7 @@ from a Tiger install disc you own.  It is the same posture as the sibling ROM
 add-on -- ship the extractor, never the bits.
 
     py -3 tools/extract_tiger.py "Mac OS X 10.4 Tiger.iso"
-    py -3 tools/extract_tiger.py tiger.dmg --out "%APPDATA%\\nvda\\tigerspeech-data"
+    py -3 tools/extract_tiger.py tiger.dmg --out "%APPDATA%\\nvda\\macintalk\\tiger"
 
 You need an **Intel** Tiger image.  The PowerPC discs contain the same voices,
 which are architecture-neutral data, but their engine is PowerPC code that this
@@ -421,10 +421,13 @@ def verify(outdir):
 
 
 def default_out():
+    # The shared folder every Macintosh engine writes into now; the
+    # drivers still read the old loose folder, so an extractor from
+    # before this change is not a problem, only untidy.
     appdata = os.environ.get("APPDATA")
     if appdata:
-        return os.path.join(appdata, "nvda", "tigerspeech-data")
-    return os.path.abspath("tigerspeech-data")
+        return os.path.join(appdata, "nvda", "macintalk", "tiger")
+    return os.path.abspath(os.path.join("macintalk", "tiger"))
 
 
 def main():
