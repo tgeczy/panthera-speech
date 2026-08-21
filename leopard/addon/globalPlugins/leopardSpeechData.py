@@ -93,6 +93,10 @@ loads at all -- not one voice.
 If you would rather keep the engine on another drive, put its full path into a
 file called leopardspeech-data.txt in the configuration folder instead.
 
+If that file appeared on its own after an upgrade, it is a note left behind
+when the engine folder moved into macintalk, so that going back to an older
+version of this add-on still finds it. Deleting it is safe unless you do that.
+
 Delete the file called "do-not-ask" here if you told NVDA to stop reminding
 you and would like the reminder back.
 """
