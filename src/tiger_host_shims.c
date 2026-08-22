@@ -115,6 +115,52 @@ static int __cdecl sh_mutex_lock(void *m)
 static int __cdecl sh_mutex_unlock(void *m)
 { mtx_ready((mtx *)m); LeaveCriticalSection(&((mtx *)m)->cs); return 0; }
 static int __cdecl sh_mutexattr_init(void *a) { (void)a; return 0; }
+/* The attribute is only ever set to PTHREAD_MUTEX_RECURSIVE, and every mutex
+ * here is a CRITICAL_SECTION, which is recursive already. */
+static int __cdecl sh_mutexattr_settype(void *a, int t)
+{ (void)a; (void)t; return 0; }
+
+/* `SLMorphTraits` opens a locale in its constructor and keeps the `locale_t`
+ * at `this+4`, handing it to the `_l` family from then on.  Those all ignore
+ * it here -- there is one locale -- but the token still has to be non-NULL:
+ * a NULL `locale_t` is how the C library says the call failed, and code that
+ * checks will take a different path for the rest of the run.
+ *
+ * So hand back the address of a real object.  Nothing dereferences it, and if
+ * anything ever does it finds zeroes rather than an address that was never
+ * mapped. */
+static struct { int mask; char name[32]; } g_the_locale;
+
+static void * __cdecl sh_newlocale(int mask, const char *name, void *base)
+{
+    (void)base;
+    g_the_locale.mask = mask;
+    if (name) {
+        strncpy(g_the_locale.name, name, sizeof(g_the_locale.name) - 1);
+        g_the_locale.name[sizeof(g_the_locale.name) - 1] = 0;
+    }
+    return &g_the_locale;
+}
+static void __cdecl sh_freelocale(void *loc) { (void)loc; }
+
+/* Time of day, for a caller that only ever measures intervals with it. */
+static int __cdecl sh_gettimeofday(void *tv, void *tz)
+{
+    /* struct timeval on i386 Darwin is two 32-bit words: seconds, then
+     * microseconds. */
+    unsigned *out = (unsigned *)tv;
+    FILETIME ft;
+    unsigned long long t;
+    (void)tz;
+    if (!out) return -1;
+    GetSystemTimeAsFileTime(&ft);
+    t = ((unsigned long long)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+    t /= 10;                                   /* 100 ns ticks -> microseconds */
+    t -= 11644473600000000ULL;                 /* 1601 epoch -> 1970 epoch */
+    out[0] = (unsigned)(t / 1000000ULL);
+    out[1] = (unsigned)(t % 1000000ULL);
+    return 0;
+}
 /* pthread_once_t is NOT zero-initialised on Darwin: PTHREAD_ONCE_INIT puts the
  * signature 0x30B1BCBA in the first word.  Treating that word as a boolean
  * makes every once-routine look as though it had already run -- which silently

@@ -82,6 +82,10 @@
 #define N_EXT   0x01
 #define N_UNDF  0x0
 #define N_PBUD  0xc
+/* An alias rather than a definition: `n_value` indexes the string table and
+ * names the symbol this one stands for.  Lion's libstdc++ is full of them --
+ * see lookup_in(). */
+#define N_INDR  0xa
 
 #define INDIRECT_SYMBOL_LOCAL 0x80000000
 #define INDIRECT_SYMBOL_ABS   0x40000000

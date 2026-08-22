@@ -33,6 +33,10 @@ static const shim g_shims[] = {
     { "_pthread_mutex_lock",     (void *)sh_mutex_lock     },
     { "_pthread_mutex_unlock",   (void *)sh_mutex_unlock   },
     { "_pthread_mutexattr_init", (void *)sh_mutexattr_init },
+    { "_pthread_mutexattr_settype", (void *)sh_mutexattr_settype },
+    { "_newlocale",  (void *)sh_newlocale  },
+    { "_freelocale", (void *)sh_freelocale },
+    { "_gettimeofday", (void *)sh_gettimeofday },
     { "_pthread_once",           (void *)sh_once           },
     /* Thread-local storage. libstdc++ keeps its locale and exception
      * state here, and a stub that always answers NULL corrupts the

@@ -219,7 +219,8 @@ static void *lookup_shim(const char *name)
 }
 
 /* A symbol defined and exported by an already-loaded image. */
-static void *lookup_in(image *dep, const char *name)
+/* `depth` bounds an alias chain; nothing real is more than one link long. */
+static void *lookup_in_depth(image *dep, const char *name, int depth)
 {
     unsigned k;
     if (!dep) return NULL;
@@ -228,10 +229,39 @@ static void *lookup_in(image *dep, const char *name)
         if (sy->n_type & N_STAB) continue;
         if ((sy->n_type & N_TYPE) == N_UNDF) continue;
         if (!(sy->n_type & N_EXT)) continue;
-        if (!strcmp(dep->strs + sy->n_strx, name))
-            return (void *)(sy->n_value + dep->slide);
+        if (strcmp(dep->strs + sy->n_strx, name)) continue;
+        /* **N_INDR is a name, not an address.**  `n_value` indexes the string
+         * table: the entry says "this symbol is whatever that name is".
+         *
+         * Lion's libstdc++ carries 150 of them -- one per C++ ABI symbol it
+         * re-exports from libc++abi.dylib, since 10.7 is where the ABI moved
+         * out of libstdc++ -- and every one names itself, which is how a
+         * re-export is spelled.  Leopard's 6.0.4 has none.
+         *
+         * Skipping only N_UNDF walked straight past these and returned
+         * `n_value + slide`: a text address computed from a string offset.
+         * `___dynamic_cast` came out as libstdc++ + 0x24e6c and the engine's
+         * first cast jumped four bytes into an unrelated function.  Nothing
+         * reported it, because from here nothing had failed -- which is the
+         * expensive kind of wrong, not the loud kind.
+         *
+         * A self-alias cannot be followed, so the honest answer is that this
+         * image does not have the symbol: fall through, and let the caller
+         * find it elsewhere or thunk it where it can be seen. */
+        if ((sy->n_type & N_TYPE) == N_INDR) {
+            const char *alias = dep->strs + sy->n_value;
+            if (depth > 0 && strcmp(alias, name))
+                return lookup_in_depth(dep, alias, depth - 1);
+            continue;
+        }
+        return (void *)(sy->n_value + dep->slide);
     }
     return NULL;
+}
+
+static void *lookup_in(image *dep, const char *name)
+{
+    return lookup_in_depth(dep, name, 4);
 }
 
 /* The same, across every image loaded so far except the one being bound.

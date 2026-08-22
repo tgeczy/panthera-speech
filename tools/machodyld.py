@@ -215,12 +215,49 @@ class Image(object):
                 out.add(d[off + stroff + strx:e].decode("utf-8", "replace"))
         return out
 
+    def _string(self, strx):
+        """-> the string table entry at `strx`."""
+        base = self.off + self.symtab[2] + strx
+        return self.data[base:self.data.index(b"\0", base)].decode(
+            "utf-8", "replace")
+
+    def indirect_symbols(self):
+        """-> {name: the name it aliases} for every N_INDR entry.
+
+        An indirect symbol is a **name, not an address**: `n_value` indexes
+        the string table rather than holding a value. Lion's libstdc++ carries
+        150 of them, one per C++ ABI symbol it re-exports from
+        `libc++abi.dylib`, and every one names itself.
+
+        Read as a definition, such an entry yields `n_value + slide` -- a text
+        address computed from a string offset. That is how `___dynamic_cast`
+        came to point four bytes into an unrelated function, with nothing
+        reporting a failure because, as far as the loader knew, nothing had
+        failed.
+        """
+        symoff, nsyms = self.symtab[0], self.symtab[1]
+        d, off = self.data, self.off
+        out = {}
+        for i in range(nsyms):
+            q = off + symoff + i * 12
+            strx, typ = struct.unpack("<IB", d[q:q + 5])
+            if typ & 0xE0:                      # N_STAB
+                continue
+            if (typ & 0x0E) != 0x0A:            # N_INDR
+                continue
+            out[self._string(strx)] = self._string(
+                struct.unpack("<I", d[q + 8:q + 12])[0])
+        return out
+
     def exported_symbols(self):
         """-> set of names this image defines, as `find_export` sees them.
 
         The weak streams name symbols the image *defines* rather than imports
         -- C++ coalescing -- so this is what a resolver would actually find
         for them.
+
+        **N_INDR is not a definition either**, and skipping only N_UNDF does
+        not say so; see `indirect_symbols`.
         """
         symoff, nsyms, stroff, _ = self.symtab
         d, off = self.data, self.off
@@ -230,7 +267,7 @@ class Image(object):
             strx, typ = struct.unpack("<IB", d[q:q + 5])
             if typ & 0xE0:                      # N_STAB
                 continue
-            if (typ & 0x0E) == 0x00 or not (typ & 0x01):
+            if (typ & 0x0E) in (0x00, 0x0A) or not (typ & 0x01):
                 continue
             e = d.index(b"\0", off + stroff + strx)
             out.add(d[off + stroff + strx:e].decode("utf-8", "replace"))
