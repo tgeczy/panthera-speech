@@ -513,9 +513,9 @@ def _conflict_message(addons):
 class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 
     #: Shown in NVDA's Tools menu. Translators: an item in NVDA's Tools menu.
-    MENU_LABEL = _("Mac OS X &speech engines...")
-    MENU_HELP = _("Show which Mac OS X speech engines are installed, and open "
-                  "the folder they go in.")
+    MENU_LABEL = _("Mac OS X &speech data...")
+    MENU_HELP = _("See which Mac OS X speech engines are installed, and get "
+                  "them from your own install disc image.")
 
     def __init__(self):
         super().__init__()
@@ -619,6 +619,18 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
                     os.makedirs(m["folder"], exist_ok=True)
                 except OSError:
                     pass
+            # **The dialog replaces the message box, and only if it loads.**
+            # It is the same report either way; what the dialog adds is a way
+            # to act on it. An import error here must not cost the user the
+            # answer they came for, so the old box is still the fallback.
+            try:
+                import pantheramanager
+                pantheramanager.SpeechDataDialog.show(
+                    gui.mainFrame, GENERATIONS, lines)
+                return
+            except Exception:
+                log.error("Panthera: could not open the speech data dialog; "
+                          "falling back to the report", exc_info=True)
             report = "\n".join(lines).rstrip()
             if not missing:
                 gui.messageBox(report, _DIALOG_TITLE,
