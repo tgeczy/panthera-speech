@@ -170,6 +170,8 @@ static const shim g_shims[] = {
     { "_AUGraphInitialize",       (void *)sh_AUGraphInitialize       },
     { "_AUGraphStart",            (void *)sh_AUGraphStart            },
     { "_AUGraphStop",             (void *)sh_AUGraphStop             },
+    { "_AUGraphUninitialize",     (void *)sh_AUGraphUninitialize     },
+    { "_AUGraphIsInitialized",    (void *)sh_AUGraphIsInitialized    },
     { "_DisposeAUGraph",          (void *)sh_DisposeAUGraph          },
     { "_AudioUnitSetProperty",    (void *)sh_AudioUnitSetProperty    },
     /* Leopard's engine reads state back; Tiger's never does. */

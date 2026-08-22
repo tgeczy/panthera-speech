@@ -96,7 +96,10 @@ static int __cdecl sh_cond_wait(void *c, void *m)
 {
     cnd_ready((cnd *)c);
     mtx_ready((mtx *)m);
-    SleepConditionVariableCS(&((cnd *)c)->cv, &((mtx *)m)->cs, INFINITE);
+    {   double t0 = tick_ms();
+        g_w_cnd_n++;
+        SleepConditionVariableCS(&((cnd *)c)->cv, &((mtx *)m)->cs, INFINITE);
+        g_w_cnd_ms += tick_ms() - t0; }
     return 0;
 }
 static int __cdecl sh_cond_signal(void *c)

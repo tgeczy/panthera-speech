@@ -161,14 +161,50 @@ static DWORD WINAPI source_thread(LPVOID param)
         /* Disarmed means "nothing scheduled": wait for a re-arm rather than
          * spinning or exiting.  Armed means wait out the delay, unless a
          * re-arm arrives first and changes it. */
-        DWORD ms = s->armed ? s->delay_ms : INFINITE;
-        DWORD r = WaitForSingleObject(s->rearm, ms);
+        DWORD ms, r;
+        /* A timer that is already due is delivered without asking Windows
+         * for anything: waiting nought milliseconds on an event still costs
+         * the whole syscall pair, and Lion arms this one for *now* out of its
+         * own handler.
+         *
+         * **This is not what made Lion slow, and the first version of this
+         * comment said it was.**  The pair looked like the whole cost -- 5.4
+         * million of them for one sentence against a 2.5 second render -- and
+         * removing it changed the render time by nothing at all, because the
+         * loop simply spun faster: 13.1 million iterations instead of 5.4, and
+         * the same 2.46 seconds.  The clock was the cause (see
+         * `sh_gettimeofday`), and this is worth keeping only because a
+         * due-now timer should not cost two syscalls.
+         *
+         * The yield matters more than the saving: the pacer thread is the
+         * engine's clock, and a loop that never yields can starve it. */
+        if (s->armed && s->delay_ms == 0) {
+            s->armed = 0;
+            g_w_src_zero++;
+            if (s->handler) { g_gcd_handler = (void *)s->handler;
+                              enter_engine(s->handler, s->ctx); s->fired++; }
+            if (s->period_ms) { s->delay_ms = s->period_ms; s->armed = 1; }
+            if ((s->fired & 0x3f) == 0) SwitchToThread();
+            continue;
+        }
+        ms = s->armed ? s->delay_ms : INFINITE;
+        {   double t0 = tick_ms();
+            r = WaitForSingleObject(s->rearm, ms);
+            if (ms != INFINITE) { g_w_src_n++; g_w_src_ms += tick_ms() - t0;
+                if (r == WAIT_TIMEOUT) g_w_src_fire++; else g_w_src_rearm++; } }
         if (!s->running) break;
         if (r != WAIT_TIMEOUT) continue;        /* re-armed; re-read the delay */
         s->armed = 0;
         /* This thread is ours, so Windows aligned its stack to four; the
          * engine's render handler needs sixteen. */
-        if (s->handler) { enter_engine(s->handler, s->ctx); s->fired++; }
+        if (s->handler) {
+            static void *seen[8]; static int nseen; int k, known = 0;
+            for (k = 0; k < nseen; k++) if (seen[k] == (void *)s->handler) known = 1;
+            if (!known && nseen < 8) { seen[nseen++] = (void *)s->handler;
+                fprintf(stderr, "tiger_host: gcd source %p handler %p ctx %p\n",
+                        (void *)s, (void *)s->handler, s->ctx); }
+            g_gcd_handler = (void *)s->handler;
+            enter_engine(s->handler, s->ctx); s->fired++; }
         if (s->period_ms) {                     /* a real repeating timer */
             s->delay_ms = s->period_ms;
             s->armed = 1;
@@ -258,6 +294,8 @@ static void __cdecl sh_dispatch_source_set_timer(void *o,
                                                              * already absurd */
     }
     s->armed = 1;
+    g_w_settimer++;
+    if (s->delay_ms == 0) g_w_settimer_now++;
     if (s->rearm) SetEvent(s->rearm);   /* wake the wait to re-read it */
     if (g_verbose)
         printf("  [gcd] timer on %p: fire in %u ms, then every %u ms\n",

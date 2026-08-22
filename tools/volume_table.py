@@ -31,14 +31,26 @@ import wave
 
 #: Relative to this file rather than to one machine. These were absolute paths
 #: into the old leopard-speech checkout, which stopped existing the day the two
-#: repositories merged -- so the tool that rebuilds the per-voice volume table
-#: could not run at all, and nothing said so until `check_clean.py` started
-#: looking at Leopard's half of the tree for the first time.
+#: repositories merged. They were then made relative to `leopard/tools/`, which
+#: the merge had dissolved as well -- so the tool still could not run, and
+#: nothing said so, because nothing runs it except a person rebuilding a table.
+#:
+#: It lives in the shared `tools/` now, because two generations need it, and it
+#: is told which one on the command line rather than guessing. A table measured
+#: on one bank and applied to another is the exact mistake it exists to
+#: prevent, and the voice names are no help: twenty-three of them are the same
+#: on both.
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_ADDON = os.path.dirname(_HERE)
+_ADDON = os.path.join(os.path.dirname(_HERE), "panthera")
 sys.path.insert(0, os.path.join(_ADDON, "tests"))
 import conftest                                                # noqa: E402,F401
 sys.path.insert(0, os.path.join(_ADDON, "addon", "synthDrivers"))
+sys.path.insert(0, os.path.join(_ADDON, "addon", "synthDrivers", "_panthera"))
+import pantheradriver                                          # noqa: E402
+
+#: Which generations have a table to build. Tiger is not one: its engine takes
+#: no `volm` and its driver has no volume slider to feed.
+GENERATIONS = ("leopard", "lion")
 
 CEIL = 32767
 
@@ -80,11 +92,15 @@ def meas(rendered):
 
 
 def main():
-    import leopardspeech
-    if not leopardspeech.find_tree():
-        print("no Leopard speech tree; set LEOPARD_TREE")
+    if len(sys.argv) != 2 or sys.argv[1] not in GENERATIONS:
+        print("usage: volume_table.py {%s}" % "|".join(GENERATIONS))
+        return 2
+    gen = sys.argv[1]
+    mod = __import__(gen + "speech")
+    if not mod.find_tree():
+        print("no %s speech tree; set %s_TREE" % (gen, gen.upper()))
         return 1
-    d = leopardspeech.SynthDriver()
+    d = mod.SynthDriver()
     d._acceptCommands = True
     stats = {}
     try:
@@ -104,8 +120,17 @@ def main():
                 print("  %s rendered nothing" % v)
                 continue
             worst = max(peaks)
+            # **The driver's ceiling, not the engine's.** This used to clamp
+            # at 2.0, which is where the engine stops honouring `volm`, and
+            # that is a different number from the highest factor a voice can
+            # be given: right at 2.0 the arithmetic stops holding and Whisper
+            # clips rather than gaining the 3% it was asked for. Leopard's
+            # shipped table was hand-clamped to 1.80 afterwards, so the tool
+            # and the table it built had already disagreed -- and pasting this
+            # output in would have quietly undone it.
             stats[v] = (sum(rmss) / len(rmss),
-                        min(2.0, MARGIN * CEIL / float(worst)), worst)
+                        min(pantheradriver.VOLUME_NORM_CEILING,
+                            MARGIN * CEIL / float(worst)), worst)
     finally:
         d.terminate()
 
@@ -122,8 +147,8 @@ def main():
         print("  %-11s %8.0f %6d %6.2f %8.2f %+7.1f dB"
               % (v, natural, worst, safe, norm, 20 * math.log10(norm)))
 
-    print("\n#: Measured with tools/volume_table.py. See the module docstring.")
-    print("VOLUME_NORM = {")
+    print("\n#: Measured with tools/volume_table.py -- see its docstring.")
+    print("VOLUME_NORM_%s = {" % gen.upper())
     for v in sorted(table):
         print("    %-13s %.2f," % ('"%s":' % v, table[v]))
     print("}")

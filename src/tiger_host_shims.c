@@ -144,19 +144,82 @@ static void * __cdecl sh_newlocale(int mask, const char *name, void *base)
 static void __cdecl sh_freelocale(void *loc) { (void)loc; }
 
 /* Time of day, for a caller that only ever measures intervals with it. */
+/* Which clock the engine watches, counted per utterance.  The whole
+ * host depends on every one of these running fast; `gettimeofday` was
+ * the one that did not, and 10.7 is the release that started reading
+ * it.  Reported under TIGER_FLOAT_STATS so the next generation can be
+ * checked in one line rather than in an afternoon. */
+static unsigned g_c_gtod, g_c_uptime;
+
+/* How much faster than the wall the engine's clock runs.  Defined further
+ * down, with the note that explains why it is 128; declared here because
+ * `gettimeofday` is one of the clocks it scales and comes first in the
+ * file. */
+static double g_speed;
+
+/* Microseconds since this process started, from the high-resolution counter.
+ *
+ * `GetSystemTimeAsFileTime` advances in 15.6 ms steps, which is coarser than
+ * anything the engine schedules with, so the elapsed part of the clock below
+ * is measured with QPC instead and only the epoch comes from the wall. */
+static unsigned long long qpc_us(void)
+{
+    static long long freq;
+    LARGE_INTEGER c;
+    if (!freq) { LARGE_INTEGER f; QueryPerformanceFrequency(&f);
+                 freq = f.QuadPart ? f.QuadPart : 1; }
+    QueryPerformanceCounter(&c);
+    return (unsigned long long)((double)c.QuadPart * 1000000.0 / (double)freq);
+}
+
+/*
+ * **10.7 changed which clock the engine's worker watches, and that one number
+ * is the whole difference between Lion running at ninety times real time and
+ * running at nine tenths of it.**
+ *
+ * Leopard's back end computes its next event from `UpTime`, and `sh_uptime`
+ * multiplies by `g_speed` -- that is the trick the whole host is built on, and
+ * why an utterance costs twelve milliseconds rather than several seconds.
+ * Lion's `MTBEWorkerExecuteTasks` uses `gettimeofday`, which was returning the
+ * true wall clock, so the worker asked "is it time yet?" against a clock that
+ * never ran fast and answered itself twelve and a half million times for one
+ * sentence.  Measured: `UpTime` 174 calls on Leopard, `gettimeofday` 12474757
+ * on Lion, for the same text in the same voice.
+ *
+ * Nothing looked broken.  Every voice spoke, the audio was right, and the
+ * renders were byte-comparable -- they simply took as long as the speech
+ * lasts.  What finally showed it was the far end of the same fault: the serve
+ * loop allows an utterance nine seconds of wall clock, and at 0.9x the singing
+ * voices reach that inside one ordinary sentence, so the utterance came back
+ * truncated with the channel left mid-speech, answering -231 to everything
+ * after it.  Seventeen voices in a row rendering nothing is what sent anyone
+ * looking at the clock.
+ *
+ * **The epoch stays real and only the elapsed part is scaled.**  This is a
+ * calendar clock as well as an interval one, and Lion imports `localtime_r`
+ * and `strftime` beside it; a process that starts up believing it is several
+ * months from now is a different bug to have caused.  Anchoring on the first
+ * call means dates are right when they are first asked for and run fast
+ * afterwards, which is exactly what `UpTime` has always done here.
+ */
 static int __cdecl sh_gettimeofday(void *tv, void *tz)
 {
     /* struct timeval on i386 Darwin is two 32-bit words: seconds, then
      * microseconds. */
     unsigned *out = (unsigned *)tv;
+    static unsigned long long epoch_us, start_us;
     FILETIME ft;
     unsigned long long t;
     (void)tz;
+    g_c_gtod++;
     if (!out) return -1;
     GetSystemTimeAsFileTime(&ft);
     t = ((unsigned long long)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
     t /= 10;                                   /* 100 ns ticks -> microseconds */
     t -= 11644473600000000ULL;                 /* 1601 epoch -> 1970 epoch */
+    if (!epoch_us) { epoch_us = t; start_us = qpc_us(); }
+    t = epoch_us + (unsigned long long)((double)(qpc_us() - start_us)
+                                        * g_speed);
     out[0] = (unsigned)(t / 1000000ULL);
     out[1] = (unsigned)(t % 1000000ULL);
     return 0;
@@ -255,6 +318,19 @@ static int __cdecl sh_mp_notify_queue(mpqueue *q, void *p1, void *p2, void *p3)
  * against if audio ever looks wrong. */
 static double g_speed = 128.0;
 
+/* What the host waited on, per utterance.  Reset by the serve loop and
+ * printed with the slice timeline; see the note in tiger_host_serve.c. */
+static unsigned g_w_usleep_n, g_w_mpq_n, g_w_src_n, g_w_cnd_n;
+static unsigned g_w_src_zero, g_w_src_fire, g_w_src_rearm;
+static unsigned g_w_settimer, g_w_settimer_now;
+static void *g_gcd_handler;
+static double   g_w_usleep_ms, g_w_mpq_ms, g_w_src_ms, g_w_cnd_ms;
+
+static double tick_ms(void)
+{
+    return (double)GetTickCount64();
+}
+
 /* Duration: positive is milliseconds, negative is negated microseconds,
  * kDurationForever is 0x7fffffff and kDurationImmediate is 0.  Engine
  * durations are in engine time, so a real wait is that divided by g_speed. */
@@ -273,8 +349,14 @@ static int __cdecl sh_mp_wait_on_queue(mpqueue *q, void **p1, void **p2,
     if (!q) return -50;
     if (g_mp_waits++ < 6)
         if (g_verbose) printf("  [mp] WaitOnQueue %p timeout=%d\n", (void *)q, timeout);
-    if (WaitForSingleObject(q->sem, duration_ms(timeout)) != WAIT_OBJECT_0)
-        return -30988;                          /* kMPTimeoutErr */
+    g_w_mpq_n++;
+    {
+        double t0 = tick_ms();
+        DWORD r = WaitForSingleObject(q->sem, duration_ms(timeout));
+        g_w_mpq_ms += tick_ms() - t0;
+        if (r != WAIT_OBJECT_0)
+            return -30988;                      /* kMPTimeoutErr */
+    }
     EnterCriticalSection(&q->cs);
     if (p1) *p1 = q->msg[q->head][0];
     if (p2) *p2 = q->msg[q->head][1];
@@ -457,6 +539,7 @@ static long long qpc_freq(void)
 }
 static long long __cdecl sh_uptime(void)
 {
+    g_c_uptime++;
     LARGE_INTEGER c;
     QueryPerformanceCounter(&c);
     return (long long)(c.QuadPart * g_speed);
@@ -667,7 +750,13 @@ static void __cdecl sh_sgemv(int order, int trans, int m, int n, float alpha,
 static char * __cdecl sh_getenv(const char *n) { (void)n; return NULL; }
 static long   __cdecl sh_random(void)          { return rand(); }
 static void   __cdecl sh_srandom(unsigned s)   { srand(s); }
-static void   __cdecl sh_usleep(unsigned us)   { Sleep(us / 1000); }
+static void __cdecl sh_usleep(unsigned us)
+{
+    double t0 = tick_ms();
+    g_w_usleep_n++;
+    Sleep(us / 1000);
+    g_w_usleep_ms += tick_ms() - t0;
+}
 
 /* ---- memmove and memcpy, with the engine's own arithmetic distrusted ---- */
 /*

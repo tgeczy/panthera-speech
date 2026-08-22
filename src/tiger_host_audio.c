@@ -95,17 +95,34 @@ static int __cdecl sh_AUGraphOpen(void *g)
 { (void)g; if (g_verbose) printf("  [au] Open\n"); return 0; }
 static int __cdecl sh_AUGraphInitialize(void *g)
 { (void)g; if (g_verbose) printf("  [au] Initialize\n"); return 0; }
+static unsigned g_au_start, g_au_stop, g_au_uninit, g_au_isinit;
+/* The widest silence between two slices of one utterance, in ms.  What
+ * the serve loop's quiet period has to be longer than, measured rather
+ * than guessed -- 10.7 never calls AUGraphStop, so on Lion that period
+ * is the only thing that ends an utterance. */
+static double g_slice_gap_max, g_slice_prev_ms;
 static int __cdecl sh_AUGraphStart(void *g)
-{ (void)g; if (g_verbose) printf("  [au] START\n"); return 0; }
+{ (void)g; g_au_start++; if (g_verbose) printf("  [au] START\n"); return 0; }
 /* The engine stops its graph when the utterance is finished, which makes this
  * the natural end-of-speech signal -- better than any timeout. */
 static int __cdecl sh_AUGraphStop(void *g)
 {
     (void)g;
     g_stopped = 1;
+    g_au_stop++;
     if (g_verbose) printf("  [au] Stop\n");
     return 0;
 }
+/* 10.7 imports both of these and 10.5 imports neither.  Unshimmed they
+ * fell through to a stub that answers 0 -- which is noErr, and for
+ * `IsInitialized` also leaves the out-parameter holding whatever was on
+ * the stack.  Neither turns out to be the end-of-utterance signal, but a
+ * stub that returns success without doing anything is the shape of
+ * failure this host has been caught by four times. */
+static int __cdecl sh_AUGraphUninitialize(void *g)
+{ (void)g; g_au_uninit++; return 0; }
+static int __cdecl sh_AUGraphIsInitialized(void *g, unsigned char *out)
+{ (void)g; g_au_isinit++; if (out) *out = 1; return 0; }
 static int __cdecl sh_DisposeAUGraph(void *g)
 { (void)g; if (g_verbose) printf("  [au] Dispose\n"); return 0; }
 
@@ -397,6 +414,9 @@ static void collect_slice(unsigned char *slice)
         }
         { double t = wall_ms() - g_utt_t0;
           if (g_first_slice_ms < 0.0) g_first_slice_ms = t;
+          else if (t - g_slice_prev_ms > g_slice_gap_max)
+              g_slice_gap_max = t - g_slice_prev_ms;
+          g_slice_prev_ms = t;
           g_last_slice_ms = t; }
         if (pos > g_pcm_n && pos < PCM_CAP)
             while (g_pcm_n < pos) g_pcm[g_pcm_n++] = 0.0f;

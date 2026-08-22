@@ -371,6 +371,7 @@ static int serve(image *mt, void *chan, const char *voicesdir)
         g_sql_rows = 0;
         g_back_slices = 0; g_back_max = 0;
         g_utt_t0 = wall_ms(); g_first_slice_ms = -1.0; g_last_slice_ms = 0.0;
+        g_slice_gap_max = 0.0; g_slice_prev_ms = 0.0;
         /* SESpeakBuffer's fourth argument is the Speech Manager's own flags
          * word, and kNoEndingProsody (1) looked like the lever for a screen
          * reader: NVDA speaks in fragments, and each one gets the falling
@@ -397,7 +398,37 @@ static int serve(image *mt, void *chan, const char *voicesdir)
         }
 
         /* AUGraphStop is the engine's own end-of-utterance signal, with a
-         * quiet-period fallback in case an utterance ends another way. */
+         * quiet-period fallback in case an utterance ends another way.
+         *
+         * **On 10.7 the fallback is not a fallback, it is the only path.**
+         * Tiger and Leopard start and stop the graph once per utterance --
+         * measured, 92 of 92 and 96 of 96 -- and leave here the moment the
+         * engine stops it.  Lion starts the graph once for the whole session
+         * and never stops it at all, 0 of 96, so every Lion utterance sits out
+         * the entire quiet period after its audio is already complete.  That
+         * is a fixed 300 ms on the end of every Lion render, and it is why
+         * Lion measures 16x real time where Leopard measures 87x.
+         *
+         * **Shortening it was tried, and reverted.**  The widest silence
+         * between two slices of one utterance, over 284 utterances across all
+         * three generations and every voice, was 40.2 ms -- so 150 ms looked
+         * like three and a half times the worst case, and Tiger's and
+         * Leopard's renders came back byte-identical with it.
+         *
+         * They were the wrong 284 utterances.  Every one was an ordinary
+         * sentence, and the gap that matters does not live in ordinary
+         * sentences: an unbroken token of 370 characters gives Alex enough
+         * morphology to go quiet for longer than 150 ms in the middle of one
+         * utterance, and at 150 the four cases in
+         * `tests/leopard/test_long_tokens.py` fail.  Those are Brandon's
+         * issue #4, and they are in the suite precisely because nobody knows
+         * which change cured it.
+         *
+         * So the number stays where a reported bug says it has to be, and
+         * Lion pays 300 ms it should not have to.  The honest fix is not a
+         * shorter guess -- it is `kSpeechStatusOutputBusy`, which 10.7 does
+         * export and which would answer the question directly instead of
+         * inferring it from silence. */
         if (!err) {
             unsigned last = 0, quiet = 0, ticks = 0;
             while (!g_stopped && quiet < 30 && ticks < 900) {
@@ -580,6 +611,40 @@ static int serve(image *mt, void *chan, const char *voicesdir)
          * slice landed behind frames already collected -- which is the one
          * thing streaming cannot survive, because sent audio cannot be
          * unsent. */
+        if (g_float_stats)
+            fprintf(stderr, "  [wait] usleep %u/%.0f ms, mpqueue %u/%.0f ms, "
+                            "gcd timer %u/%.0f ms, condvar %u/%.0f ms\n",
+                    g_w_usleep_n, g_w_usleep_ms, g_w_mpq_n, g_w_mpq_ms,
+                    g_w_src_n, g_w_src_ms, g_w_cnd_n, g_w_cnd_ms);
+        if (g_float_stats && g_gcd_handler) {
+            int ii;
+            for (ii = 0; ii < g_nimages; ii++) {
+                image *im = g_images[ii];
+                unsigned v = (unsigned)g_gcd_handler;
+                if (v < im->lo + im->slide || v >= im->hi + im->slide)
+                    continue;
+                {   unsigned off = v - im->slide, symaddr = 0;
+                    const char *sym = nearest_symbol(im, off, &symaddr);
+                    const char *b = strrchr(im->path, 0x2f);
+                    if (!sym) continue;
+                    fprintf(stderr, "  [gcd] handler %s + 0x%x  (%s)\n",
+                            sym, off - symaddr, b ? b + 1 : im->path);
+                    break; }
+            }
+        }
+        if (g_float_stats)
+            fprintf(stderr, "  [au] start %u, stop %u, uninitialize %u, "
+                            "isInitialized %u, widest gap between slices "
+                            "%.1f ms\n",
+                    g_au_start, g_au_stop, g_au_uninit, g_au_isinit,
+                    g_slice_gap_max);
+        if (g_float_stats)
+            fprintf(stderr, "  [clock] gettimeofday %u, UpTime %u\n",
+                    g_c_gtod, g_c_uptime);
+        if (g_float_stats)
+            fprintf(stderr, "  [gcd] set_timer %u (%u for now), waits: %u zero-delay, %u fired, %u re-armed\n",
+                    g_w_settimer, g_w_settimer_now, g_w_src_zero,
+                    g_w_src_fire, g_w_src_rearm);
         if (g_float_stats)
             fprintf(stderr, "  [str] speak returned at %.1f ms, first slice "
                             "%.1f ms, last %.1f ms, %u frame(s); %u slice(s) "
