@@ -184,10 +184,10 @@ def test_the_button_opens_the_folder_that_holds_both(plugin):
     assert plugin._folder_to_open([ENTRY]) == ENTRY["folder"]
 
 
-def test_both_generations_are_declared(plugin):
+def test_every_generation_is_declared(plugin):
     """The table is what a generation is added to; an empty one is silence."""
     keys = [g["key"] for g in plugin.GENERATIONS]
-    assert keys == ["tiger", "leopard"]
+    assert keys == ["tiger", "leopard", "lion"]
     for gen in plugin.GENERATIONS:
         assert set(gen) == {"key", "tree", "label", "source", "readme",
                             "oldAddon"}
@@ -201,7 +201,7 @@ def test_both_generations_are_declared(plugin):
         assert gen["readme"].strip(), gen["key"]
 
 
-def test_the_two_generations_do_not_share_a_folder(plugin):
+def test_no_two_generations_share_a_folder(plugin):
     """They sit side by side under `macintalk`, one subfolder each.
 
     Same folder for both would mean one engine's README overwriting the

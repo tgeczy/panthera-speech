@@ -94,11 +94,12 @@ class FakeWavePlayer(object):
         self.stop()
 
 
-#: Both generations, because one add-on now holds both.  The pointer files are
+#: Every generation, because one add-on now holds them all.  The pointer files are
 #: named apart, so a config folder can carry both at once -- which is exactly
 #: what a user with both engines extracted has.
 TREES = (("TIGER_TREE", "tigerspeech-data.txt"),
-         ("LEOPARD_TREE", "leopardspeech-data.txt"))
+         ("LEOPARD_TREE", "leopardspeech-data.txt"),
+         ("LION_TREE", "lionspeech-data.txt"))
 
 
 def _stage_tree(cfg_dir):

@@ -49,6 +49,7 @@ if _ENGINE_DIR not in sys.path:
 # `leopardspeech` add-on installed alongside this one, their private folders
 # are on `sys.path` too.  Both of those hold a `leopardtree`; a name no older
 # add-on ever used is what keeps this one out of that fight.
+import pantheralion                                           # noqa: E402
 import pantheraleopard                                        # noqa: E402
 import pantheratiger                                          # noqa: E402
 
@@ -296,6 +297,52 @@ you and would like the reminder back.
 """
 
 
+_LION_README = """Lion speech needs Apple's speech engine, which this
+add-on does not ship.
+
+Put the contents of a Mac OS X 10.7 (Lion) install here, so that this folder
+contains:
+
+    Speech\\Synthesizers\\MacinTalk.SpeechSynthesizer\\
+    Speech\\Voices\\<name>.SpeechVoice\\
+    SpeechDictionary.framework\\Versions\\A\\
+
+Dropping the extracted folder in whole, one level down, works too.
+
+The easiest way to produce it is the extractor in the project repository:
+
+    py -3 tools\\extract_lion.py "InstallESD.dmg"
+
+It reads your own installer image directly -- no 7-Zip, no other tool -- and
+writes straight into this folder.
+
+Lion needs two libraries of Apple's, not one: libstdc++.6.0.9.dylib and
+libc++abi.dylib, both from usr/lib on the same image. 10.7 moved the C++ ABI
+out of libstdc++ into a library of its own, and without either one the engine
+will not work. The extractor takes both.
+
+It takes them from the installer's BaseSystemBinaries.pkg rather than from
+BaseSystem.dmg, and so should you if you do it by hand: the copies on that
+disk image are 64-bit only, because Lion Recovery is, and cannot load here.
+
+The extractor is a single Python file, downloaded and run separately:
+
+    https://github.com/tgeczy/panthera-speech/blob/main/lion/tools/extract_lion.py
+
+It needs Python 3.8 or newer installed (tested on 3.13).
+
+If you would rather keep the engine on another drive, put its full path into a
+file called lionspeech-data.txt in the configuration folder instead.
+
+The multilingual "Compact" voices on that image are neither extracted nor
+listed. They are a different synthesizer with a different lineage, and this
+project does not load them.
+
+Delete the file called "do-not-ask" here if you told NVDA to stop reminding
+you and would like the reminder back.
+"""
+
+
 #: One entry per generation this add-on carries.
 #:
 #: `oldAddon` is the add-on that used to carry it on its own. It is not
@@ -318,6 +365,17 @@ GENERATIONS = (
         "source": "your own Mac OS X 10.5 install disc",
         "readme": _LEOPARD_README,
         "oldAddon": "leopardspeech",
+    },
+    {
+        "key": "lion",
+        "tree": pantheralion,
+        "label": "Lion speech -- Mac OS X 10.7, Alex and twenty-three more",
+        "source": "your own Mac OS X 10.7 installer image",
+        "readme": _LION_README,
+        # No add-on ever carried Lion on its own, so there is nothing of an
+        # older vintage to shadow this one.  None rather than a name, and
+        # `_old_addons` drops it.
+        "oldAddon": None,
     },
 )
 
@@ -358,7 +416,7 @@ def _old_addons():
     package path, so it cannot shadow anything, and asking about it would be
     asking about a problem the user has already solved.
     """
-    names = {g["oldAddon"] for g in GENERATIONS}
+    names = {g["oldAddon"] for g in GENERATIONS if g["oldAddon"]}
     try:
         import addonHandler
         return [a for a in addonHandler.getRunningAddons()
