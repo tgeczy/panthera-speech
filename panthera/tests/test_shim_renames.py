@@ -53,6 +53,11 @@ NEWER = {
     "snowleopard MacinTalk":
         r"D:\speech-snowleopard\MacinTalk.SpeechSynthesizer"
         r"\Contents\MacOS\MacinTalk",
+    # The runtime is load-bearing from 10.7 on and its imports go through the
+    # same resolver, so it is watched on the same terms. libc++abi is where
+    # the C++ ABI actually lives; libstdc++ 6.0.9 is what re-exports it.
+    "lion libstdc++":  r"D:\speech-lion\libstdc++.6.0.9.dylib",
+    "lion libc++abi":  r"D:\speech-lion\libc++abi.dylib",
 }
 
 #: Renames that change the *name* and nothing else, so one implementation can
