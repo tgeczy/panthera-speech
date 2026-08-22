@@ -130,3 +130,22 @@ def test_the_reader_has_not_drifted_from_the_extractor(tmp_path):
         got.append((base, entry[3],
                     reader.ExtentStream(volume, entry).read(65536)))
     assert got[0] == got[1], "the copied reader disagrees with the extractor"
+
+
+def test_a_bundle_with_no_voice_description_is_not_counted(tmp_path):
+    """The number in the dialog has to be the number in the voice list.
+
+    A tree extracted before the Vocalizer filter existed holds all 28 Compact
+    bundles too, so counting folders reads 52 where the synthesizer offers 24.
+    The drivers route a voice by the creator in its `VoiceDescription`, and
+    the Compact bundles have none at all, so this asks the same question.
+    """
+    voices = tmp_path / "Speech" / "Voices"
+    real = voices / "Alex.SpeechVoice" / "Contents" / "Resources"
+    real.mkdir(parents=True)
+    (real / "VoiceDescription").write_bytes(b"\0" * 80)
+    (voices / "KyokoCompact.SpeechVoice" / "Contents" / "Resources").mkdir(
+        parents=True)
+    (voices / "HalfCopied.SpeechVoice").mkdir()
+
+    assert pantheradiscs.installed_voices(str(tmp_path)) == ["Alex"]

@@ -580,10 +580,26 @@ def extract(disc, outdir, progress=None, voices=True):
 
 
 def installed_voices(outdir):
-    """-> the voice names already in a folder, for the report."""
+    """-> the voices in a folder that a driver would actually offer.
+
+    **Counting `*.SpeechVoice` folders is the wrong count.**  A tree extracted
+    before the Vocalizer filter existed holds all 28 Compact bundles as well,
+    so a Lion folder reads as 52 while the synthesizer offers 24 -- and a
+    number in a dialog that disagrees with the voice list is worse than no
+    number.  The drivers route a voice by the creator in its
+    `VoiceDescription`, and the Compact bundles have no such file at all, so
+    asking the same question here gives the same answer.
+    """
     voices = os.path.join(outdir, "Speech", "Voices")
     try:
-        return sorted(n[:-len(".SpeechVoice")] for n in os.listdir(voices)
-                      if n.endswith(".SpeechVoice"))
+        entries = os.listdir(voices)
     except OSError:
         return []
+    found = []
+    for name in entries:
+        if not name.endswith(".SpeechVoice"):
+            continue
+        if os.path.isfile(os.path.join(voices, name, "Contents", "Resources",
+                                       "VoiceDescription")):
+            found.append(name[:-len(".SpeechVoice")])
+    return sorted(found)

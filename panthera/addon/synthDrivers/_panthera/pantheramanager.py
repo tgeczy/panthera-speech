@@ -215,23 +215,49 @@ class SpeechDataDialog(wx.Dialog):
                 _("Mac OS X speech data"), wx.OK | wx.ICON_INFORMATION, self)
             return
         existing = pantheradiscs.installed_voices(folder)
-        # Translators: the confirmation before extracting. {label} is the
-        # release, {folder} where it will be written.
-        question = _(
-            "This is {label}.\n\n"
-            "The speech engine will be copied from it into:\n{folder}\n\n"
-            "Nothing is sent anywhere and nothing is downloaded. This can "
-            "take a few minutes and needs up to a gigabyte of free space.\n\n"
-            "Continue?").format(label=disc.label, folder=folder)
         if existing:
-            question += "\n\n" + _(
-                "There are already %d voices there. Files with the same name "
-                "will be replaced.") % len(existing)
-        if gui.messageBox(question, _("Mac OS X speech data"),
-                          wx.YES_NO | wx.ICON_QUESTION, self) != wx.YES:
-            self._setBusy(False)
-            self._status("", None)
-            return
+            # **Its own question, and it defaults to No.**  Extracting again
+            # over a working folder is the one action here that can take
+            # something away -- an interrupted run leaves a half-written tree
+            # that looks installed and is not -- and it is easy to reach by
+            # accident from a dialog whose other button is "open the folder".
+            # Somebody who came to add Lion should not lose Leopard to a
+            # mistyped file name.
+            #
+            # Translators: asked before writing over speech data that is
+            # already installed. {count} is how many voices are there,
+            # {label} the release, {folder} the folder.
+            warning = _(
+                "You already have {count} voices for {label} in:\n"
+                "{folder}\n\n"
+                "Reading this image will write over them. If it is "
+                "interrupted you will be left with a part-finished folder "
+                "and will need to do it again.\n\n"
+                "Are you sure you want to replace the speech data that is "
+                "there?").format(count=len(existing), label=disc.label,
+                                 folder=folder)
+            answer = gui.messageBox(
+                warning, _("Mac OS X speech data"),
+                wx.YES_NO | wx.NO_DEFAULT | wx.ICON_WARNING, self)
+            if answer != wx.YES:
+                self._setBusy(False)
+                self._status("", None)
+                return
+        else:
+            # Translators: the confirmation before extracting. {label} is the
+            # release, {folder} where it will be written.
+            question = _(
+                "This is {label}.\n\n"
+                "The speech engine will be copied from it into:\n{folder}\n\n"
+                "Nothing is sent anywhere and nothing is downloaded. This can "
+                "take a few minutes and needs up to a gigabyte of free "
+                "space.\n\n"
+                "Continue?").format(label=disc.label, folder=folder)
+            if gui.messageBox(question, _("Mac OS X speech data"),
+                              wx.YES_NO | wx.ICON_QUESTION, self) != wx.YES:
+                self._setBusy(False)
+                self._status("", None)
+                return
         self._extract(disc, folder)
 
     def _extract(self, disc, folder):
