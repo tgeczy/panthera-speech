@@ -316,6 +316,65 @@ static int __cdecl sh_CFDataGetLength(const void *o)
            ? (int)d->nbytes : 0;
 }
 
+/* The token layer hands text back the other way round.
+ *
+ * `SLTokenGetText` does not return a string it was given -- it *builds* one,
+ * out of a UTF-16 range it holds as a pair of pointers, and caches it at
+ * `tok+0x24`.  `SLHomographGetPhonemes` is the same shape over CFData.  Left
+ * stubbed, the cache is filled with NULL and the front end reads straight
+ * through it: the crash lands in `MTFEBuilder::PeekToken`, which has nothing
+ * to do with either function.
+ *
+ * **Believe the count, not a terminator.**  The engine passes
+ * `(end - begin) / 2 - 1`: the range holds a terminator the count excludes, so
+ * a shim that scanned for a NUL instead would be right almost always and one
+ * character wrong exactly when it mattered.
+ *
+ * `NoCopy` names the caller's promise to keep the buffer alive, not ours to
+ * borrow it.  These are single tokens, so copying costs nothing and removes a
+ * lifetime this host would otherwise have to reason about.
+ *
+ * Narrowing is the inverse of `CFStringGetCharacters`, which widens byte to
+ * UniChar; see `engine-text-encoding` for why that pairing is Latin-1 here and
+ * why the engine's own front end reads MacRoman. */
+static void * __cdecl sh_CFStringCreateWithCharactersNoCopy(
+        void *alloc, const unsigned short *chars, int n, void *dealloc)
+{
+    char buf[CFPATH];
+    int i;
+    (void)alloc; (void)dealloc;
+    if (!chars || n < 0) return NULL;
+    if (n > CFPATH - 1) n = CFPATH - 1;
+    for (i = 0; i < n; i++)
+        buf[i] = chars[i] < 0x100 ? (char)chars[i] : '?';
+    buf[n] = '\0';
+    return cf_new(buf);
+}
+
+static unsigned short __cdecl sh_CFStringGetCharacterAtIndex(const void *s,
+                                                             int i)
+{
+    const char *p = cf_cstr(s);
+    if (!p || i < 0 || i >= (int)strlen(p)) return 0;
+    return (unsigned short)(unsigned char)p[i];
+}
+
+static void * __cdecl sh_CFDataCreateWithBytesNoCopy(void *alloc,
+        const unsigned char *b, int n, void *dealloc)
+{
+    cfobj *o;
+    (void)alloc; (void)dealloc;
+    if (!b || n < 0) return NULL;
+    o = cf_new("");
+    if (!o) return NULL;
+    o->kind  = CF_DATA;
+    o->bytes = (unsigned char *)malloc(n ? (size_t)n : 1);
+    if (!o->bytes) { free(o); return NULL; }
+    memcpy(o->bytes, b, (size_t)n);
+    o->nbytes = (unsigned)n;
+    return o;
+}
+
 /* Lion's lexer takes a locale.
  *
  * `SLLexer::Create(SLTextSource*, SLDictLookup*, SLPronouncer*,
@@ -792,6 +851,59 @@ static int cf_check(void)
             fails++;
             free(r);
         }
+    }
+
+    /* The token layer, which builds strings rather than being handed them.
+     * The length is the engine's own `(end - begin) / 2 - 1`, so the buffer
+     * deliberately carries a terminator the count excludes: a shim that
+     * scanned for it instead would pass the first case and fail the second. */
+    {
+        static const unsigned short WIDE[] = {
+            'H','o','m','o','p','h','o','n','e','s', 0
+        };
+        r = sh_CFStringCreateWithCharactersNoCopy(NULL, WIDE, 10, NULL);
+        fprintf(stdout, "[cf-check] chars \"%s\"\n", r ? cf_cstr(r) : "(null)");
+        if (!r || strcmp(cf_cstr(r), "Homophones")) {
+            fprintf(stdout, "FAIL  wanted \"Homophones\"\n");
+            fails++;
+        }
+        if (r) {
+            if (sh_CFStringGetCharacterAtIndex(r, 1) != 'o') {
+                fprintf(stdout, "FAIL  character 1 was not 'o'\n");
+                fails++;
+            }
+            fprintf(stdout, "[cf-check] index oob %u\n",
+                    sh_CFStringGetCharacterAtIndex(r, 99));
+            if (sh_CFStringGetCharacterAtIndex(r, 99) != 0) {
+                fprintf(stdout, "FAIL  an index past the end read memory\n");
+                fails++;
+            }
+            free(r);
+        }
+
+        r = sh_CFStringCreateWithCharactersNoCopy(NULL, WIDE, 4, NULL);
+        fprintf(stdout, "[cf-check] count \"%s\"\n", r ? cf_cstr(r) : "(null)");
+        if (!r || strcmp(cf_cstr(r), "Homo")) {
+            fprintf(stdout, "FAIL  the count was not believed over the "
+                            "terminator\n");
+            fails++;
+        }
+        if (r) free(r);
+    }
+
+    {
+        static const unsigned char RAW[] = { 1, 2, 3, 0, 5 };
+        cfobj *d = (cfobj *)sh_CFDataCreateWithBytesNoCopy(NULL, RAW, 5, NULL);
+        const unsigned char *back = d ? sh_CFDataGetBytePtr(d) : NULL;
+        int len = d ? sh_CFDataGetLength(d) : -1;
+        int ok = back && len == 5 && !memcmp(back, RAW, 5);
+        fprintf(stdout, "[cf-check] data %d bytes %s\n", len,
+                ok ? "ok" : "WRONG");
+        if (!ok) {
+            fprintf(stdout, "FAIL  a CFData did not read back as written\n");
+            fails++;
+        }
+        if (d) { free(d->bytes); free(d); }
     }
 
     fprintf(stdout, "[cf-check] %d failure(s)\n", fails);

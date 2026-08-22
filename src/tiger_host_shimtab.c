@@ -10,6 +10,7 @@ static const shim g_shims[] = {
     { "_memset",    (void *)memset  }, { "_memmove", (void *)sh_memmove },
     { "_memchr",    (void *)memchr  }, { "_strcmp",  (void *)strcmp  },
     { "_strchr",    (void *)strchr  }, { "_atoi",    (void *)atoi    },
+    { "_strstr",    (void *)strstr  },
     { "_bcopy",     (void *)sh_bcopy}, { "_bzero",   (void *)sh_bzero},
     { "_abort",     (void *)sh_abort_ },
     { "_ceil", (void *)ceil }, { "_floor", (void *)floor },
@@ -84,6 +85,16 @@ static const shim g_shims[] = {
      * this symbol, so nothing before 10.7 can see the difference. */
     { "_CFStringCreateWithFormat",
                               (void *)sh_CFStringCreateWithFormat },
+    /* `SLTokenGetText` and `SLHomographGetPhonemes` build their result out of
+     * a raw range and cache it on the token, so a stub caches NULL and the
+     * front end reads through it -- in `MTFEBuilder::PeekToken`, which is
+     * nowhere near either. */
+    { "_CFStringCreateWithCharactersNoCopy",
+                              (void *)sh_CFStringCreateWithCharactersNoCopy },
+    { "_CFStringGetCharacterAtIndex",
+                              (void *)sh_CFStringGetCharacterAtIndex },
+    { "_CFDataCreateWithBytesNoCopy",
+                              (void *)sh_CFDataCreateWithBytesNoCopy },
     /* Lion runs its render work through GCD and blocks where Leopard
      * used Multiprocessing Services.  A stubbed dispatch_sync returns
      * having done nothing, so the engine finished a render that never
@@ -168,6 +179,12 @@ static const shim g_shims[] = {
     { "_sqlite3_open",            (void *)sh_sqlite3_open            },
     { "_sqlite3_close",           (void *)sh_sqlite3_close           },
     { "_sqlite3_prepare",         (void *)sh_sqlite3_prepare         },
+    /* Lion's spellings.  `column_int64` must be its own function, not an
+     * alias: it returns in edx:eax, so an `int` shim leaves the high word
+     * holding whatever was in edx -- a wrong table offset rather than a
+     * crash. */
+    { "_sqlite3_prepare_v2",      (void *)sh_sqlite3_prepare_v2      },
+    { "_sqlite3_column_int64",    (void *)sh_sqlite3_column_int64    },
     { "_sqlite3_bind_text",       (void *)sh_sqlite3_bind_text       },
     { "_sqlite3_step",            (void *)sh_sqlite3_step            },
     { "_sqlite3_column_int",      (void *)sh_sqlite3_column_int      },
@@ -239,6 +256,16 @@ static const shim g_shims[] = {
     { "_cblas_sgemv",  (void *)sh_sgemv  },
     { "__DefaultRuneLocale", (void *)g_rune_locale },
     { "___maskrune", (void *)sh_maskrune },
+    /* Lion's `_l` family: the same functions taking a locale this host has
+     * only one of.  Safe to ignore the trailing argument on cdecl. */
+    { "___maskrune_l",  (void *)sh_maskrune_l   },
+    { "_strncasecmp_l", (void *)sh_strncasecmp_l},
+    { "_strcasecmp_l",  (void *)sh_strcasecmp_l },
+    { "_strncasecmp",   (void *)_strnicmp       },
+    { "_strcasecmp",    (void *)_stricmp        },
+    { "_exp2",          (void *)sh_exp2         },
+    /* The compiler-emitted spelling of bzero; same function. */
+    { "___bzero",       (void *)sh_bzero        },
     { "___tolower",  (void *)sh_tolower_ }, { "___toupper", (void *)sh_toupper_ },
     { "_isdigit",    (void *)sh_isdigit_ },
     { "_memcmp", (void *)memcmp }, { "_memcpy", (void *)sh_memcpy },

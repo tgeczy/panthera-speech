@@ -80,3 +80,40 @@ def test_an_unknown_specifier_says_so(check):
     return a plausible-looking partial string.
     """
     assert "unsupported" in check.stdout.lower(), check.stdout
+
+
+# -- the token layer, which hands text back the other way round -----------
+#
+# `SLTokenGetText` does not return a string it was given. It builds one, from
+# a UTF-16 range it holds as two pointers:
+#
+#     CFStringCreateWithCharactersNoCopy(0, begin, (end-begin)/2 - 1,
+#                                        kCFAllocatorNull)
+#
+# and caches it at `tok+0x24`. `SLHomographGetPhonemes` is the same shape over
+# `CFDataCreateWithBytesNoCopy`. Stubbed, the cache is filled with NULL and the
+# front end reads through it -- which is the read of address 0 in
+# `MTFEBuilder::PeekToken`, a function that has nothing to do with either.
+#
+# Note the length: `(end - begin) / 2 - 1`. The range holds a terminator the
+# count excludes, so a shim that trusts a NUL to end the buffer and one that
+# trusts the count disagree by exactly one character.
+
+def test_utf16_characters_come_back_as_text(check):
+    """The inverse of `CFStringGetCharacters`, which widens byte to UniChar."""
+    assert "chars \"Homophones\"" in check.stdout, check.stdout
+
+
+def test_the_count_is_believed_over_any_terminator(check):
+    """A length shorter than the buffer must truncate, not run to the NUL."""
+    assert "count \"Homo\"" in check.stdout, check.stdout
+
+
+def test_a_character_out_of_range_does_not_read_off_the_end(check):
+    """`CFStringGetCharacterAtIndex` past the end answers 0, not memory."""
+    assert "index oob 0" in check.stdout, check.stdout
+
+
+def test_data_is_readable_back_at_its_own_length(check):
+    """`CFDataGetBytePtr`/`GetLength` over a CFData nothing read from a file."""
+    assert "data 5 bytes ok" in check.stdout, check.stdout

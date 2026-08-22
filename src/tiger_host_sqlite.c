@@ -54,6 +54,21 @@ typedef int  (__stdcall *p_step)(void *);
 typedef int  (__stdcall *p_column_int)(void *, int);
 typedef int  (__stdcall *p_reset)(void *);
 typedef int  (__stdcall *p_finalize)(void *);
+/* Lion asks for the second-generation entry point and the widened column.
+ * `prepare_v2` differs only in that the statement re-prepares itself after a
+ * schema change, which cannot happen to a read-only table on disk -- so the
+ * two behave alike *here*, and it still gets its own pointer rather than an
+ * alias, because they are different exports and one may be absent.
+ *
+ * `column_int64` is not interchangeable.  It returns a 64-bit value, which on
+ * both ABIs involved means **edx:eax** rather than eax alone.  Darwin i386 and
+ * Win32 agree on that, so nothing has to be translated -- but a shim declared
+ * to return `int` would leave edx holding whatever the previous call left
+ * there.  That is not a fault; it is a table offset with a garbage high word,
+ * which is the kind of wrong answer this project has learned to fear more. */
+typedef int     (__stdcall *p_prepare_v2)(void *, const char *, int, void **,
+                                          const char **);
+typedef __int64 (__stdcall *p_column_int64)(void *, int);
 
 static struct {
     int         tried, ok;
@@ -65,6 +80,8 @@ static struct {
     p_column_int column_int;
     p_reset     reset;
     p_finalize  finalize;
+    p_prepare_v2   prepare_v2;
+    p_column_int64 column_int64;
 } g_sql;
 
 static unsigned g_sql_opens, g_sql_rows;
@@ -100,6 +117,13 @@ static int sqlite_ready(void)
     g_sql.column_int = (p_column_int)GetProcAddress(h, "sqlite3_column_int");
     g_sql.reset      = (p_reset)     GetProcAddress(h, "sqlite3_reset");
     g_sql.finalize   = (p_finalize)  GetProcAddress(h, "sqlite3_finalize");
+    /* Lion's pair.  Deliberately *not* part of `ok`: a winsqlite3 without them
+     * should cost Lion its phrasing table, not cost Leopard the one it has
+     * been reading for months.  Each shim checks its own pointer instead. */
+    g_sql.prepare_v2   = (p_prepare_v2)
+                         GetProcAddress(h, "sqlite3_prepare_v2");
+    g_sql.column_int64 = (p_column_int64)
+                         GetProcAddress(h, "sqlite3_column_int64");
     g_sql.ok = g_sql.open && g_sql.close && g_sql.prepare && g_sql.bind_text
             && g_sql.step && g_sql.column_int && g_sql.reset && g_sql.finalize;
     if (!g_sql.ok)
@@ -153,6 +177,22 @@ static int __cdecl sh_sqlite3_column_int(void *stmt, int col)
 {
     if (!sqlite_ready() || !stmt) return 0;
     return g_sql.column_int(stmt, col);
+}
+
+static int __cdecl sh_sqlite3_prepare_v2(void *db, const char *sql, int nbytes,
+                                         void **stmt, const char **tail)
+{
+    if (stmt) *stmt = NULL;
+    if (!sqlite_ready() || !db || !g_sql.prepare_v2) return SQLITE_ERROR;
+    if (g_verbose) printf("  [sql] prepare_v2 %s\n", sql ? sql : "(null)");
+    return g_sql.prepare_v2(db, sql, nbytes, stmt, tail);
+}
+
+/* Returns 64 bits, in edx:eax, and must be declared to. */
+static __int64 __cdecl sh_sqlite3_column_int64(void *stmt, int col)
+{
+    if (!sqlite_ready() || !stmt || !g_sql.column_int64) return 0;
+    return g_sql.column_int64(stmt, col);
 }
 
 static int __cdecl sh_sqlite3_reset(void *stmt)

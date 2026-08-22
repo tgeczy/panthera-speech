@@ -515,6 +515,21 @@ static void init_rune_locale(void)
 }
 
 static unsigned __cdecl sh_maskrune(int c, unsigned f) { return rune_mask(c) & f; }
+/* Lion's front end reaches for the locale-taking forms of the character and
+ * string classifiers.  The extra argument is a `locale_t`, and this host has
+ * exactly one locale, so each is the base function with the locale ignored --
+ * and ignoring a *trailing* argument is free on cdecl, where the caller cleans
+ * the stack.  That is why the whole `_l` family costs a line each rather than
+ * a thunk each. */
+static unsigned __cdecl sh_maskrune_l(int c, unsigned f, void *loc)
+{ (void)loc; return rune_mask(c) & f; }
+static int __cdecl sh_strncasecmp_l(const char *a, const char *b, size_t n,
+                                    void *loc)
+{ (void)loc; return _strnicmp(a, b, n); }
+static int __cdecl sh_strcasecmp_l(const char *a, const char *b, void *loc)
+{ (void)loc; return _stricmp(a, b); }
+/* Microsoft's CRT has no exp2. */
+static double __cdecl sh_exp2(double x) { return pow(2.0, x); }
 static int __cdecl sh_tolower_(int c) { return tolower(c); }
 static int __cdecl sh_toupper_(int c) { return toupper(c); }
 static int __cdecl sh_isdigit_(int c) { return isdigit(c); }
