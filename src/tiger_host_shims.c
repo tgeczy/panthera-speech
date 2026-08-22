@@ -574,8 +574,12 @@ static int __cdecl sh_strncasecmp_l(const char *a, const char *b, size_t n,
 { (void)loc; return _strnicmp(a, b, n); }
 static int __cdecl sh_strcasecmp_l(const char *a, const char *b, void *loc)
 { (void)loc; return _stricmp(a, b); }
-/* Microsoft's CRT has no exp2. */
+/* Microsoft's CRT has no exp2.  `log2f` and `sinh` are reached on Lion's Alex
+ * path, which does not synthesise yet -- they are here because both are one
+ * line and neither Tiger nor Leopard imports either, so nothing else can see
+ * the difference. */
 static double __cdecl sh_exp2(double x) { return pow(2.0, x); }
+static float  __cdecl sh_log2f(float x) { return (float)(log(x) / log(2.0)); }
 static int __cdecl sh_tolower_(int c) { return tolower(c); }
 static int __cdecl sh_toupper_(int c) { return toupper(c); }
 static int __cdecl sh_isdigit_(int c) { return isdigit(c); }

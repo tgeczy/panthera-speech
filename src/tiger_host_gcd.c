@@ -25,6 +25,23 @@
  * failure worth having.
  */
 
+/* **Every call from here into engine code goes through this.**
+ *
+ * Darwin's i386 ABI requires esp to be 16-byte aligned *at the call*, and the
+ * engine relies on it: `MTBEAudioUnitSoundOutput::QueueSamples` stores a pair
+ * of doubles to `[ebp-0x78]` with `movaps` almost as soon as it is entered,
+ * and that faults outright on a stack Windows aligned to four.  Windows
+ * reports the fault as an access violation reading **0xffffffff**, which names
+ * neither alignment nor the thread that broke it.
+ *
+ * `tiger_host_audio.c` learned this for the pacer thread.  The GCD paths are
+ * new with Lion and are a second front door into exactly the same code -- so
+ * there is one door here, rather than four call sites each remembering. */
+static void enter_engine(void (__cdecl *fn)(void *), void *arg)
+{
+    if (fn) call_aligned1((void *)fn, arg);
+}
+
 /* A block is an object whose fourth word is the function to call, and which
  * passes itself as the first argument.  The layout is fixed ABI:
  *
@@ -34,7 +51,7 @@
 static void block_invoke(void *block)
 {
     if (!block) return;
-    ((void (__cdecl *)(void *))((void **)block)[3])(block);
+    enter_engine((void (__cdecl *)(void *))((void **)block)[3], block);
 }
 
 /* `Block_copy` moves a stack block to the heap so it can outlive its scope.
@@ -72,14 +89,14 @@ static void __cdecl sh_dispatch_sync_f(void *queue, void *ctx,
                                        void (__cdecl *fn)(void *))
 {
     (void)queue;
-    if (fn) fn(ctx);
+    enter_engine(fn, ctx);
 }
 
 static void __cdecl sh_dispatch_async_f(void *queue, void *ctx,
                                         void (__cdecl *fn)(void *))
 {
     (void)queue;
-    if (fn) fn(ctx);
+    enter_engine(fn, ctx);
 }
 
 /* Queues and sources are handles the engine only ever passes back to us, so
@@ -149,7 +166,9 @@ static DWORD WINAPI source_thread(LPVOID param)
         if (!s->running) break;
         if (r != WAIT_TIMEOUT) continue;        /* re-armed; re-read the delay */
         s->armed = 0;
-        if (s->handler) { s->handler(s->ctx); s->fired++; }
+        /* This thread is ours, so Windows aligned its stack to four; the
+         * engine's render handler needs sixteen. */
+        if (s->handler) { enter_engine(s->handler, s->ctx); s->fired++; }
         if (s->period_ms) {                     /* a real repeating timer */
             s->delay_ms = s->period_ms;
             s->armed = 1;

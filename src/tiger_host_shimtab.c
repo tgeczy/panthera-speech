@@ -10,7 +10,7 @@ static const shim g_shims[] = {
     { "_memset",    (void *)memset  }, { "_memmove", (void *)sh_memmove },
     { "_memchr",    (void *)memchr  }, { "_strcmp",  (void *)strcmp  },
     { "_strchr",    (void *)strchr  }, { "_atoi",    (void *)atoi    },
-    { "_strstr",    (void *)strstr  },
+    { "_strstr",    (void *)strstr  }, { "_strpbrk", (void *)strpbrk },
     { "_bcopy",     (void *)sh_bcopy}, { "_bzero",   (void *)sh_bzero},
     { "_abort",     (void *)sh_abort_ },
     { "_ceil", (void *)ceil }, { "_floor", (void *)floor },
@@ -268,6 +268,8 @@ static const shim g_shims[] = {
     { "_strncasecmp",   (void *)_strnicmp       },
     { "_strcasecmp",    (void *)_stricmp        },
     { "_exp2",          (void *)sh_exp2         },
+    { "_log2f",         (void *)sh_log2f        },
+    { "_sinh",          (void *)sinh            },
     /* The compiler-emitted spelling of bzero; same function. */
     { "___bzero",       (void *)sh_bzero        },
     { "___tolower",  (void *)sh_tolower_ }, { "___toupper", (void *)sh_toupper_ },
