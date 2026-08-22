@@ -593,6 +593,27 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
                      % len(self._conflicts))
             wx.CallAfter(self._askConflict, list(self._conflicts))
         for gen in GENERATIONS:
+            # Migrate first, and whether or not an older add-on covers this
+            # generation. **The data and the add-on move independently** --
+            # somebody on tigerspeech 0.7.7 has old folders *and* old add-ons,
+            # and 0.7.7 has never heard of `macintalk`, so nothing else in the
+            # process will move that folder. Skipping it here would leave the
+            # data behind until the old add-on was removed and NVDA restarted
+            # a second time, which makes one axis wait on the other for no
+            # reason.
+            #
+            # Safe to do underneath a running older add-on: `migrate()` leaves
+            # a `<name>-data.txt` breadcrumb pointing at the new location, and
+            # every version that predates the move reads it. That is the whole
+            # reason the breadcrumb exists.
+            try:
+                moved = gen["tree"].migrate()
+                if moved:
+                    log.info("Panthera: moved the %s engine folder to %s"
+                             % (gen["key"], moved))
+            except Exception:
+                log.error("Panthera: could not migrate %s" % gen["key"],
+                          exc_info=True)
             if self._covered(gen):
                 log.info("Panthera: %s is being reported by the older %s "
                          "add-on, not by this one"

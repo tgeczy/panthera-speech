@@ -199,6 +199,31 @@ def test_a_generation_an_older_addon_still_covers_is_not_registered_twice():
             "the loop reaching %r does not skip a covered generation" % where)
 
 
+def test_the_data_moves_even_when_an_older_addon_covers_the_generation():
+    """The two axes are independent, and the code has to say so.
+
+    Somebody on tigerspeech 0.7.7 has old data folders *and* old add-ons --
+    the fourth combination, and a real one, because the shared `macintalk`
+    folder only shipped in 0.8.0. Their old add-on has never heard of it, so
+    if this one skips migrating a covered generation, nothing in the process
+    moves that folder: it waits for the old add-on to be removed and NVDA to
+    restart a second time.
+
+    Safe underneath a running older add-on because `migrate()` leaves a
+    breadcrumb every earlier version reads. That is what the breadcrumb is
+    for.
+    """
+    src = _source(PLUGINS[0])
+    body = src[src.index("        for gen in GENERATIONS:", src.index(
+        "def _check(self)")):]
+    body = body[:body.index("\n    def ")]
+    assert 'gen["tree"].migrate()' in body, "_check never migrates"
+    assert body.index('gen["tree"].migrate()') < body.index(
+        "if self._covered(gen):"), (
+        "the migration sits behind the covered-generation skip, so a user "
+        "with old data and an old add-on keeps both")
+
+
 def test_nothing_is_removed_without_being_asked():
     """They are the user's add-ons.
 

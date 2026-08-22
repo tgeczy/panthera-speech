@@ -195,6 +195,9 @@ def test_both_generations_are_declared(plugin):
         # report asks it, or the Tools menu item raises inside a wx handler.
         assert callable(gen["tree"].explain)
         assert callable(gen["tree"].config_dir)
+        # `_check` migrates every generation, covered or not, so a table entry
+        # without one is an AttributeError inside a start-up timer thread.
+        assert callable(gen["tree"].migrate)
         assert gen["readme"].strip(), gen["key"]
 
 
