@@ -64,6 +64,13 @@
 #define LC_SYMTAB       0x2
 #define LC_DYSYMTAB     0xb
 
+/* Snow Leopard onwards.  From 10.6 the relocation tables are empty and two
+ * bytecode streams carry the same information instead; see
+ * tiger_host_dyldinfo.c.  Both spellings occur -- `_ONLY` additionally
+ * promises the classic tables are absent, and for MacinTalk they are. */
+#define LC_DYLD_INFO        0x22
+#define LC_DYLD_INFO_ONLY   0x80000022
+
 #define S_ZEROFILL              0x1
 #define S_NON_LAZY_SYMBOL_PTR   0x6
 #define S_LAZY_SYMBOL_PTR       0x7
@@ -107,6 +114,10 @@ typedef struct { unsigned cmd, cmdsize;
 typedef struct { unsigned n_strx; unsigned char n_type, n_sect;
                  short n_desc; unsigned n_value; } nlist;
 typedef struct { int r_address; unsigned r_info; } reloc;
+typedef struct { unsigned cmd, cmdsize;
+                 unsigned rebase_off, rebase_size, bind_off, bind_size,
+                          weak_off, weak_size, lazy_off, lazy_size,
+                          export_off, export_size; } dyld_info_command;
 #pragma pack(pop)
 
 /* ---- the loaded image -------------------------------------------------- */
@@ -124,6 +135,14 @@ typedef struct {
     const dysymtab_command *dys;
     section          sects[64];
     int              nsects;
+    /* The dyld info streams address a slot as (segment index, offset), and
+     * the index counts **every** LC_SEGMENT in load-command order -- including
+     * __PAGEZERO and any with vmsize 0, which nothing else here cares about.
+     * Filtering this list the way `sects` is filtered would shift every index
+     * after the first skipped segment and land each fixup in the wrong place. */
+    unsigned         segaddr[16];
+    int              nsegs;
+    const dyld_info_command *info;  /* NULL for Tiger and Leopard */
 } image;
 
 /* ---- shared state ------------------------------------------------------ */
@@ -148,6 +167,12 @@ static void die(const char *fmt, ...)
     exit(1);
 }
 
+/* Defined in tiger_host_dyldinfo.c, which is included after the loader
+ * because it needs the whole lookup chain -- and which the loader has to be
+ * able to call.  Two declarations beat reordering the includes. */
+static void apply_rebases(image *im);
+static void apply_binds(image *im, image *dep);
+
 static unsigned bswap(unsigned v)
 {
     return (v >> 24) | ((v >> 8) & 0xff00) | ((v << 8) & 0xff0000) | (v << 24);
@@ -171,6 +196,7 @@ static unsigned bswap(unsigned v)
 #include "tiger_host_shimtab.c"
 #include "tiger_host_fault.c"
 #include "tiger_host_macho.c"
+#include "tiger_host_dyldinfo.c"
 #include "tiger_host_serve.c"
 
 /* ---- main -------------------------------------------------------------- */
@@ -202,6 +228,13 @@ int main(int argc, char **argv)
     if (argc > 1 && !strcmp(argv[1], "--regex-check")) {
         setvbuf(stderr, NULL, _IONBF, 0);
         return re_check();
+    }
+    /* Print the compressed dyld info of one Mach-O and stop.  Compared
+     * against tools/machodyld.py, which reads the same streams by a
+     * different route; see panthera/tests/test_dyld_info.py. */
+    if (argc > 2 && !strcmp(argv[1], "--dyld-check")) {
+        setvbuf(stderr, NULL, _IONBF, 0);
+        return dyld_check(argv[2]);
     }
     if (argc > 1 && !strcmp(argv[1], "--serve")) {
         if (argc < 5) {
@@ -325,15 +358,12 @@ int main(int argc, char **argv)
 
     if (have_ls) {
         if (g_verbose) printf("binding libstdc++:\n");
-        bind(&ls, NULL);
-        apply_ext_relocs(&ls, NULL);
+        resolve(&ls, NULL);
     }
     if (g_verbose) printf("binding SpeechDictionary:\n");
-    bind(&sd, NULL);
-    apply_ext_relocs(&sd, NULL);
+    resolve(&sd, NULL);
     if (g_verbose) printf("binding MacinTalk:\n");
-    bind(&mt, &sd);
-    apply_ext_relocs(&mt, &sd);
+    resolve(&mt, &sd);
 
     if (g_verbose) printf("running initializers:\n");
     if (have_ls) run_initializers(&ls);

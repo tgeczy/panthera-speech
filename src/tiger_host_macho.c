@@ -118,9 +118,14 @@ static void map_image(image *im)
                 if (sc->filesize)
                     memcpy(at, im->slice + sc->fileoff, sc->filesize);
             }
+            /* Unfiltered, and in load-command order: this is the list the
+             * dyld info streams index by. */
+            if (im->nsegs < 16) im->segaddr[im->nsegs++] = sc->vmaddr;
             for (j = 0; j < sc->nsects; j++) {
                 if (im->nsects < 64) im->sects[im->nsects++] = sec[j];
             }
+        } else if (lc->cmd == LC_DYLD_INFO || lc->cmd == LC_DYLD_INFO_ONLY) {
+            im->info = (const dyld_info_command *)p;
         } else if (lc->cmd == LC_SYMTAB) {
             symtab_command *st = (symtab_command *)p;
             im->syms  = (const nlist *)(im->slice + st->symoff);
@@ -325,6 +330,20 @@ static void bind(image *im, image *dep)
             stride = 5;
         } else if (t != S_NON_LAZY_SYMBOL_PTR && t != S_LAZY_SYMBOL_PTR) {
             continue;
+        } else if (im->info) {
+            /* **The streams own the pointer sections for a dyld info image.**
+             * Measured against this very table, they name 424 of Snow
+             * Leopard's 424 slots and 453 of Lion's 453, agreeing on the
+             * symbol at every one -- so there is nothing here left to do, and
+             * doing it anyway would write each slot twice.  The
+             * INDIRECT_SYMBOL_LOCAL case below is worse than redundant: the
+             * rebase stream already slid those slots, and adding the slide a
+             * second time puts every one of them out of the image.
+             *
+             * Stubs stay: they are code, no stream describes them, and Lion
+             * carries the same rewritable five-byte __IMPORT jump table
+             * Leopard does. */
+            continue;
         }
         n = s->size / stride;
         for (j = 0; j < n; j++) {
@@ -436,5 +455,12 @@ static void load(image *im, const char *path)
     im->slice = find_i386(im->file, len);
     if (g_verbose) printf("%s\n", path);
     map_image(im);
-    apply_relocs(im);
+    /* Exactly one of these does anything.  An image carries classic
+     * relocation tables or a rebase stream, never both: Leopard has
+     * nextrel/nlocrel and no LC_DYLD_INFO, Snow Leopard and Lion have the
+     * command and zeroed tables.  `apply_relocs` on a compressed image is not
+     * an error -- it is a silent no-op, which is exactly how "every internal
+     * pointer in the image is unslid" would present. */
+    if (im->info) apply_rebases(im);
+    else          apply_relocs(im);
 }
