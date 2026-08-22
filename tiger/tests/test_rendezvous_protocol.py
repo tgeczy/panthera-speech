@@ -39,6 +39,12 @@ CONTRACT = {
     "_REGISTRY": '"_macintalkMissingEngines"',
     "_REGISTRY_LOCK": '"_macintalkMissingEnginesLock"',
     "_RENDEZVOUS_MS": "1500",
+    # The Tools menu item is shared too, and by the same means: one entry for
+    # every Mac OS X engine rather than one per add-on, because three menu
+    # items to answer "what voice data do I have?" is three places to look.
+    # outSPOKEN is deliberately not in this list -- classic Mac OS engines,
+    # different repository, its own menu item.
+    "_REPORTERS": '"_macosxSpeechEngineReporters"',
 }
 
 #: Every key the dialog reads out of a registry entry.
@@ -86,3 +92,28 @@ def test_the_registry_is_appended_under_a_lock(path):
     body = body[:body.index("\ndef ")]
     assert "with lock:" in body, (
         "%s registers without holding the lock" % os.path.basename(path))
+
+
+@pytest.mark.parametrize("path", PLUGINS, ids=lambda p: os.path.basename(p))
+def test_every_plugin_registers_what_the_report_reads(path):
+    """The Tools menu item is owned by whichever add-on loads first and reads
+    every registered entry, so a missing key here is an exception inside a wx
+    handler -- which NVDA swallows into the log, so it presents as a menu item
+    that does nothing."""
+    src = _source(path)
+    call = re.search(r"_register_reporter\(\{(.+?)\n        \}\)", src, re.S)
+    assert call, "%s never registers a reporter" % os.path.basename(path)
+    keys = set(re.findall(r'"(\w+)":', call.group(1)))
+    assert keys == {"label", "source", "explain", "folder"}, (
+        "%s registers %s" % (os.path.basename(path), sorted(keys)))
+
+
+@pytest.mark.parametrize("path", PLUGINS, ids=lambda p: os.path.basename(p))
+def test_only_the_owner_adds_the_menu_item(path):
+    """Both add-ons adding one is the bug being fixed. The non-owner never
+    sets `_menuItem`, which is also what makes `terminate` correct: it only
+    removes an item it created."""
+    src = _source(path)
+    assert re.search(r"if _register_reporter\(\{.+?\}\):\s*\n\s*"
+                     r"self\._addMenuItem\(\)", src, re.S), (
+        "%s adds the menu item unconditionally" % os.path.basename(path))

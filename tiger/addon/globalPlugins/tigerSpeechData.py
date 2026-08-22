@@ -131,6 +131,46 @@ def _combined_message(missing):
             "Cancel  -  remind me next time NVDA starts")
 
 
+#: Every Mac OS X speech add-on that can report on its own engine. They are
+#: separate add-ons and cannot import each other, so the shared Tools menu item
+#: is owned by whichever loads first and reads this list when it is *clicked* --
+#: not at start-up, when only the first one has registered.
+#:
+#: Three menu items to answer one question ("what voice data do I have?") is
+#: what this replaces. outSPOKEN keeps its own, because it is a different
+#: lineage in a different repository: classic Mac OS engines, not Mac OS X.
+_REPORTERS = "_macosxSpeechEngineReporters"
+
+
+def _register_reporter(entry):
+    """-> True if this add-on should own the shared Tools menu item."""
+    lock = globalVars.__dict__.setdefault(_REGISTRY_LOCK, threading.Lock())
+    with lock:
+        reporters = globalVars.__dict__.setdefault(_REPORTERS, [])
+        reporters.append(entry)
+        return len(reporters) == 1
+
+
+def _engine_report():
+    """Every registered add-on's verdict, in one page. -> (lines, [missing])"""
+    lines, missing = [], []
+    for r in globalVars.__dict__.get(_REPORTERS, []):
+        try:
+            ok, detail = r["explain"]()
+            folder = r["folder"]()
+        except Exception:
+            ok, detail, folder = False, ["could not be checked"], "?"
+        lines.append(r["label"])
+        lines.append("    %s   %s" % ("ready  " if ok else "MISSING", folder))
+        for d in detail:
+            lines.append("        %s" % d)
+        lines.append("")
+        if not ok:
+            missing.append({"label": r["label"], "folder": folder,
+                            "source": r["source"]})
+    return lines, missing
+
+
 #: Written only when the user explicitly says "stop asking".
 _MARKER = "do-not-ask"
 
@@ -193,17 +233,22 @@ you and would like the reminder back.
 class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 
     #: Shown in NVDA's Tools menu. Translators: an item in NVDA's Tools menu.
-    MENU_LABEL = _("&Tiger speech engine...")
-    MENU_HELP = _("Check whether tigerspeech can find its engine, and open the "
-                  "folder it goes in.")
-
+    MENU_LABEL = _("Mac OS X &speech engines...")
+    MENU_HELP = _("Show which Mac OS X speech engines are installed, and open "
+                  "the folder they go in.")
     def __init__(self):
         super().__init__()
         self._menuItem = None
         if globalVars.appArgs.secure:
             log.info("Tiger-speech: secure mode, not checking for the engine")
             return
-        self._addMenuItem()
+        if _register_reporter({
+                "label": "Tiger speech -- Mac OS X 10.4, twenty-three voices",
+                "source": "your own Mac OS X 10.4 install disc",
+                "explain": tree.explain,
+                "folder": tree.config_dir,
+        }):
+            self._addMenuItem()
         log.info("Tiger-speech: engine check armed")
         threading.Timer(6.0, self._check).start()
 
@@ -240,26 +285,31 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
         super().terminate()
 
     def _onMenu(self, evt):
-        """Always ask, whatever the marker says and whoever else asked today.
+        """Report on every Mac OS X engine, not only this add-on's.
 
-        Somebody who opens this from a menu is asking the question right now,
-        and answering "you said not to ask" would be obtuse.
+        Always answers, whatever the do-not-ask marker says: somebody opening
+        this from a menu is asking the question right now.
         """
-        ok, lines = tree.explain()
-        log.info("Tiger-speech: engine %s (from the Tools menu)\n  %s"
-                 % ("ready" if ok else "NOT ready", "\n  ".join(lines)))
-        folder = tree.config_dir()
         try:
-            os.makedirs(folder, exist_ok=True)
-        except OSError:
-            pass
-        if ok:
-            gui.messageBox(
-                "tigerspeech has its engine.\n\n%s" % "\n".join(lines),
-                "Tiger-speech", wx.OK | wx.ICON_INFORMATION)
-            return
-        self._ask(folder)
-
+            lines, missing = _engine_report()
+            log.info("Tiger-speech: Tools menu report\n  %s" % "\n  ".join(lines))
+            for m in missing:
+                try:
+                    os.makedirs(m["folder"], exist_ok=True)
+                except OSError:
+                    pass
+            report = "\n".join(lines).rstrip()
+            if not missing:
+                gui.messageBox(report, "Mac OS X speech",
+                               wx.OK | wx.ICON_INFORMATION)
+                return
+            answer = gui.messageBox(
+                report + "\n\nOpen the folder they go in?",
+                "Mac OS X speech", wx.YES_NO | wx.ICON_INFORMATION)
+            if answer == wx.YES:
+                os.startfile(_folder_to_open(missing))
+        except Exception:
+            log.error("Tiger-speech: Tools menu report failed", exc_info=True)
     def _check(self):
         """Decide whether to ask, and leave a record either way.
 
