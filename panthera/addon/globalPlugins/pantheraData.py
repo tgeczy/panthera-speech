@@ -106,7 +106,7 @@ def _missing_engines():
 def _folder_to_open(missing):
     """The one folder that holds all of them, when there is one.
 
-    Since 0.10.0 every engine lives under `macintalk`, so one "open the folder"
+    Since 0.9.0 every engine lives under `macintalk`, so one "open the folder"
     button can serve three add-ons -- which is the thing that makes a single
     dialog worth having rather than a compromise.
     """
