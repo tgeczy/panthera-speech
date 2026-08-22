@@ -150,6 +150,9 @@ static void __cdecl sh_freelocale(void *loc) { (void)loc; }
  * it.  Reported under TIGER_FLOAT_STATS so the next generation can be
  * checked in one line rather than in an afternoon. */
 static unsigned g_c_gtod, g_c_uptime;
+static unsigned g_stat_ok, g_stat_refused, g_stat_idle;
+/* Off until measured; TIGER_STATUS=1 turns it on. */
+static int g_ask_status;
 
 /* How much faster than the wall the engine's clock runs.  Defined further
  * down, with the note that explains why it is 128; declared here because

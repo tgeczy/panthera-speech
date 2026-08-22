@@ -372,6 +372,7 @@ static int serve(image *mt, void *chan, const char *voicesdir)
         g_back_slices = 0; g_back_max = 0;
         g_utt_t0 = wall_ms(); g_first_slice_ms = -1.0; g_last_slice_ms = 0.0;
         g_slice_gap_max = 0.0; g_slice_prev_ms = 0.0;
+        g_stat_ok = g_stat_refused = g_stat_idle = 0;
         /* SESpeakBuffer's fourth argument is the Speech Manager's own flags
          * word, and kNoEndingProsody (1) looked like the lever for a screen
          * reader: NVDA speaks in fragments, and each one gets the falling
@@ -433,6 +434,28 @@ static int serve(image *mt, void *chan, const char *voicesdir)
             unsigned last = 0, quiet = 0, ticks = 0;
             while (!g_stopped && quiet < 30 && ticks < 900) {
                 Sleep(10); ticks++;
+                /* **Ask, rather than infer from silence.**
+                 *
+                 * The quiet period below is a guess that costs 300 ms on
+                 * every 10.7 utterance, because 10.7 never calls AUGraphStop
+                 * and there is nothing else to end on.  The Speech Manager's
+                 * own `stat` selector answers the question directly: its
+                 * first long is `outputBusy`.
+                 *
+                 * Guarded on audio having arrived, because the engine has not
+                 * necessarily started when the first tick runs and an idle
+                 * answer then would end the utterance before it began. */
+                if (g_ask_status && api.getinfo && g_pcm_n) {
+                    long st[4];
+                    memset(st, 0, sizeof(st));
+                    if (call_aligned3((void *)api.getinfo, chan,
+                                      (void *)SEL_STATUS, st) == 0) {
+                        g_stat_ok++;
+                        if (st[0] == 0) { g_stat_idle++; break; }
+                    } else {
+                        g_stat_refused++;
+                    }
+                }
                 if (cancel_requested()) {
                     /* The listener has moved on.  Stop the engine rather than
                      * render the rest of a sentence nobody will hear -- the
@@ -632,6 +655,9 @@ static int serve(image *mt, void *chan, const char *voicesdir)
                     break; }
             }
         }
+        if (g_float_stats)
+            fprintf(stderr, "  [stat] answered %u, refused %u, said idle %u\n",
+                    g_stat_ok, g_stat_refused, g_stat_idle);
         if (g_float_stats)
             fprintf(stderr, "  [au] start %u, stop %u, uninitialize %u, "
                             "isInitialized %u, widest gap between slices "

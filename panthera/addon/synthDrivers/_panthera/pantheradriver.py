@@ -571,6 +571,28 @@ def _sentenceEnds(text):
 #: waited once speech is already flowing, so it delays the start of nothing --
 #: and by then the next line is usually queued already, making the wait zero.
 JOIN_WAIT = 0.35
+
+#: And how much text has to be in hand before the hold is allowed at all.
+#:
+#: **A full stop is not enough to call something a line of a document**, which
+#: is what the hold assumed.  Reported by ear: "Browse...  button  Alt+  b"
+#: arrived a third of a second late, and so did "Home. 3 of 2724" and
+#: "Notifications. 24 of 1870", while "12345" was instant.  That reads as a
+#: punctuation bug in the engine and is nothing of the sort -- every one of
+#: those announcements ends a sentence as far as `_sentenceEnds` is concerned,
+#: so every one of them was held for `JOIN_WAIT` waiting for a next sentence
+#: that was never coming.  Measured: 359.5 ms against 0.1 ms.
+#:
+#: A control's name with a trailing "..." is a user interface convention, not
+#: prose, and "Home. 3 of 2724" is a list position.  Neither is a sentence
+#: anybody wants a breath after, and the hold buys nothing on either -- a
+#: breath needs a boundary *inside* one utterance, and two fragments this
+#: short do not make one worth waiting for.
+#:
+#: 60 is `SPLIT_MIN`, which already draws this line for the other direction:
+#: below it, text is "a word, a control type, a state" and is never split.
+#: The same number for the same reason.
+JOIN_MIN_CHARS = SPLIT_MIN
 #: And never hold more than this, however the text is punctuated: a page with
 #: no full stop in it must not accumulate until the reader notices.
 JOIN_MAX_CHARS = 800
@@ -1666,15 +1688,21 @@ class PantheraDriver(SynthDriver):
             #:
             #: - not the first utterance after a cancel, so starting to read is
             #:   as immediate as it ever was;
-            #: - and there is a finished sentence in hand.  NVDA hands over
-            #:   text that ends at a full stop, so something arriving without
-            #:   one is not a line of a document -- it is an announcement that
-            #:   happens to carry an index, and holding it would be heard as
-            #:   the synthesizer lagging.
+            #: - and there is a finished sentence in hand, and enough of
+            #:   it.  NVDA hands over text that ends at a full stop, so
+            #:   something arriving without one is not a line of a document --
+            #:   it is an announcement that happens to carry an index, and
+            #:   holding it is heard as the synthesizer lagging.  A *short*
+            #:   thing carrying a full stop is an announcement too, which is
+            #:   the half of this that had to be reported by ear.
             #:
             #: Either way it still absorbs whatever is *already* queued, which
             #: while reading continuously is usually the next line in any case.
-            block = self._spokeSinceCancel and _sentenceEnds(text) >= 1
+            #: Three conditions, and the third was learned the expensive
+            #: way -- see JOIN_MIN_CHARS.  A short announcement carrying a
+            #: full stop is still an announcement.
+            block = (self._spokeSinceCancel and _sentenceEnds(text) >= 1
+                     and len(text) >= JOIN_MIN_CHARS)
             try:
                 nxt = self._queue.get(timeout=JOIN_WAIT if block else 0)
             except queue.Empty:

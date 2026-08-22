@@ -11,6 +11,7 @@ fail on timing.  `test_breath.py` is the audio-level half: that the joined
 utterance really does breathe.
 """
 import queue
+import time
 
 import pytest
 
@@ -202,3 +203,49 @@ def test_indexes_are_reported_before_the_text_is_spoken(d):
     assert reported == [1, 2]
     assert not [k for k, _ in out if k == "index"], \
         "an index reported here must not be reported again by _flush"
+
+
+ANNOUNCEMENTS = [
+    "Browse...  button  Alt+  b",
+    "Home. 3 of 2724",
+    "Notifications. 24 of 1870",
+    "OK. button",
+    "Mr. Smith",
+]
+
+
+@pytest.mark.parametrize("text", ANNOUNCEMENTS)
+def test_a_short_thing_with_a_full_stop_in_it_is_not_held(driver, text):
+    """**Reported by ear, and it sounded like a bug in the engine.**
+
+    "Browse...  button  Alt+  b" arrived a third of a second late, and so did
+    "Home. 3 of 2724" and "Notifications. 24 of 1870", while "12345" was
+    instant. That pattern reads as punctuation slowing the synthesizer down.
+    It is not: every one of those announcements ends a sentence as far as
+    `_sentenceEnds` is concerned, so every one was held for `JOIN_WAIT`
+    waiting for a next sentence that was never coming. Measured at the time:
+    359.5 ms against 0.1 ms.
+
+    A trailing "..." on a control is a user interface convention and "Home. 3
+    of 2724" is a list position. Neither is prose, and neither is worth a
+    breath -- which is the only thing the hold buys.
+    """
+    driver._spokeSinceCancel = True
+    started = time.time()
+    driver._join([("index", 1), ("text", text)], driver._epoch)
+    elapsed = time.time() - started
+    assert elapsed < pantheradriver.JOIN_WAIT / 2, (
+        "%r was held for %.0f ms; a short announcement must not wait for a "
+        "sentence that is not coming" % (text, elapsed * 1000))
+
+
+def test_but_a_real_line_of_a_document_is_still_held(driver):
+    """The other half: without this the breath fix is simply switched off."""
+    line = ("The Chamber of Commerce warned on Tuesday that the higher "
+            "tariffs would damage both economies and drive up costs.")
+    assert len(line) >= pantheradriver.JOIN_MIN_CHARS
+    driver._spokeSinceCancel = True
+    started = time.time()
+    driver._join([("index", 1), ("text", line)], driver._epoch)
+    assert time.time() - started >= pantheradriver.JOIN_WAIT * 0.8, (
+        "a full sentence was not held, so nothing will ever breathe")
