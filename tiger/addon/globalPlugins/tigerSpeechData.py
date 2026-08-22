@@ -35,28 +35,100 @@ if _ENGINE_DIR not in sys.path:
 
 import tree                                                   # noqa: E402
 
-#: **One start-up dialog between all the Macintosh speech add-ons, not one
-#: each.** They run in the same NVDA process, so the first to get here speaks
-#: for the rest by claiming this attribute on `globalVars`.
+#: **One dialog covering every Macintosh speech add-on, not one each and not
+#: one that only mentions whichever add-on got there first.**
 #:
 #: Tested by renaming the shared `macintalk` folder and restarting: three
 #: add-ons meant *three* modal dialogs stacked at start-up, each naming its own
-#: engine, with nothing in the Tools menu to reach the other two afterwards.
-#: For a screen-reader user that is three dialogs to hear and dismiss before
-#: NVDA is usable.
+#: engine. For a screen-reader user that is three dialogs to hear and dismiss
+#: before NVDA is usable.
 #:
-#: `dict.setdefault` rather than get-then-set: three `threading.Timer(6.0)`
-#: fire within milliseconds of each other, and setdefault is one atomic
-#: operation under the GIL where a read followed by a write is two.
+#: The first fix suppressed the others, which is worse than it sounds: you were
+#: told Tiger had no engine and nothing at all about the two that also had
+#: none. So they rendezvous instead. Each add-on that finds itself without an
+#: engine adds a line to a shared list, and the first to arrive schedules one
+#: dialog a moment later that reads the whole list out.
 #:
-#: Suppressing the others is only safe because of the Tools menu entry below --
-#: without a way to ask again on purpose, a suppressed dialog is a lost one.
-_SESSION_CLAIM = "_macintalkEngineDialogShown"
+#: **This only works because they share the `macintalk` folder now.** One
+#: dialog, one "open the folder" button, and all the subfolders are in it.
+#:
+#: The three add-ons cannot import each other -- separate add-ons, separate
+#: repositories -- so the meeting place is an attribute on `globalVars` and
+#: this block of code is duplicated in each. Keep the key and the entry shape
+#: identical across all three or they will hold two separate meetings.
+_REGISTRY = "_macintalkMissingEngines"
+_REGISTRY_LOCK = "_macintalkMissingEnginesLock"
+
+#: How long to wait for the others to arrive. They all fire off a 6.0 s timer
+#: so they are milliseconds apart; this is slack, not a real delay.
+_RENDEZVOUS_MS = 1500
 
 
-def _claim_the_startup_dialog(who):
-    """-> True if this add-on is the one that should ask this session."""
-    return globalVars.__dict__.setdefault(_SESSION_CLAIM, who) == who
+def _register_missing(entry):
+    """Add this add-on to the shared list. -> True if it should show the dialog.
+
+    Locked, because `append` then `len(...) == 1` is two operations and two
+    threads can interleave between them so that *neither* sees itself as
+    first -- and then nobody shows the dialog at all. `setdefault` for the
+    lock itself is the one atomic step this needs.
+    """
+    lock = globalVars.__dict__.setdefault(_REGISTRY_LOCK, threading.Lock())
+    with lock:
+        registry = globalVars.__dict__.setdefault(_REGISTRY, [])
+        registry.append(entry)
+        return len(registry) == 1
+
+
+def _missing_engines():
+    return list(globalVars.__dict__.get(_REGISTRY, []))
+
+
+def _folder_to_open(missing):
+    """The one folder that holds all of them, when there is one.
+
+    Since 0.10.0 every engine lives under `macintalk`, so one "open the folder"
+    button can serve three add-ons -- which is the thing that makes a single
+    dialog worth having rather than a compromise.
+    """
+    parents = {os.path.dirname(m["folder"]) for m in missing}
+    if len(missing) > 1 and len(parents) == 1:
+        return parents.pop()
+    return missing[0]["folder"]
+
+
+def _combined_message(missing):
+    """One question about however many add-ons turned up. -> str
+
+    Singular when it is one, which is the common case and should not read like
+    a form letter about a list of one.
+    """
+    one = len(missing) == 1
+    if one:
+        head = ("%s has no engine yet.\n\nIt goes in:\n    %s\n"
+                % (missing[0]["label"], missing[0]["folder"]))
+        body = ("\nIt ships no part of Apple's or Berkeley's software. You "
+                "supply that from %s. There is a README in the folder naming "
+                "the extractor to run and what it needs.\n\n"
+                "The synthesizer is listed in NVDA either way, and says what "
+                "is missing if you select it. There is an entry in the Tools "
+                "menu for it too.\n\n" % missing[0]["source"])
+        refuse = "No  -  do not ask again\n"
+    else:
+        head = ("%d Macintosh speech add-ons have no engine yet:\n\n"
+                % len(missing))
+        for m in missing:
+            head += "    %s\n        %s\n" % (m["label"], m["folder"])
+        body = ("\nNone of them ships any part of Apple's or Berkeley's "
+                "software. You supply that from your own Macintosh discs and "
+                "disk images. Each folder has a README naming the extractor to "
+                "run and what it needs.\n\n"
+                "All of these synthesizers are listed in NVDA either way, and "
+                "each says what is missing if you select it. There is an entry "
+                "in the Tools menu for each as well.\n\n")
+        refuse = "No  -  do not ask again about any of them\n"
+    return (head + body +
+            "Yes  -  open the folder\n" + refuse +
+            "Cancel  -  remind me next time NVDA starts")
 
 
 #: Written only when the user explicitly says "stop asking".
@@ -213,17 +285,44 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
             if not os.path.exists(readme):
                 with open(readme, "w", encoding="utf-8") as f:
                     f.write(_README)
-            if not _claim_the_startup_dialog("tigerspeech"):
-                log.info("Tiger-speech: another Macintosh speech add-on has already\n"
-                         "  asked this session; the Tools menu still has ours")
+            first = _register_missing({
+                "label": "Tiger speech -- Mac OS X 10.4, twenty-three voices",
+                "folder": folder,
+                "source": "your own Mac OS X 10.4 install disc",
+            })
+            if not first:
+                log.info("Tiger-speech: joined another add-on's dialog")
                 return
-            log.info("Tiger-speech: showing the engine-missing dialog")
-            wx.CallAfter(self._ask, folder)
+            log.info("Tiger-speech: will show the combined engine-missing dialog")
+            wx.CallLater(_RENDEZVOUS_MS, self._askCombined)
         except Exception:
             log.error("Tiger-speech: engine check failed", exc_info=True)
 
-    def _ask(self, folder):
-        """Ask, and only record a refusal when the user actually gives one.
+    def _askCombined(self):
+        """One dialog for every add-on that registered, however many that is.
+
+        Whoever got here first shows it and speaks for all of them, so this
+        code has to be identical in each add-on -- it is duplicated, not
+        shared, because they are separate add-ons in separate repositories and
+        cannot import one another.
+        """
+        try:
+            missing = _missing_engines()
+            if not missing:
+                return
+            log.info("Tiger-speech: combined dialog for %d add-on(s): %s"
+                     % (len(missing),
+                        ", ".join(m["folder"] for m in missing)))
+            wx.CallAfter(self._ask, missing)
+        except Exception:
+            log.error("Tiger-speech: combined dialog failed", exc_info=True)
+
+    def _ask(self, missing):
+        """Ask once, about all of them, and honour the answer for all of them.
+
+        `missing` is the shared registry: one entry per add-on that has no
+        engine. Passing a list rather than a folder is what turns "Tiger has
+        no engine, and nothing about the other two" into one honest question.
 
         The style is `wx.YES_NO | wx.CANCEL`. It was `YES_NO_CANCEL`, which
         wxWidgets has in C++ and wxPython does not, so this raised
@@ -234,15 +333,22 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
         turn. A user's log gave it up in one line.
         """
         try:
-            answer = gui.messageBox(_MESSAGE, "Tiger-speech",
+            answer = gui.messageBox(_combined_message(missing),
+                                    "Tiger-speech",
                                     wx.YES_NO | wx.CANCEL | wx.ICON_INFORMATION)
             if answer == wx.YES:
-                os.startfile(folder)
+                os.startfile(_folder_to_open(missing))
             elif answer == wx.NO:
-                with open(os.path.join(folder, _MARKER), "w",
-                          encoding="utf-8") as f:
-                    f.write("Delete this file to be asked about the engine "
-                            "again.\n")
+                # Answered about all of them, so recorded for all of them.
+                for m in missing:
+                    try:
+                        with open(os.path.join(m["folder"], _MARKER), "w",
+                                  encoding="utf-8") as f:
+                            f.write("Delete this file to be asked about the "
+                                    "engine again.\n")
+                    except OSError:
+                        log.error("Tiger-speech: could not write %s in %s"
+                                  % (_MARKER, m["folder"]), exc_info=True)
             # wx.CANCEL, and closing the dialog, both leave no marker, so the
             # question comes back next start-up.  That is the default on
             # purpose: the alternative is a synthesizer the user cannot find
