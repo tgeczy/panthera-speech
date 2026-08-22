@@ -40,6 +40,8 @@ import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ADDON = os.path.join(ROOT, "addon", "synthDrivers")
+#: Where the shared driver body and the tree modules live.
+PRIVATE = os.path.join(ADDON, "_panthera")
 
 #: What a real output stream costs to start after being stopped.
 STREAM_START = 0.12
@@ -107,6 +109,10 @@ def _stage_tree(cfg_dir):
     instead of bypassing it.
     """
     sys.path.insert(0, ADDON)
+    # The drivers themselves add this when they load, but the tests reach into
+    # the shared body directly -- a module-level `import pantheradriver` runs
+    # at collection, before any driver has been imported to do it for us.
+    sys.path.insert(0, PRIVATE)
     for env_name, pointer in TREES:
         # No guesses.  Whoever runs the tests says where their tree is,
         # exactly as a user does -- and guessing would put somebody's disk

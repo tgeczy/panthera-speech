@@ -10,6 +10,8 @@ import time
 import numpy as np
 import pytest
 
+import pantheradriver
+
 
 def _settle(player, want_bytes, timeout=5.0):
     """Wait until the player has at least `want_bytes`, then return the total."""
@@ -180,7 +182,8 @@ def test_missing_tree_refuses_to_load_rather_than_going_silent(monkeypatch,
 
     # And refuses to load, so NVDA falls back and speech carries on.
     told = []
-    monkeypatch.setattr(leopardspeech, "_explainLater", told.append)
+    monkeypatch.setattr(pantheradriver, "_explainLater",
+                        lambda folder, *rest: told.append(folder))
     with pytest.raises(Exception):
         leopardspeech.SynthDriver()
     assert told, "it refused to load and told the user nothing"
@@ -573,7 +576,7 @@ def test_a_break_command_becomes_real_silence(driver):
     _f2, withGap = _speakAndWait(driver, ["one",
                                           speech.commands.BreakCommand(300),
                                           "two"])
-    want = len(leopardspeech._silence(300))
+    want = len(pantheradriver._silence(300))
     assert withGap >= plain + want * 0.8, (
         "a 300 ms break added %d bytes, expected about %d" % (withGap - plain, want))
 
@@ -594,7 +597,7 @@ def test_the_pause_setting_lengthens_the_gaps(driver):
 def test_fragments_are_joined_without_gluing_words_together(driver):
     """"link" then "Home" must not reach the engine as "linkHome"."""
     import leopardspeech
-    join = leopardspeech._joinFragments
+    join = pantheradriver._joinFragments
     assert join(["link", "Home"]) == "link Home"
     assert join(["Read more about it ", "here"]) == "Read more about it here"
     assert join([" on our site.", " Next"]) == " on our site. Next"
@@ -604,7 +607,7 @@ def test_fragments_are_joined_without_gluing_words_together(driver):
 def test_typographic_characters_reach_the_engine_as_macroman():
     """The engine's text is a single-byte Mac encoding, not UTF-8."""
     import leopardspeech
-    enc = leopardspeech._encode
+    enc = pantheradriver._encode
     assert enc(u"—") == b"\xd1"
     assert enc(u"–") == b"\xd0"
     assert enc(u"“") == b"\xd2"
@@ -622,7 +625,8 @@ def test_the_driver_actually_uses_that_encoder():
     import os
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__)))),
-                        "addon", "synthDrivers", "leopardspeech.py")
+                        "addon", "synthDrivers", "_panthera",
+                        "pantheradriver.py")
     src = io.open(path, encoding="utf-8").read()
     assert "t = _encode(text)" in src, "the request no longer encodes the text"
     assert 't = text.encode("utf-8")' not in src, "still sending UTF-8"
@@ -699,11 +703,11 @@ def test_volume_defaults_to_full_not_nvdas_fifty():
     """
     import leopardspeech
     from synthDriverHandler import SynthDriver
-    setting = leopardspeech._fullVolumeByDefault(SynthDriver.VolumeSetting())
+    setting = pantheradriver._fullVolumeByDefault(SynthDriver.VolumeSetting())
     # 90, not 100: that is where each voice reaches its own measured maximum,
     # and the last tenth of the slider is deliberately past it for anyone who
     # wants loudness more than they mind clipping. Still emphatically not 50.
-    assert setting.defaultVal == leopardspeech.VOLUME_CLEAN == 90
+    assert setting.defaultVal == pantheradriver.VOLUME_CLEAN == 90
 
     # And it has to be the setting the driver actually offers, not one made
     # up by the test.
@@ -711,7 +715,8 @@ def test_volume_defaults_to_full_not_nvdas_fifty():
     import os
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__)))),
-                        "addon", "synthDrivers", "leopardspeech.py")
+                        "addon", "synthDrivers", "_panthera",
+                        "pantheradriver.py")
     src = io.open(path, encoding="utf-8").read()
     assert "_fullVolumeByDefault(SynthDriver.VolumeSetting())" in src
     assert "\n        SynthDriver.VolumeSetting()," not in src
@@ -728,7 +733,7 @@ def test_a_typographic_apostrophe_is_an_apostrophe():
     where it landed after the engine lost its place.
     """
     import leopardspeech
-    enc = leopardspeech._encode
+    enc = pantheradriver._encode
     assert enc(u"Canopy’s") == b"Canopy's"
     assert enc(u"‘quoted’") == b"'quoted'"
     # Curly *double* quotes stay: those really are quotation marks, and the
@@ -776,8 +781,8 @@ def test_rate_boost_actually_speaks_faster(driver):
     driver._set_rateBoost(True)
     boosted = driver._wpm()
     driver._set_rateBoost(False)
-    assert plain == leopardspeech.RATE_MAX
-    assert boosted == leopardspeech.RATE_MAX_BOOST
+    assert plain == pantheradriver.RATE_MAX
+    assert boosted == pantheradriver.RATE_MAX_BOOST
     assert boosted > plain
 
     # And it has to reach the engine, not just the arithmetic.
@@ -916,7 +921,7 @@ def test_an_engine_that_cannot_stream_still_speaks(driver, monkeypatch):
     """
     import leopardspeech
     _warm(driver)
-    monkeypatch.setattr(leopardspeech, "REQ_MAGIC_STREAM", 0x54475239)
+    monkeypatch.setattr(pantheradriver, "REQ_MAGIC_STREAM", 0x54475239)
     assert driver._streaming, "streaming should start on"
 
     _feeds, spoken = _speakAndWait(driver, ["can you still hear me"])
@@ -1064,8 +1069,8 @@ def test_inflection_comes_back_to_the_middle_too(driver, monkeypatch):
     driver._render("testing one two three", 180, voice)
 
     seen = []
-    original = leopardspeech._encode
-    monkeypatch.setattr(leopardspeech, "_encode",
+    original = pantheradriver._encode
+    monkeypatch.setattr(pantheradriver, "_encode",
                         lambda t: (seen.append(t), original(t))[1])
     driver._set_inflection(50)
     driver._render("testing one two three", 180, voice)
