@@ -77,6 +77,13 @@ static const shim g_shims[] = {
     /* Lion's SESpeakCFString copies its argument first; without this the
      * whole text path answers memFullErr. */
     { "_CFStringCreateCopy",    (void *)sh_CFStringCreateCopy    },
+    /* Lion's SLDictLookup::Create formats every table name it opens --
+     * CFSTR("%@Eng") over PrefixDictionary, CartLite and CartNames -- so a
+     * stub returning NULL asked the bundle for a resource called nothing and
+     * left the whole dictionary unbuilt.  Neither Tiger nor Leopard imports
+     * this symbol, so nothing before 10.7 can see the difference. */
+    { "_CFStringCreateWithFormat",
+                              (void *)sh_CFStringCreateWithFormat },
     /* Lion runs its render work through GCD and blocks where Leopard
      * used Multiprocessing Services.  A stubbed dispatch_sync returns
      * having done nothing, so the engine finished a render that never
@@ -212,6 +219,13 @@ static const shim g_shims[] = {
     { "_open",  (void *)sh_open  }, { "_close", (void *)sh_close },
     { "_read",  (void *)sh_read  }, { "_write", (void *)sh_write },
     { "_fstat", (void *)sh_fstat },
+    /* 10.6 widened st_ino and gave the wide struct its own symbols, so the
+     * spelling an image imports is the layout it expects.  Missing these was
+     * not a link failure: the stub returned 0, which is *success*, over a
+     * buffer nobody filled -- so Lion's dictionary mapped zero bytes and died
+     * two frames later in SLCartDict. */
+    { "_fstat$INODE64", (void *)sh_fstat64 },
+    { "_stat$INODE64",  (void *)sh_stat64  },
     { "_mmap",  (void *)sh_mmap  }, { "_munmap", (void *)sh_munmap },
     { "_madvise", (void *)sh_advise_ok }, { "_mincore", (void *)sh_advise_ok },
     { "_mlock",   (void *)sh_advise_ok }, { "_munlock", (void *)sh_advise_ok },

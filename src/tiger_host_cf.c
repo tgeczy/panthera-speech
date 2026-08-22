@@ -381,6 +381,65 @@ static void * __cdecl sh_CFStringCreateCopy(void *alloc, const void *s)
     return s ? (void *)cf_new(cf_cstr(s)) : NULL;
 }
 
+/* Lion's dictionary does not name its tables.  It builds the names:
+ *
+ *     CFStringCreateWithFormat(0, 0, CFSTR("%@Eng"), CFSTR("PrefixDictionary"))
+ *     CFBundleCopyResourceURL(bundle, thatName, NULL, NULL)
+ *
+ * three times in `SLDictLookup::Create` -- PrefixDictionary, CartLite,
+ * CartNames -- and once in `CreatePhonemeSymbols`.  `%@Eng` is the **only**
+ * format string in the whole binary, so this one shim decides whether the
+ * dictionary exists at all.
+ *
+ * Stubbed, it returned NULL, so the bundle was asked for a resource called
+ * nothing and answered NULL to all three.  `Create` then took its own error
+ * path and returned NULL -- which surfaced two stages later as
+ * `SLPostLexerImpl` holding a null `SLDictLookup`: a fault in a constructor
+ * that is not the one at fault, naming neither the format nor the shim.
+ * `TuplesEng` is why it was findable at all -- it is a *literal*, so it got
+ * its URL while the three formatted names did not, and two tables out of six
+ * is the shape of a formatter returning nothing.
+ *
+ * **The arguments are Apple's own CFSTR constants**, not objects this host
+ * made, so they go through `cf_cstr`'s shape cast and never through
+ * `cf_ours`.  A formatter that reads only its own objects passes every test
+ * written with its own objects and fails every real call site.
+ *
+ * `%@` and `%%` are all either binary asks for.  Anything else is refused out
+ * loud rather than half-rendered: a partial string here would be a quieter
+ * version of the bug it replaces. */
+static void * __cdecl sh_CFStringCreateWithFormat(void *alloc, void *opts,
+                                                  const void *format, ...)
+{
+    const char *f = cf_cstr(format);
+    char out[CFPATH];
+    unsigned n = 0;
+    va_list ap;
+
+    (void)alloc; (void)opts;
+    if (!f) return NULL;
+    va_start(ap, format);
+    while (*f && n + 1 < CFPATH) {
+        if (*f != '%') { out[n++] = *f++; continue; }
+        f++;
+        if (*f == '%') { out[n++] = *f++; continue; }
+        if (*f == '@') {
+            const char *s = cf_cstr(va_arg(ap, const void *));
+            f++;
+            if (!s) s = "(null)";
+            while (*s && n + 1 < CFPATH) out[n++] = *s++;
+            continue;
+        }
+        printf("  [cf] CFStringCreateWithFormat: unsupported conversion "
+               "%%%c in \"%s\"\n", *f ? *f : '?', cf_cstr(format));
+        va_end(ap);
+        return NULL;
+    }
+    va_end(ap);
+    out[n] = '\0';
+    return cf_new(out);
+}
+
 /* An empty override dictionary is a truthful answer -- there is no override --
  * and it is what lets GetParam fall through to its own default. */
 static void * __cdecl sh_CFDictionaryGetValue(void *dict, void *key)
@@ -642,4 +701,99 @@ static int __cdecl sh_CFNumberGetValue(const void *o, int type, void *out)
         return 0;
     }
     return 1;
+}
+
+/* ---- --cf-check ------------------------------------------------------- */
+/*
+ * The formatter, on the four names Lion's dictionary cannot open without,
+ * needing no tree -- like `--regex-check`.  See
+ * panthera/tests/test_cf_format.py.
+ *
+ * Written to **stdout**, for the reason `--dyld-check` is: `printf` here is
+ * redirected to stderr because serve mode puts PCM on stdout, and in a check
+ * the report *is* the data.  The shim's own diagnostic stays on stderr, where
+ * it belongs -- a shim writing to stdout mid-render would corrupt the audio.
+ */
+static int cf_check(void)
+{
+    /* A CFSTR constant as Apple's binaries carry it: the bare 16-byte record,
+     * with an isa that is not ours.  Every argument at every real call site
+     * looks like this and none of them look like a `cfobj`, so a check built
+     * only from `cf_new` would prove nothing about the calls being fixed. */
+    static void *not_our_class;
+    static const struct { const char *name, *want; } tables[] = {
+        { "PrefixDictionary", "PrefixDictionaryEng" },
+        { "CartLite",         "CartLiteEng"         },
+        { "CartNames",        "CartNamesEng"        },
+        { "PhonemeSymbols",   "PhonemeSymbolsEng"   },
+    };
+    cfstring fmt = { 0 }, arg = { 0 };
+    int i, fails = 0;
+    void *r;
+
+    fmt.isa = &not_our_class;
+    fmt.cstr = "%@Eng";
+    fmt.len = 5;
+    arg.isa = &not_our_class;
+
+    for (i = 0; i < (int)(sizeof(tables) / sizeof(tables[0])); i++) {
+        arg.cstr = tables[i].name;
+        arg.len  = (unsigned)strlen(arg.cstr);
+        r = sh_CFStringCreateWithFormat(NULL, NULL, &fmt, &arg);
+        fprintf(stdout, "[cf-check] constant \"%%@Eng\" + \"%s\" -> \"%s\"\n",
+                tables[i].name, r ? cf_cstr(r) : "(null)");
+        if (!r || strcmp(cf_cstr(r), tables[i].want)) {
+            fprintf(stdout, "FAIL  wanted \"%s\"\n", tables[i].want);
+            fails++;
+        }
+        if (r) free(r);
+    }
+
+    /* An object this host made, formatted through the same path: the two
+     * shapes have to be one code path, or the next kind of argument is a new
+     * bug. */
+    {
+        cfobj *o = cf_new("Homophones");
+        r = sh_CFStringCreateWithFormat(NULL, NULL, &fmt, o);
+        fprintf(stdout, "[cf-check] cfobj \"%%@Eng\" + \"Homophones\" -> "
+                        "\"%s\"\n", r ? cf_cstr(r) : "(null)");
+        if (!r || strcmp(cf_cstr(r), "HomophonesEng")) {
+            fprintf(stdout, "FAIL  wanted \"HomophonesEng\"\n");
+            fails++;
+        }
+        if (r) free(r);
+        free(o);
+    }
+
+    /* Literal percent, and a conversion nothing in either binary uses.  The
+     * refusal is the point: it has to name itself rather than hand back a
+     * plausible half-rendered string. */
+    {
+        cfstring pct = { 0 };
+        pct.isa = &not_our_class;
+        pct.cstr = "100%% sure";
+        pct.len = 10;
+        r = sh_CFStringCreateWithFormat(NULL, NULL, &pct);
+        fprintf(stdout, "[cf-check] \"100%%%% sure\" -> \"%s\"\n",
+                r ? cf_cstr(r) : "(null)");
+        if (!r || strcmp(cf_cstr(r), "100% sure")) {
+            fprintf(stdout, "FAIL  wanted \"100%% sure\"\n");
+            fails++;
+        }
+        if (r) free(r);
+
+        pct.cstr = "%d items";
+        pct.len = 8;
+        r = sh_CFStringCreateWithFormat(NULL, NULL, &pct, 3);
+        fprintf(stdout, "[cf-check] \"%%d items\" -> %s (unsupported "
+                        "conversion refused)\n", r ? cf_cstr(r) : "(null)");
+        if (r) {
+            fprintf(stdout, "FAIL  an unsupported conversion was guessed at\n");
+            fails++;
+            free(r);
+        }
+    }
+
+    fprintf(stdout, "[cf-check] %d failure(s)\n", fails);
+    return fails ? 1 : 0;
 }

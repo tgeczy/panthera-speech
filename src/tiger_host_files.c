@@ -8,12 +8,35 @@
  * Darwin's `struct stat` for i386 is 96 bytes with st_size at offset 48, which
  * is not assumed: ReadVoiceData passes a buffer at [ebp-0x78] and reads the
  * size from [ebp-0x48], and 0x78 - 0x48 is 0x30.
+ *
+ * **10.6 changed both the name and the shape.**  `st_ino` widened to 64 bits,
+ * and rather than break every existing binary Apple gave the wide form its own
+ * symbols: `stat$INODE64`, `fstat$INODE64`.  Leopard imports `_stat`; Lion's
+ * SpeechDictionary imports `_stat$INODE64` and its MacinTalk imports both that
+ * and `_fstat$INODE64`.  So the spelling tells you the layout, and one image
+ * never wants both.
+ *
+ * A table that knows only the 10.5 spellings does not fail loudly.  The call
+ * reaches the auto-stub, which returns **0 -- and 0 is success** -- over a
+ * buffer nobody filled.  `SLMMapCache::Map` then reads a size of zero, maps
+ * zero bytes, and hands `SLCartDict` a window into nothing; the crash lands
+ * two frames later in a constructor that is not at fault.
+ *
+ * The 10.6 offsets are measured the same way the 10.4 ones were, and three
+ * call sites in two binaries agree:
+ *   - `SLMMapCache::Map` buffers at [ebp-0x78], takes the size from
+ *     [ebp-0x3c] (= 60) and compares [ebp-0x70]/[ebp-0x6c] as one 64-bit
+ *     inode (= offset 8);
+ *   - Lion's MacinTalk buffers at [ebp-0x80] and takes the size from
+ *     [ebp-0x44].  Also 60.
  */
-#define DARWIN_STAT_SIZE   96
-#define DARWIN_ST_DEV_OFF   0
-#define DARWIN_ST_INO_OFF   4
-#define DARWIN_ST_MODE_OFF  8
-#define DARWIN_ST_SIZE_OFF 48
+typedef struct { unsigned bytes, dev, ino, mode, size; } darwin_stat_layout;
+
+/* st_ino is 4 bytes wide in the first and 8 in the second; the fill zeroes the
+ * whole struct first, so only the offset has to be said out loud. */
+static const darwin_stat_layout DARWIN_STAT   = { 96,  0, 4, 8, 48 };
+static const darwin_stat_layout DARWIN_STAT64 = { 108, 0, 8, 4, 60 };
+
 
 /* st_dev and st_ino are not decoration: SpeechDictionary's SLMMapCache keys
  * its whole mapping cache on them.  SLMMapCache::Map(const char *) stats the
@@ -82,15 +105,16 @@ static unsigned path_ident(const char *path)
     return h | 0x80000000u;              /* clear of the table's small ids */
 }
 
-static void darwin_stat_fill(unsigned char *st, long long size,
-                             unsigned dev, unsigned ino, int isdir)
+static void darwin_stat_fill(const darwin_stat_layout *L, unsigned char *st,
+                             long long size, unsigned dev, unsigned ino,
+                             int isdir)
 {
-    memset(st, 0, DARWIN_STAT_SIZE);
-    *(unsigned *)(st + DARWIN_ST_DEV_OFF) = dev;
-    *(unsigned *)(st + DARWIN_ST_INO_OFF) = ino;
-    *(unsigned short *)(st + DARWIN_ST_MODE_OFF) =
+    memset(st, 0, L->bytes);
+    *(unsigned *)(st + L->dev) = dev;
+    *(unsigned *)(st + L->ino) = ino;
+    *(unsigned short *)(st + L->mode) =
         (unsigned short)(isdir ? DARWIN_S_IFDIR : DARWIN_S_IFREG);
-    *(long long *)(st + DARWIN_ST_SIZE_OFF) = size;
+    *(long long *)(st + L->size) = size;
 }
 
 static int __cdecl sh_open(const char *path, int flags, int mode)
@@ -167,7 +191,7 @@ static int __cdecl sh_read(int fd, void *b, unsigned n)
 static int __cdecl sh_write(int fd, const void *b, unsigned n)
 { (void)fd; return (int)fwrite(b, 1, n, stderr); }
 
-static int __cdecl sh_fstat(int fd, unsigned char *st)
+static int fstat_into(const darwin_stat_layout *L, int fd, unsigned char *st)
 {
     struct _stat64 s;
     unsigned dev = 1, ino;
@@ -175,14 +199,15 @@ static int __cdecl sh_fstat(int fd, unsigned char *st)
     if (_fstat64(fd, &s) != 0) return -1;
     ino = file_ident((HANDLE)_get_osfhandle(fd), &dev);
     if (!ino) { dev = 1; ino = (unsigned)fd | 0x40000000u; }
-    darwin_stat_fill(st, s.st_size, dev, ino, (s.st_mode & _S_IFDIR) != 0);
+    darwin_stat_fill(L, st, s.st_size, dev, ino, (s.st_mode & _S_IFDIR) != 0);
     return 0;
 }
 
 /* stat() by path, which is the one SLMMapCache actually calls.  Opening for
  * FILE_READ_ATTRIBUTES alone needs no read permission and does not disturb
  * anything; BACKUP_SEMANTICS is what lets the same call work on a directory. */
-static int __cdecl sh_stat(const char *path, unsigned char *st)
+static int stat_into(const darwin_stat_layout *L, const char *path,
+                     unsigned char *st)
 {
     struct _stat64 s;
     HANDLE fh;
@@ -195,8 +220,83 @@ static int __cdecl sh_stat(const char *path, unsigned char *st)
     ino = file_ident(fh, &dev);
     if (fh != INVALID_HANDLE_VALUE) CloseHandle(fh);
     if (!ino) { dev = 1; ino = path_ident(path); }
-    darwin_stat_fill(st, s.st_size, dev, ino, (s.st_mode & _S_IFDIR) != 0);
+    darwin_stat_fill(L, st, s.st_size, dev, ino, (s.st_mode & _S_IFDIR) != 0);
     return 0;
+}
+
+/* Four entry points over two bodies.  The `$INODE64` pair is 10.6 and later;
+ * the bare pair is 10.5 and earlier.  Which one an image imports is decided by
+ * the SDK it was built against, so a process only ever reaches one of each
+ * pair -- but both have to exist, because the wrong one is not a link error
+ * here, it is a stub that quietly reports success. */
+static int __cdecl sh_fstat(int fd, unsigned char *st)
+{ return fstat_into(&DARWIN_STAT, fd, st); }
+static int __cdecl sh_stat(const char *path, unsigned char *st)
+{ return stat_into(&DARWIN_STAT, path, st); }
+static int __cdecl sh_fstat64(int fd, unsigned char *st)
+{ return fstat_into(&DARWIN_STAT64, fd, st); }
+static int __cdecl sh_stat64(const char *path, unsigned char *st)
+{ return stat_into(&DARWIN_STAT64, path, st); }
+
+/* ---- --stat-check ------------------------------------------------------ */
+/*
+ * Both layouts, filled for real files, decoded back at the offsets the engine
+ * reads.  Needs no tree; see panthera/tests/test_stat_layout.py.  Written to
+ * stdout for the reason `--dyld-check` is: in a check the report is the data.
+ */
+static void stat_check_one(const char *label, const darwin_stat_layout *L,
+                           const char *a, const char *b, int *fails)
+{
+    unsigned char sa[160], sb[160];
+    long long size;
+
+    if (stat_into(L, a, sa) != 0 || stat_into(L, b, sb) != 0) {
+        fprintf(stdout, "FAIL  %s: could not stat its own two files\n", label);
+        (*fails)++;
+        return;
+    }
+    size = *(long long *)(sa + L->size);
+    fprintf(stdout, "[stat-check] %s field struct_size %u\n", label, L->bytes);
+    fprintf(stdout, "[stat-check] %s field size_off %u\n", label, L->size);
+    fprintf(stdout, "[stat-check] %s field ino_off %u\n", label, L->ino);
+    /* The two properties the cache is keyed on: an identity at all, and a
+     * different one per file.  Equal keys are silent -- the second lookup is
+     * served the first file's bytes and never reaches open(). */
+    fprintf(stdout, "[stat-check] %s field ino_nonzero %d\n", label,
+            *(unsigned *)(sa + L->ino) != 0);
+    fprintf(stdout, "[stat-check] %s field distinct %d\n", label,
+            memcmp(sa, sb, 16) != 0);
+    fprintf(stdout, "[stat-check] %s size %lld, mode %04x\n", label, size,
+            *(unsigned short *)(sa + L->mode));
+    if (size <= 0) {
+        fprintf(stdout, "FAIL  %s: a file with contents measured %lld\n",
+                label, size);
+        (*fails)++;
+    }
+}
+
+static int stat_check(void)
+{
+    /* Two files that certainly exist and certainly differ: this program, and
+     * the directory holding it. */
+    char me[MAX_PATH], dir[MAX_PATH];
+    char *cut;
+    int fails = 0;
+
+    if (!GetModuleFileNameA(NULL, me, MAX_PATH)) {
+        fprintf(stdout, "FAIL  cannot find my own path\n");
+        return 1;
+    }
+    strncpy(dir, me, MAX_PATH - 1);
+    dir[MAX_PATH - 1] = 0;
+    cut = strrchr(dir, '\\');
+    if (!cut) cut = strrchr(dir, '/');
+    if (cut) *cut = 0;
+
+    stat_check_one("stat",   &DARWIN_STAT,   me, dir, &fails);
+    stat_check_one("stat64", &DARWIN_STAT64, me, dir, &fails);
+    fprintf(stdout, "[stat-check] %d failure(s)\n", fails);
+    return fails ? 1 : 0;
 }
 
 /* A real file mapping, because for the big voices that is the whole point.

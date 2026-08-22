@@ -231,6 +231,18 @@ int main(int argc, char **argv)
         setvbuf(stderr, NULL, _IONBF, 0);
         return re_check();
     }
+    /* The CFString formatter, on the four table names Lion's dictionary is
+     * built out of; see panthera/tests/test_cf_format.py. */
+    if (argc > 1 && !strcmp(argv[1], "--cf-check")) {
+        setvbuf(stderr, NULL, _IONBF, 0);
+        return cf_check();
+    }
+    /* Both `struct stat` layouts -- 10.5's and 10.6's `$INODE64` -- decoded at
+     * the offsets the engines read; see panthera/tests/test_stat_layout.py. */
+    if (argc > 1 && !strcmp(argv[1], "--stat-check")) {
+        setvbuf(stderr, NULL, _IONBF, 0);
+        return stat_check();
+    }
     /* Print the compressed dyld info of one Mach-O and stop.  Compared
      * against tools/machodyld.py, which reads the same streams by a
      * different route; see panthera/tests/test_dyld_info.py. */
