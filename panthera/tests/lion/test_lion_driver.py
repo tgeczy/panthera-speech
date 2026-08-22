@@ -136,3 +136,72 @@ def test_fred_speaks_too(driver):
     """A formant voice, so the concatenative path is not the only one tested."""
     pcm = driver._render("Hello there!", 180, "Fred")
     assert pcm and len(pcm) > 4410, len(pcm) if pcm else 0
+
+
+# -- the volume table ----------------------------------------------------
+
+def _peak_and_clipped(pcm):
+    import struct
+    v = struct.unpack("<%dh" % (len(pcm) // 2), pcm)
+    return (max(max(v), -min(v)),
+            sum(1 for x in v if x >= 32766 or x <= -32767))
+
+
+def test_the_volume_table_covers_every_voice_we_offer(driver):
+    """An unmeasured voice silently gets 1.0, which is quiet but never wrong.
+
+    Worth failing on anyway: a voice added later should be measured rather
+    than left behind at the old level while everything around it got louder.
+    """
+    import lionspeech
+    missing = [entry[0] for entry in driver._voices
+               if entry[0] not in lionspeech.VOLUME_NORM]
+    assert not missing, (
+        "not in VOLUME_NORM, so they stay at the old level: %s -- run "
+        "tools/volume_table.py lion" % ", ".join(missing))
+
+
+def test_lions_levels_are_lions_and_not_leopards(driver):
+    """The one number that would have been silently wrong if copied.
+
+    Twenty-three of the two tables' names match, so a copy looks reasonable.
+    Alex does not: Leopard's Alex sits nearly 8 dB below Bruce and is given
+    1.80, Lion's sits 2 dB below and is given 1.19. Leopard's factor here
+    asks for 3.6 dB this recording does not have, and clips.
+    """
+    import lionspeech
+    import pantheradriver
+    assert lionspeech.VOLUME_NORM["Alex"] < 1.4, (
+        "Alex is at %.2f, which is Leopard's figure rather than Lion's"
+        % lionspeech.VOLUME_NORM["Alex"])
+    assert (lionspeech.VOLUME_NORM
+            != pantheradriver.VOLUME_NORM_LEOPARD), \
+        "the two tables are identical, so one of them was copied"
+
+
+def test_the_default_volume_never_clips_more_than_the_voice_already_did(driver):
+    """What the table promises: never make a voice worse than it was.
+
+    Not "nothing clips" -- a voice can already clip at its own natural level,
+    and turning it down to fix that would cost more than the distortion does.
+    A handful of voices rather than all twenty-four, because each is two real
+    renders; these are the extremes.
+    """
+    driver._acceptCommands = True    # or the baseline prefix is stripped
+    text = ("The US Chamber of Commerce warned Tuesday. Ah, oh, ooh, aye. "
+            "WARNING! ERROR! Take a big pack of tickets, Bobby.")
+    available = {v[0] for v in driver._voices}
+    for voice in ("Alex", "Bruce", "Victoria", "Whisper", "Fred"):
+        if voice not in available:
+            continue
+        driver._set_voice(voice)
+        was = _peak_and_clipped(
+            driver._render("[[volm 1.000]]" + text, driver._wpm(), voice))[1]
+        driver._set_volume(90)
+        peak, clipped = _peak_and_clipped(
+            driver._render(text, driver._wpm(), voice))
+        assert peak, "%s rendered nothing" % voice
+        assert clipped <= was, (
+            "%s clips %d samples at the default volume against %d at its own "
+            "natural level -- VOLUME_NORM made it worse"
+            % (voice, clipped, was))

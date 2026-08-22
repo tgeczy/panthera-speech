@@ -38,15 +38,48 @@ engine_paths = pantheralion.engine_paths
 read_voices = pantheralion.read_voices
 config_base = pantheralion.config_base
 
-#: **Not measured yet, so nothing is turned up.**  1.0 is the level every
-#: voice already has, and it is the only safe placeholder: a voice nobody has
-#: measured might already be at the engine's ceiling, and guessing high turns
-#: it into clipping rather than loudness.  Leopard's table is deliberately not
-#: copied here even though twenty-three of the names match -- the recordings
-#: behind them are different recordings, and Lion's Alex is a 422 MB bank
-#: where Leopard's is 701 MB.  `leopard/tools/volume_table.py` is what fills
-#: this in, one probe text at a time.
-VOLUME_NORM = {}
+#: How far each voice may be turned up, so that one slider position means
+#: roughly one loudness whichever voice is speaking.  Built by
+#: `tools/volume_table.py lion`, worst case across five probe texts; the
+#: method is documented there and in `pantheradriver.VOLUME_NORM_LEOPARD`.
+#:
+#: **Measured on Lion's own recordings, and it was worth the trouble.**
+#: Twenty-three of these names also appear in Leopard's table, so copying it
+#: would have looked reasonable and been wrong where it matters most: Leopard
+#: gives Alex 1.80 and Lion gives him **1.19**.  Lion's Alex is a different,
+#: smaller bank -- 422 MB against 701 -- and it is already only 2 dB below
+#: Bruce where Leopard's is nearly 8 dB below.  Leopard's factor applied here
+#: would have asked for 3.6 dB the voice does not have and clipped him.
+#:
+#: The set is more even than Leopard's to begin with: 5.3 dB of spread after
+#: normalisation against Leopard's 6.6, excluding Whisper, which is supposed
+#: to be quiet and keeps its character.
+VOLUME_NORM = {
+    "Agnes":      1.00,
+    "Albert":     1.70,
+    "Alex":       1.19,
+    "BadNews":    1.80,
+    "Bahh":       1.70,
+    "Bells":      1.70,
+    "Boing":      1.80,
+    "Bruce":      1.00,
+    "Bubbles":    1.70,
+    "Cellos":     1.75,
+    "Deranged":   1.70,
+    "Fred":       1.80,
+    "GoodNews":   1.69,
+    "Hysterical": 1.70,
+    "Junior":     1.77,
+    "Kathy":      1.72,
+    "Organ":      1.67,
+    "Princess":   1.65,
+    "Ralph":      1.74,
+    "Trinoids":   1.70,
+    "Vicki":      1.17,
+    "Victoria":   1.00,
+    "Whisper":    1.80,
+    "Zarvox":     1.70,
+}
 
 
 class SynthDriver(pantheradriver.PantheraDriver):
