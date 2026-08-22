@@ -189,6 +189,7 @@ static unsigned bswap(unsigned v)
 #include "tiger_host_files.c"
 #include "tiger_host_audio.c"
 #include "tiger_host_aac.c"
+#include "tiger_host_gcd.c"
 #include "tiger_host_cxx.c"
 #include "tiger_host_accel.c"
 #include "tiger_host_sqlite.c"
@@ -197,6 +198,7 @@ static unsigned bswap(unsigned v)
 #include "tiger_host_fault.c"
 #include "tiger_host_macho.c"
 #include "tiger_host_dyldinfo.c"
+#include "tiger_host_speech.c"
 #include "tiger_host_serve.c"
 
 /* ---- main -------------------------------------------------------------- */
@@ -421,10 +423,7 @@ int main(int argc, char **argv)
         static const char deftext[] = "Hello there.";
         const char *text = envtext && *envtext ? envtext : deftext;
         size_t textlen = strlen(text);
-        typedef int (__cdecl *SESpeak_t)(void *chan, const void *buf,
-                                         long len, long flags);
-        SESpeak_t speak = (SESpeak_t)find_export(&mt, "_SESpeakBuffer");
-        if (!speak) die("SESpeakBuffer not found");
+        speech_api api = speech_api_of(&mt);
         /* TIGER_RATE, in words per minute, so the amount of time-scaling can
          * be varied deliberately.
          *
@@ -449,10 +448,8 @@ int main(int argc, char **argv)
                 }
             }
         }
-        printf("\nSESpeakBuffer at %p, %d bytes of text\n",
-               (void *)speak, (int)(sizeof(text) - 1));
-        err = call_aligned4((void *)speak, chan, (void *)text,
-                            (void *)textlen, (void *)0);
+        printf("\n%s, %d bytes of text\n", api.which, (int)textlen);
+        err = speak_text(&api, chan, text, textlen);
         printf("  -> OSErr %d\n", err);
 
         /* SESpeakBuffer returns as soon as the utterance is accepted; the

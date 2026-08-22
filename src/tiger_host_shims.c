@@ -31,6 +31,66 @@ static void  __cdecl sh_bcopy(const void *s, void *d, size_t n) { memmove(d, s, 
 static void  __cdecl sh_bzero(void *d, size_t n)                { memset(d, 0, n); }
 static int   __cdecl sh_abort_(void) { die("engine called abort()"); return 0; }
 
+/* Thread-local storage, which libstdc++ keeps its locale and exception state
+ * in.
+ *
+ * Stubbed, `pthread_key_create` reports success without allocating a key and
+ * `pthread_getspecific` then answers NULL forever -- so the library believes
+ * it has per-thread state and never finds any. What that produces is not a
+ * null dereference but **heap corruption**, somewhere later and in someone
+ * else's allocation, because the object it thought it had cached gets built
+ * again and freed twice.
+ *
+ * Windows has exactly this, under different names. Leopard's 6.0.4 never
+ * reached these paths; Lion's 6.0.9 does.
+ */
+static int __cdecl sh_pthread_key_create(unsigned *key, void *dtor)
+{
+    DWORD k;
+    (void)dtor;                 /* no destructors: this host never joins */
+    if (!key) return 22;        /* EINVAL */
+    k = TlsAlloc();
+    if (k == TLS_OUT_OF_INDEXES) return 12;                 /* ENOMEM */
+    *key = (unsigned)k;
+    return 0;
+}
+static int __cdecl sh_pthread_key_delete(unsigned key)
+{ return TlsFree((DWORD)key) ? 0 : 22; }
+static void * __cdecl sh_pthread_getspecific(unsigned key)
+{ return TlsGetValue((DWORD)key); }
+static int __cdecl sh_pthread_setspecific(unsigned key, const void *val)
+{ return TlsSetValue((DWORD)key, (LPVOID)val) ? 0 : 22; }
+
+/* The stack canary is a *data* symbol.  Bound to a thunk it is the address of
+ * some code, which happens to read back the same both times a function checks
+ * it -- so it works by accident until the day that memory is written. A real
+ * word costs nothing and makes the guard mean what it says. */
+static unsigned long g_stack_chk_guard = 0xDEADC0DEu;
+static void __cdecl sh_stack_chk_fail(void)
+{ die("stack check failed inside the engine"); }
+
+/* 64-bit division, which a 32-bit compiler emits calls to rather than code.
+ *
+ * These are libgcc's, and stubbing them is not a missing feature -- it is
+ * arithmetic that silently returns nothing. Lion's engine works out how many
+ * frames an utterance is in 64 bits, so `__udivdi3` answering zero made it
+ * schedule **one frame** and call the utterance done: a 46-byte wav, `OSErr
+ * 0`, and no error anywhere. Leopard's engine never calls them.
+ *
+ * MSVC generates the same operations inline for `long long`, so each of these
+ * is one line and exactly right rather than approximately so.
+ */
+static long long __cdecl sh_divdi3(long long a, long long b)
+{ return b ? a / b : 0; }
+static unsigned long long __cdecl sh_udivdi3(unsigned long long a,
+                                             unsigned long long b)
+{ return b ? a / b : 0; }
+static long long __cdecl sh_moddi3(long long a, long long b)
+{ return b ? a % b : 0; }
+static unsigned long long __cdecl sh_umoddi3(unsigned long long a,
+                                             unsigned long long b)
+{ return b ? a % b : 0; }
+
 /* pthreads, on top of critical sections.
  *
  * Darwin's pthread_mutex_t is 44 bytes of opaque storage, which is room enough

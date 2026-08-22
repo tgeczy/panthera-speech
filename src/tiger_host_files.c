@@ -118,9 +118,22 @@ static int __cdecl sh_close(int fd) { return _close(fd); }
  */
 static int find_libstdcxx(const char *start, char *out, size_t n)
 {
+    /* **Newest first.**  Leopard shipped 6.0.4 and Lion 6.0.9, and the choice
+     * is not cosmetic: Lion's SpeechDictionary inlines a `std::string` layout
+     * that 6.0.4 does not have, so pairing them crashes in
+     * `_Rep::_M_destroy` -- deep inside libstdc++, with the actual mismatch
+     * named nowhere. A tree only ever holds the one its own system shipped, so
+     * ordering by version picks the right one without having to ask.
+     *
+     * Lion's is in the installer's `BaseSystemBinaries.pkg` under `usr/lib`,
+     * *not* in `BaseSystem.dmg` -- the copy at the root of that image is
+     * x86_64 only, because Lion Recovery is, and it will not load here at all.
+     */
     static const char *names[] = {
-        "libstdc++.6.0.4.dylib",              /* the real file */
-        "libstdc++.6.dylib",                  /* usually a link to it */
+        "libstdc++.6.0.9.dylib",              /* Lion */
+        "libstdc++.6.0.4.dylib",              /* Leopard */
+        "libstdc++.6.dylib",                  /* usually a link to one of them */
+        "usr/lib/libstdc++.6.0.9.dylib",
         "usr/lib/libstdc++.6.0.4.dylib",
         "usr/lib/libstdc++.6.dylib",
     };

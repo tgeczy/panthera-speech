@@ -42,9 +42,14 @@ typedef struct { void *isa; unsigned flags; const char *cstr; unsigned len; }
 #define CF_STRING  0
 #define CF_NUMBER  1
 #define CF_BOOLEAN 2
+/* Lion's SpeechDictionary reads its tables through CFURL rather than by
+ * opening a path, so it needs a CFData to read them into.  `bytes` is heap,
+ * not `buf`: these are whole dictionary files. */
+#define CF_DATA    3
 
 typedef struct { cfstring str; unsigned magic; long rc; char buf[CFPATH];
-                 int kind; double num; }
+                 int kind; double num;
+                 unsigned char *bytes; unsigned nbytes; }
         cfobj;
 
 /* Bundles handed back by CFBundleGetBundleWithIdentifier are *not* owned by
@@ -104,6 +109,33 @@ static int __cdecl sh_CFStringGetCString(const void *s, char *buf, int sz,
     strcpy(buf, p);
     return 1;
 }
+/* The lexer reads the text a character at a time, in UTF-16.
+ *
+ * `SLLexerBuffer::operator[]` indexes a buffer this fills, so a stub left the
+ * dictionary tokenising uninitialised memory -- and it got as far as
+ * `SLPostLexerImpl::HasApostrophe` before dying on a read of address 4, which
+ * names neither the string nor the shim that never filled it.
+ *
+ * `CFRange` is two words passed by value, so it arrives as two arguments. The
+ * widening is byte to UniChar because everything this host puts in a CFString
+ * is text the driver already encoded to a single-byte Mac encoding -- see
+ * `engine-text-encoding`: above 0x7F this is Latin-1 rather than MacRoman, and
+ * that is a difference worth measuring before trusting it on accented input.
+ */
+static void __cdecl sh_CFStringGetCharacters(const void *s, int loc, int len,
+                                             unsigned short *buf)
+{
+    const char *p = cf_cstr(s);
+    int i, n;
+    if (!buf || len <= 0) return;
+    if (!p) { memset(buf, 0, (size_t)len * 2); return; }
+    n = (int)strlen(p);
+    for (i = 0; i < len; i++) {
+        int k = loc + i;
+        buf[i] = (k >= 0 && k < n) ? (unsigned short)(unsigned char)p[k] : 0;
+    }
+}
+
 /* Leopard's SpeechDictionary asks for paths this way rather than with
  * CFStringGetCString.  Same answer here: the strings we hand out are already
  * filesystem paths in the host's own encoding. */
@@ -216,6 +248,137 @@ static void * __cdecl sh_CFStringCreateWithCStringNoCopy(void *alloc,
 {
     (void)alloc; (void)enc; (void)dealloc;
     return cstr ? (void *)cf_new(cstr) : NULL;
+}
+
+/* Lion's SpeechDictionary reads its tables through the URL, not the path.
+ *
+ * Leopard's opens `HomophonesEng` and the rest with `open`/`fstat`/`mmap`, all
+ * of which are shimmed. Lion's asks CoreFoundation to hand it the bytes, and
+ * the stub answered `false` -- so a member that should have held the table
+ * stayed NULL and the post-lexer read address 4 on the first word it wanted
+ * from it, several calls later and in a function whose name says apostrophes.
+ *
+ * The last argument is an out-parameter for an error code, and the caller is
+ * entitled to look at it whether or not the read worked.
+ */
+static cfobj *cf_data(const char *path)
+{
+    cfobj *o;
+    FILE *f = fopen(path, "rb");
+    long n;
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END); n = ftell(f); fseek(f, 0, SEEK_SET);
+    o = cf_new(path);
+    if (!o) { fclose(f); return NULL; }
+    o->kind = CF_DATA;
+    o->bytes = (unsigned char *)malloc(n > 0 ? (size_t)n : 1);
+    if (!o->bytes) { fclose(f); return NULL; }
+    o->nbytes = (unsigned)fread(o->bytes, 1, (size_t)n, f);
+    fclose(f);
+    return o;
+}
+
+static int __cdecl sh_CFURLCreateDataAndPropertiesFromResource(
+        void *alloc, const void *url, void **outData, void **outProps,
+        const void *desired, int *errorCode)
+{
+    const char *path = cf_cstr(url);
+    cfobj *d;
+    (void)alloc; (void)desired;
+    if (outProps) *outProps = NULL;
+    if (!path || !outData) {
+        if (errorCode) *errorCode = -10;            /* unknown scheme */
+        return 0;
+    }
+    d = cf_data(path);
+    if (!d) {
+        if (g_verbose) printf("  [cf] cannot read %s\n", path);
+        if (errorCode) *errorCode = -15;            /* resource not found */
+        return 0;
+    }
+    if (g_verbose)
+        printf("  [cf] read %u bytes of %s\n", d->nbytes, path);
+    *outData = d;
+    if (errorCode) *errorCode = 0;
+    return 1;
+}
+
+static const void * __cdecl sh_CFDataGetBytePtr(const void *o)
+{
+    const cfobj *d = (const cfobj *)o;
+    return (d && d->magic == CF_MAGIC && d->kind == CF_DATA) ? d->bytes : NULL;
+}
+
+static int __cdecl sh_CFDataGetLength(const void *o)
+{
+    const cfobj *d = (const cfobj *)o;
+    return (d && d->magic == CF_MAGIC && d->kind == CF_DATA)
+           ? (int)d->nbytes : 0;
+}
+
+/* Lion's lexer takes a locale.
+ *
+ * `SLLexer::Create(SLTextSource*, SLDictLookup*, SLPronouncer*,
+ * const __CFLocale*, unsigned)` is where the text pipeline starts, and with
+ * `CFLocaleCreate` stubbed it starts with NULL. What came back was not a null
+ * dereference but **heap corruption inside ntdll** -- so the report named a
+ * Windows allocator function and no part of the actual mistake.
+ *
+ * One locale, pinned, because these follow Get rules in places and a refcount
+ * that reaches zero would free the object every later lookup needs -- the same
+ * trap the bundle objects above are pinned for.
+ */
+static cfobj *g_locale;
+
+static void * __cdecl sh_CFLocaleCreate(void *alloc, const void *ident)
+{
+    const char *name = cf_cstr(ident);
+    (void)alloc;
+    if (!g_locale) g_locale = cf_pinned(name && *name ? name : "en_US");
+    return g_locale;
+}
+
+/* Every key answered with the language code.
+ *
+ * The keys are CFString constants the engine imports as *data*, so an
+ * unresolved one is a thunk address rather than a string -- reading it to
+ * decide what was asked would be reading code as text. Answering "en" to
+ * everything is a smaller lie than NULL, and the engine's next move is to
+ * compare it against its own language list, which is exactly what it should
+ * find. A voice that is not English will need this to say so.
+ */
+static void * __cdecl sh_CFLocaleGetValue(void *locale, void *key)
+{
+    static cfobj *lang;
+    (void)locale; (void)key;
+    if (!lang) lang = cf_pinned("en");
+    return lang;
+}
+
+/* -1, 0, 1 -- kCFCompareLessThan, EqualTo, GreaterThan.  Both arguments may
+ * be an engine CFSTR constant or one of ours; `cf_cstr` reads either. */
+static int __cdecl sh_CFStringCompare(const void *a, const void *b,
+                                      unsigned opts)
+{
+    const char *x = cf_cstr(a), *y = cf_cstr(b);
+    int r;
+    if (!x || !y) return x == y ? 0 : (x ? 1 : -1);
+    r = (opts & 1) ? _stricmp(x, y) : strcmp(x, y);  /* 1 = caseInsensitive */
+    return r < 0 ? -1 : (r > 0 ? 1 : 0);
+}
+
+/* Lion's `SESpeakCFString` copies the string it is handed before doing
+ * anything with it, and a stub returning NULL made that read as **`OSErr
+ * -108`, memFullErr** -- an out-of-memory report from a host with gigabytes
+ * spare, which is a long way from "one shim is missing".
+ *
+ * Copied rather than retained: these objects are refcounted by hand and the
+ * engine releases what it copies, so handing back the same pointer would put
+ * the caller's release on an object the caller does not own. */
+static void * __cdecl sh_CFStringCreateCopy(void *alloc, const void *s)
+{
+    (void)alloc;
+    return s ? (void *)cf_new(cf_cstr(s)) : NULL;
 }
 
 /* An empty override dictionary is a truthful answer -- there is no override --

@@ -19,12 +19,30 @@ static const shim g_shims[] = {
     { "_ceilf", (void *)ceilf }, { "_floorf", (void *)floorf },
     { "_expf", (void *)expf }, { "_logf", (void *)logf },
     { "_powf", (void *)powf },
+    /* libgcc 64-bit division.  A stub here is not a missing feature but
+     * arithmetic that quietly returns nothing: Lion sizes an utterance
+     * in 64 bits, so __udivdi3 answering zero rendered one frame and
+     * reported success. */
+    { "___divdi3",  (void *)sh_divdi3  },
+    { "___udivdi3", (void *)sh_udivdi3 },
+    { "___moddi3",  (void *)sh_moddi3  },
+    { "___umoddi3", (void *)sh_umoddi3 },
     { "_getsectdatafromheader", (void *)sh_getsectdatafromheader },
     { "_pthread_mutex_init",     (void *)sh_mutex_init     },
     { "_pthread_mutex_lock",     (void *)sh_mutex_lock     },
     { "_pthread_mutex_unlock",   (void *)sh_mutex_unlock   },
     { "_pthread_mutexattr_init", (void *)sh_mutexattr_init },
     { "_pthread_once",           (void *)sh_once           },
+    /* Thread-local storage. libstdc++ keeps its locale and exception
+     * state here, and a stub that always answers NULL corrupts the
+     * heap rather than faulting -- see tiger_host_shims.c. */
+    { "_pthread_key_create",     (void *)sh_pthread_key_create   },
+    { "_pthread_key_delete",     (void *)sh_pthread_key_delete   },
+    { "_pthread_getspecific",    (void *)sh_pthread_getspecific  },
+    { "_pthread_setspecific",    (void *)sh_pthread_setspecific  },
+    /* A *data* symbol: bound to a thunk it is the address of code. */
+    { "___stack_chk_guard",      (void *)&g_stack_chk_guard      },
+    { "___stack_chk_fail",       (void *)sh_stack_chk_fail       },
     { "_MPCreateQueue",   (void *)sh_mp_create_queue   },
     { "_MPNotifyQueue",   (void *)sh_mp_notify_queue   },
     { "_MPWaitOnQueue",   (void *)sh_mp_wait_on_queue  },
@@ -41,6 +59,8 @@ static const shim g_shims[] = {
     { "_CFStringGetCStringPtr", (void *)sh_CFStringGetCStringPtr },
     { "_CFStringGetLength",     (void *)sh_CFStringGetLength     },
     { "_CFStringGetCString",    (void *)sh_CFStringGetCString    },
+    /* Lion's lexer reads the text as UTF-16, a character at a time. */
+    { "_CFStringGetCharacters", (void *)sh_CFStringGetCharacters },
     { "_CFStringGetMaximumSizeForEncoding",
                              (void *)sh_CFStringGetMaximumSizeForEncoding },
     { "_CFStringGetMaximumSizeOfFileSystemRepresentation",
@@ -54,9 +74,56 @@ static const shim g_shims[] = {
                               (void *)sh_CFBundleGetBundleWithIdentifier },
     { "_CFStringCreateWithCStringNoCopy",
                              (void *)sh_CFStringCreateWithCStringNoCopy },
+    /* Lion's SESpeakCFString copies its argument first; without this the
+     * whole text path answers memFullErr. */
+    { "_CFStringCreateCopy",    (void *)sh_CFStringCreateCopy    },
+    /* Lion runs its render work through GCD and blocks where Leopard
+     * used Multiprocessing Services.  A stubbed dispatch_sync returns
+     * having done nothing, so the engine finished a render that never
+     * happened and wrote a 46-byte wav. */
+    { "__Block_copy",           (void *)sh_Block_copy            },
+    { "__Block_release",        (void *)sh_Block_release         },
+    { "_dispatch_sync",         (void *)sh_dispatch_sync         },
+    { "_dispatch_async",        (void *)sh_dispatch_async        },
+    { "_dispatch_sync_f",       (void *)sh_dispatch_sync_f       },
+    { "_dispatch_async_f",      (void *)sh_dispatch_async_f      },
+    { "_dispatch_once",         (void *)sh_dispatch_once         },
+    { "_dispatch_queue_create", (void *)sh_dispatch_queue_create },
+    { "_dispatch_get_global_queue",
+                              (void *)sh_dispatch_get_global_queue },
+    { "_dispatch_source_create",
+                              (void *)sh_dispatch_source_create },
+    { "_dispatch_set_context",  (void *)sh_dispatch_set_context  },
+    { "_dispatch_get_context",  (void *)sh_dispatch_get_context  },
+    { "_dispatch_source_set_event_handler_f",
+                   (void *)sh_dispatch_source_set_event_handler_f },
+    { "_dispatch_source_set_timer",
+                              (void *)sh_dispatch_source_set_timer },
+    { "_dispatch_resume",       (void *)sh_dispatch_resume       },
+    { "_dispatch_suspend",      (void *)sh_dispatch_suspend      },
+    { "_dispatch_source_cancel",
+                              (void *)sh_dispatch_source_cancel },
+    { "_dispatch_time",         (void *)sh_dispatch_time         },
+    { "_dispatch_walltime",     (void *)sh_dispatch_walltime     },
+    { "_dispatch_release",      (void *)sh_dispatch_release      },
+    { "_dispatch_retain",       (void *)sh_dispatch_retain       },
+    { "_OSAtomicAdd32Barrier",  (void *)sh_OSAtomicAdd32Barrier  },
+    { "_OSAtomicAdd32",         (void *)sh_OSAtomicAdd32         },
+    /* And its lexer takes a CFLocale -- a NULL one corrupts the heap
+     * rather than faulting, so the crash report names ntdll and nothing
+     * else. */
+    { "_CFLocaleCreate",        (void *)sh_CFLocaleCreate        },
+    { "_CFLocaleGetValue",      (void *)sh_CFLocaleGetValue      },
+    { "_CFStringCompare",       (void *)sh_CFStringCompare       },
     { "_CFDictionaryGetValue",  (void *)sh_CFDictionaryGetValue  },
     { "_CFURLCopyFileSystemPath", (void *)sh_CFURLCopyFileSystemPath },
     { "_CFURLCopyPath",           (void *)sh_CFURLCopyPath           },
+    /* Lion's SpeechDictionary reads its tables through the URL rather
+     * than opening a path, so a stub here left every table NULL. */
+    { "_CFURLCreateDataAndPropertiesFromResource",
+                 (void *)sh_CFURLCreateDataAndPropertiesFromResource },
+    { "_CFDataGetBytePtr",      (void *)sh_CFDataGetBytePtr      },
+    { "_CFDataGetLength",       (void *)sh_CFDataGetLength       },
     /* The engine's own tuning parameters.  With no TIGER_PARAMS set, the
      * lookup answers NULL -- exactly what the generic thunk did -- so these
      * change nothing until asked.  See tiger_host_cf.c. */
@@ -71,6 +138,10 @@ static const shim g_shims[] = {
     { "_NewAUGraph",              (void *)sh_NewAUGraph              },
     { "_AUGraphNewNode",          (void *)sh_AUGraphNewNode          },
     { "_AUGraphGetNodeInfo",      (void *)sh_AUGraphGetNodeInfo      },
+    /* Lion uses the post-10.5 spellings, which take fewer arguments
+     * rather than the same ones -- see tiger_host_audio.c. */
+    { "_AUGraphAddNode",          (void *)sh_AUGraphAddNode          },
+    { "_AUGraphNodeInfo",         (void *)sh_AUGraphNodeInfo         },
     { "_AUGraphConnectNodeInput", (void *)sh_AUGraphConnectNodeInput },
     { "_AUGraphOpen",             (void *)sh_AUGraphOpen             },
     { "_AUGraphInitialize",       (void *)sh_AUGraphInitialize       },

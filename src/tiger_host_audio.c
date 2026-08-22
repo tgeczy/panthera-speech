@@ -60,6 +60,30 @@ static int __cdecl sh_AUGraphGetNodeInfo(void *g, int node, unsigned *desc,
            (void *)&g_units[node - 1]);
     return 0;
 }
+/* The same two calls, as Lion spells them.
+ *
+ * `AUGraphNewNode` and `AUGraphGetNodeInfo` were deprecated in 10.5, and
+ * Lion's engine uses `AUGraphAddNode` and `AUGraphNodeInfo` instead -- **which
+ * are not aliases**: the class-data arguments are gone, so the arities differ,
+ * 3 and 4 against 5 and 6. Stubbed, the first returned a node id of zero and
+ * the second never handed back an AudioUnit -- and the graph still reported
+ * itself connected, opened and initialised, because *those* calls are shimmed
+ * under names that did not change. The render then had nothing to render into.
+ *
+ * Delegating rather than reimplementing, so one set of node bookkeeping serves
+ * both spellings and they cannot drift into disagreeing about what a node is.
+ */
+static int __cdecl sh_AUGraphAddNode(void *g, const unsigned *desc, int *node)
+{
+    return sh_AUGraphNewNode(g, desc, 0, NULL, node);
+}
+
+static int __cdecl sh_AUGraphNodeInfo(void *g, int node, unsigned *desc,
+                                      au_obj **unit)
+{
+    return sh_AUGraphGetNodeInfo(g, node, desc, NULL, NULL, unit);
+}
+
 static int __cdecl sh_AUGraphConnectNodeInput(void *g, int src, unsigned so,
                                               int dst, unsigned di)
 {
