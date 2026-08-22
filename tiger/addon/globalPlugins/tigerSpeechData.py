@@ -35,14 +35,38 @@ if _ENGINE_DIR not in sys.path:
 
 import tree                                                   # noqa: E402
 
+#: **One start-up dialog between all the Macintosh speech add-ons, not one
+#: each.** They run in the same NVDA process, so the first to get here speaks
+#: for the rest by claiming this attribute on `globalVars`.
+#:
+#: Tested by renaming the shared `macintalk` folder and restarting: three
+#: add-ons meant *three* modal dialogs stacked at start-up, each naming its own
+#: engine, with nothing in the Tools menu to reach the other two afterwards.
+#: For a screen-reader user that is three dialogs to hear and dismiss before
+#: NVDA is usable.
+#:
+#: `dict.setdefault` rather than get-then-set: three `threading.Timer(6.0)`
+#: fire within milliseconds of each other, and setdefault is one atomic
+#: operation under the GIL where a read followed by a write is two.
+#:
+#: Suppressing the others is only safe because of the Tools menu entry below --
+#: without a way to ask again on purpose, a suppressed dialog is a lost one.
+_SESSION_CLAIM = "_macintalkEngineDialogShown"
+
+
+def _claim_the_startup_dialog(who):
+    """-> True if this add-on is the one that should ask this session."""
+    return globalVars.__dict__.setdefault(_SESSION_CLAIM, who) == who
+
+
 #: Written only when the user explicitly says "stop asking".
 _MARKER = "do-not-ask"
 
 _MESSAGE = (
     "Tiger-speech has no engine to run yet.\n\n"
     "This add-on ships no part of Apple's software. You supply it from your "
-    "own Mac OS X 10.4 install disc, and until then the synthesizer will not "
-    "appear in NVDA's list at all.\n\n"
+    "own Mac OS X 10.4 install disc. The synthesizer is listed in NVDA either "
+    "way, and says what is missing if you select it before then.\n\n"
     "Put the extracted Speech folder and SpeechDictionary.framework into the "
     "macintalk\\tiger folder. The extract_tiger.py tool in the project "
     "repository will do that for you from an installer image; there is a "
@@ -96,13 +120,73 @@ you and would like the reminder back.
 
 class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 
+    #: Shown in NVDA's Tools menu. Translators: an item in NVDA's Tools menu.
+    MENU_LABEL = _("&Tiger speech engine...")
+    MENU_HELP = _("Check whether tigerspeech can find its engine, and open the "
+                  "folder it goes in.")
+
     def __init__(self):
         super().__init__()
+        self._menuItem = None
         if globalVars.appArgs.secure:
             log.info("Tiger-speech: secure mode, not checking for the engine")
             return
+        self._addMenuItem()
         log.info("Tiger-speech: engine check armed")
         threading.Timer(6.0, self._check).start()
+
+    def _addMenuItem(self):
+        """A way to ask on purpose, which is what makes "do not ask" safe.
+
+        Without this, saying no once meant deleting a file called
+        `do-not-ask` by hand to ever see it again -- and there was no route at
+        all to "is my engine actually installed?" short of selecting the
+        synthesizer and listening for silence.
+        """
+        try:
+            sysTrayIcon = gui.mainFrame.sysTrayIcon
+            self._menuItem = sysTrayIcon.toolsMenu.Append(
+                wx.ID_ANY, self.MENU_LABEL, self.MENU_HELP)
+            sysTrayIcon.Bind(wx.EVT_MENU, self._onMenu, self._menuItem)
+            log.info("Tiger-speech: added the Tools menu item")
+        except Exception:
+            # Never fatal: the add-on still speaks without a menu entry, and
+            # global plugins load while the GUI is still assembling itself.
+            log.error("Tiger-speech: could not add the Tools menu item",
+                      exc_info=True)
+
+    def terminate(self):
+        """Take the menu item away again, or reloading duplicates it."""
+        try:
+            if self._menuItem is not None:
+                gui.mainFrame.sysTrayIcon.toolsMenu.Remove(self._menuItem.Id)
+                self._menuItem.Destroy()
+                self._menuItem = None
+        except Exception:
+            log.error("Tiger-speech: could not remove the Tools menu item",
+                      exc_info=True)
+        super().terminate()
+
+    def _onMenu(self, evt):
+        """Always ask, whatever the marker says and whoever else asked today.
+
+        Somebody who opens this from a menu is asking the question right now,
+        and answering "you said not to ask" would be obtuse.
+        """
+        ok, lines = tree.explain()
+        log.info("Tiger-speech: engine %s (from the Tools menu)\n  %s"
+                 % ("ready" if ok else "NOT ready", "\n  ".join(lines)))
+        folder = tree.config_dir()
+        try:
+            os.makedirs(folder, exist_ok=True)
+        except OSError:
+            pass
+        if ok:
+            gui.messageBox(
+                "tigerspeech has its engine.\n\n%s" % "\n".join(lines),
+                "Tiger-speech", wx.OK | wx.ICON_INFORMATION)
+            return
+        self._ask(folder)
 
     def _check(self):
         """Decide whether to ask, and leave a record either way.
@@ -129,6 +213,10 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
             if not os.path.exists(readme):
                 with open(readme, "w", encoding="utf-8") as f:
                     f.write(_README)
+            if not _claim_the_startup_dialog("tigerspeech"):
+                log.info("Tiger-speech: another Macintosh speech add-on has already\n"
+                         "  asked this session; the Tools menu still has ours")
+                return
             log.info("Tiger-speech: showing the engine-missing dialog")
             wx.CallAfter(self._ask, folder)
         except Exception:
