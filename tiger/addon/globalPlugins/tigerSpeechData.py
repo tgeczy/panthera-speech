@@ -164,6 +164,13 @@ def _engine_report():
             ok, detail, folder = False, ["could not be checked"], "?"
         lines.append(r["label"])
         lines.append("    %s   %s" % ("ready  " if ok else "MISSING", folder))
+        # Invisible state that presents exactly like a broken dialog:
+        # somebody clicks "do not ask again" during a test and wonders
+        # months later why start-up says nothing.
+        if os.path.exists(os.path.join(folder, _MARKER)):
+            lines.append("        start-up reminders are OFF for this "
+                         "one -- delete %s in the folder above to turn "
+                         "them back on" % _MARKER)
         for d in detail:
             lines.append("        %s" % d)
         lines.append("")
