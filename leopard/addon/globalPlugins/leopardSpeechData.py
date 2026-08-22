@@ -122,8 +122,9 @@ def _combined_message(missing):
                 "supply that from %s. There is a README in the folder naming "
                 "the extractor to run and what it needs.\n\n"
                 "The synthesizer is listed in NVDA either way, and says what "
-                "is missing if you select it. There is an entry in the Tools "
-                "menu for it too.\n\n" % missing[0]["source"])
+                "is missing if you select it, and you can ask this "
+                "question again whenever you like from NVDA's Tools "
+                "menu.\n\n" % missing[0]["source"])
         refuse = "No  -  do not ask again\n"
     else:
         head = ("%d Macintosh speech add-ons have no engine yet:\n\n"
@@ -135,8 +136,9 @@ def _combined_message(missing):
                 "disk images. Each folder has a README naming the extractor to "
                 "run and what it needs.\n\n"
                 "All of these synthesizers are listed in NVDA either way, and "
-                "each says what is missing if you select it. There is an entry "
-                "in the Tools menu for each as well.\n\n")
+                "each says what is missing if you select it, and you can "
+                "ask this question again whenever you like from NVDA's "
+                "Tools menu.\n\n")
         refuse = "No  -  do not ask again about any of them\n"
     return (head + body +
             "Yes  -  open the folder\n" + refuse +
@@ -181,6 +183,13 @@ def _engine_report():
             missing.append({"label": r["label"], "folder": folder,
                             "source": r["source"]})
     return lines, missing
+
+
+#: The dialog speaks for every add-on that registered, so it is titled
+#: after none of them. It read "Tiger-speech" while listing outSPOKEN and
+#: Leopard -- confusing in the ordinary way, and worse on a screen reader,
+#: where the title is the first thing announced.
+_DIALOG_TITLE = "Macintosh speech"
 
 
 #: Written only when the user explicitly says "stop asking".
@@ -401,7 +410,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
         """
         try:
             answer = gui.messageBox(_combined_message(missing),
-                                    "Leopard-speech",
+                                    _DIALOG_TITLE,
                                     wx.YES_NO | wx.CANCEL | wx.ICON_INFORMATION)
             if answer == wx.YES:
                 os.startfile(_folder_to_open(missing))
