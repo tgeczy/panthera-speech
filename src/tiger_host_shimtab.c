@@ -317,6 +317,23 @@ static const shim g_shims[] = {
     { "_vDSP_vmsb",        (void *)sh_vDSP_vmsb        },
     { "_vDSP_vmma",        (void *)sh_vDSP_vmma        },
     { "_vmul",             (void *)sh_vmul             },
+    /* 10.7 correlates its WSOLA search in the frequency domain, which
+     * Leopard never did -- see the note in tiger_host_accel.c. */
+    { "_create_fftsetup",  (void *)sh_create_fftsetup  },
+    { "_destroy_fftsetup", (void *)sh_destroy_fftsetup },
+    { "_fft_zrip",         (void *)sh_fft_zrip         },
+    { "_ctoz",             (void *)sh_ctoz             },
+    { "_ztoc",             (void *)sh_ztoc             },
+    { "_vDSP_zvcmul",      (void *)sh_vDSP_zvcmul      },
+    { "_vDSP_maxvi",       (void *)sh_vDSP_maxvi       },
+    { "_vDSP_vma",         (void *)sh_vDSP_vma         },
+    { "_vDSP_sve",         (void *)sh_vDSP_sve         },
+    { "_vDSP_vclip",       (void *)sh_vDSP_vclip       },
+    { "_vDSP_vramp",       (void *)sh_vDSP_vramp       },
+    { "_catlas_sset",      (void *)sh_catlas_sset      },
+    { "_exp2f",            (void *)sh_exp2f            },
+    { "_CFAbsoluteTimeGetCurrent",
+                           (void *)sh_CFAbsoluteTimeGetCurrent },
     { "_vDSP_hann_window", (void *)sh_vDSP_hann_window },
     { "_lrintf",           (void *)sh_lrintf           },
     { NULL, NULL }

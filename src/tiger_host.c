@@ -247,6 +247,13 @@ int main(int argc, char **argv)
         setvbuf(stderr, NULL, _IONBF, 0);
         return stat_check();
     }
+    /* Lion's Accelerate surface -- the FFT its WSOLA correlates with, and the
+     * vector helpers around it -- printed for numpy to check; see
+     * panthera/tests/test_vdsp.py. */
+    if (argc > 1 && !strcmp(argv[1], "--vdsp-check")) {
+        setvbuf(stderr, NULL, _IONBF, 0);
+        return vdsp_check();
+    }
     /* Print the compressed dyld info of one Mach-O and stop.  Compared
      * against tools/machodyld.py, which reads the same streams by a
      * different route; see panthera/tests/test_dyld_info.py. */

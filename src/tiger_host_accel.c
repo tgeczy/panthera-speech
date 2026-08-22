@@ -238,3 +238,463 @@ static long __cdecl sh_lrintf(float x)
     }
     return (long)r;
 }
+
+
+/* ---- 10.7's FFT ---------------------------------------------------------
+ *
+ * Lion's WSOLA finds its overlap point by **cross-correlation in the
+ * frequency domain** where Leopard's worked in the time domain: transform
+ * both windows, multiply one by the conjugate of the other, come back, and
+ * take the index of the peak.  That is eleven Accelerate functions Leopard
+ * never imports, and without them Alex, Bruce and Agnes all die at the same
+ * instruction in `MTMBModRateWsola::ModifyRate`.
+ *
+ * Ten of them are a line each.  The FFT is not, and it is the one worth being
+ * careful about: an FFT that is subtly wrong produces plausible numbers, and
+ * plausible numbers in a correlation put the peak in the wrong place -- a
+ * voice that sounds slightly off rather than a crash.  So it is checked
+ * against numpy through `--vdsp-check`; see panthera/tests/test_vdsp.py.
+ */
+
+/* A DSPSplitComplex is two pointers: the reals and the imaginaries kept apart
+ * rather than interleaved, so each can be walked with its own stride. */
+typedef struct { float *realp; float *imagp; } split_complex;
+
+#define FFT_FORWARD  1
+#define FFT_INVERSE (-1)
+#define ACCEL_PI 3.14159265358979323846
+
+/* Apple's FFTSetup is opaque; ours only has to be something `fft_zrip` can
+ * read back and `destroy_fftsetup` can free. */
+typedef struct { unsigned log2n, n; } fft_setup;
+
+static void * __cdecl sh_create_fftsetup(vdsp_length log2n, int radix)
+{
+    fft_setup *s;
+    if (radix != 0) {                    /* kFFTRadix2 is the only one used */
+        fprintf(stderr, "tiger_host: create_fftsetup asked for radix %d, "
+                        "which this does not implement\n", radix);
+        return NULL;
+    }
+    if (log2n > 20) return NULL;
+    s = (fft_setup *)calloc(1, sizeof(*s));
+    if (!s) return NULL;
+    s->log2n = (unsigned)log2n;
+    s->n = 1u << log2n;
+    return s;
+}
+
+static void __cdecl sh_destroy_fftsetup(void *setup)
+{
+    free(setup);
+}
+
+/* An in-place complex FFT of `m` points, iterative radix-2.
+ *
+ * `sign` is -1 for the forward transform, matching e^(-2*pi*i*kn/N), which is
+ * what both vDSP and numpy mean by forward.  No scaling is applied; the
+ * callers below do whatever their convention wants. */
+static void fft_complex(double *re, double *im, unsigned m, int sign)
+{
+    unsigned i, j, len, half, k;
+    for (i = 1, j = 0; i < m; i++) {         /* bit reversal */
+        unsigned bit = m >> 1;
+        for (; j & bit; bit >>= 1) j ^= bit;
+        j ^= bit;
+        if (i < j) {
+            double t = re[i]; re[i] = re[j]; re[j] = t;
+            t = im[i]; im[i] = im[j]; im[j] = t;
+        }
+    }
+    for (len = 2; len <= m; len <<= 1) {
+        half = len >> 1;
+        for (i = 0; i < m; i += len) {
+            for (k = 0; k < half; k++) {
+                double ang = 2.0 * ACCEL_PI * k / (double)len;
+                double c = cos(ang);
+                double s = sin(ang) * (sign < 0 ? -1.0 : 1.0);
+                unsigned a = i + k, b = a + half;
+                double ur = re[a], ui = im[a];
+                double vr = re[b] * c - im[b] * s;
+                double vi = re[b] * s + im[b] * c;
+                re[a] = ur + vr; im[a] = ui + vi;
+                re[b] = ur - vr; im[b] = ui - vi;
+            }
+        }
+    }
+}
+
+/* vDSP_fft_zrip(setup, ioData, stride, log2n, direction): a **packed real**
+ * FFT, in place.
+ *
+ * Packed means N/2 slots hold what N/2+1 complex bins would, by putting the
+ * two purely-real bins together: after a forward transform `realp[0]` is DC
+ * and `imagp[0]` is Nyquist.  Bin zero's imaginary part is always zero for
+ * real input, so that slot is free and the format wastes nothing.
+ *
+ * **The result is scaled by two** against the textbook DFT.  That is vDSP's
+ * convention rather than an accident here.  For this engine it is invisible,
+ * because the value goes to `vDSP_maxvi` and a uniform scale cannot move an
+ * argmax -- but it is what any other caller would expect.
+ */
+static void __cdecl sh_fft_zrip(void *setup, split_complex *io,
+                                vdsp_stride stride, vdsp_length log2n,
+                                int direction)
+{
+    fft_setup *s = (fft_setup *)setup;
+    unsigned n = 1u << log2n, h = n / 2, k;
+    double *re, *im, *ar, *ai;
+
+    if (!io || !io->realp || !io->imagp || h == 0) return;
+    if (s && s->n < n) {
+        fprintf(stderr, "tiger_host: fft_zrip asked for 2^%u with a setup "
+                        "built for 2^%u\n", (unsigned)log2n, s->log2n);
+        return;
+    }
+    re = (double *)malloc(sizeof(double) * h);
+    im = (double *)malloc(sizeof(double) * h);
+    ar = (double *)malloc(sizeof(double) * h);
+    ai = (double *)malloc(sizeof(double) * h);
+    if (!re || !im || !ar || !ai) {
+        free(re); free(im); free(ar); free(ai);
+        return;
+    }
+    for (k = 0; k < h; k++) {
+        re[k] = io->realp[k * stride];
+        im[k] = io->imagp[k * stride];
+    }
+
+    if (direction == FFT_FORWARD) {
+        fft_complex(re, im, h, -1);
+        /* The N/2-point spectrum of (even + i*odd) carries both halves; the
+         * even part is the hermitian-symmetric piece and the odd part the
+         * antisymmetric one, recombined with a half-bin twiddle. */
+        ar[0] = re[0] + im[0];               /* DC */
+        ai[0] = re[0] - im[0];               /* Nyquist, packed alongside */
+        for (k = 1; k < h; k++) {
+            unsigned m = h - k;
+            double er = 0.5 * (re[k] + re[m]);
+            double ei = 0.5 * (im[k] - im[m]);
+            double orr = 0.5 * (im[k] + im[m]);
+            double oi = -0.5 * (re[k] - re[m]);
+            double c = cos(-2.0 * ACCEL_PI * k / (double)n);
+            double sn = sin(-2.0 * ACCEL_PI * k / (double)n);
+            ar[k] = er + (orr * c - oi * sn);
+            ai[k] = ei + (orr * sn + oi * c);
+        }
+        for (k = 0; k < h; k++) {
+            io->realp[k * stride] = (float)(2.0 * ar[k]);
+            io->imagp[k * stride] = (float)(2.0 * ai[k]);
+        }
+    } else {
+        /* The inverse is written the long way round on purpose.
+         *
+         * Folding it into an N/2-point transform the way the forward branch
+         * does is a page of index algebra, and the first attempt was wrong in
+         * the one bin that carries two values -- which showed up not as a
+         * wrong level but as a **spectral tilt**, an error that still looks
+         * like a signal. So: unpack the half-spectrum into the whole one
+         * using the conjugate symmetry a real signal has, run an ordinary
+         * N-point inverse, and interleave.
+         *
+         * Twice the work of the clever version, on a transform this engine
+         * asks for about thirty times per utterance. That is not a trade
+         * worth thinking about, and being able to see it is correct is.
+         *
+         * Unnormalised deliberately: the caller's convention is that forward,
+         * inverse, and a division by 2N is the identity. Since the forward
+         * pass already carries vDSP's factor of two, leaving the inverse
+         * unscaled is exactly what makes that true. */
+        double *gr = (double *)malloc(sizeof(double) * n);
+        double *gi = (double *)malloc(sizeof(double) * n);
+        if (!gr || !gi) { free(gr); free(gi);
+                          free(re); free(im); free(ar); free(ai); return; }
+        gr[0] = re[0]; gi[0] = 0.0;              /* DC, real */
+        gr[h] = im[0]; gi[h] = 0.0;              /* Nyquist, unpacked */
+        for (k = 1; k < h; k++) {
+            gr[k] = re[k];      gi[k] = im[k];
+            gr[n - k] = re[k];  gi[n - k] = -im[k];   /* conjugate half */
+        }
+        fft_complex(gr, gi, n, +1);
+        for (k = 0; k < h; k++) {
+            io->realp[k * stride] = (float)gr[2 * k];
+            io->imagp[k * stride] = (float)gr[2 * k + 1];
+        }
+        free(gr); free(gi);
+    }
+    free(re); free(im); free(ar); free(ai);
+}
+
+/* ctoz/ztoc: interleaved to split and back.  `ctoz` reads an ordinary array
+ * as a run of complex pairs, so an N-sample real signal becomes N/2 slots
+ * with the even samples in realp and the odd in imagp -- exactly the packing
+ * `fft_zrip` wants. */
+static void __cdecl sh_ctoz(const float *C, vdsp_stride IC,
+                            split_complex *Z, vdsp_stride IZ, vdsp_length N)
+{
+    vdsp_length i;
+    for (i = 0; i < N; i++) {
+        Z->realp[i * IZ] = C[i * IC];
+        Z->imagp[i * IZ] = C[i * IC + 1];
+    }
+}
+
+static void __cdecl sh_ztoc(const split_complex *Z, vdsp_stride IZ,
+                            float *C, vdsp_stride IC, vdsp_length N)
+{
+    vdsp_length i;
+    for (i = 0; i < N; i++) {
+        C[i * IC]     = Z->realp[i * IZ];
+        C[i * IC + 1] = Z->imagp[i * IZ];
+    }
+}
+
+/* vDSP_zvcmul: C = conj(A) * B, elementwise.
+ *
+ * **The conjugate is the whole point.**  Multiplying two spectra convolves;
+ * multiplying by a conjugate correlates, and correlation is what a WSOLA
+ * search wants.  Backwards, it mirrors the result and puts the peak at minus
+ * the lag -- which would not crash, and would sound like a stutter. */
+static void __cdecl sh_vDSP_zvcmul(const split_complex *A, vdsp_stride IA,
+                                   const split_complex *B, vdsp_stride IB,
+                                   const split_complex *C, vdsp_stride IC,
+                                   vdsp_length N)
+{
+    vdsp_length i;
+    for (i = 0; i < N; i++) {
+        float ar = A->realp[i * IA], ai = A->imagp[i * IA];
+        float br = B->realp[i * IB], bi = B->imagp[i * IB];
+        C->realp[i * IC] = ar * br + ai * bi;
+        C->imagp[i * IC] = ar * bi - ai * br;
+    }
+}
+
+/* vDSP_maxvi(A, IA, C, I, N): the maximum, and **where it is**.
+ *
+ * The index is the half that matters -- it is the lag the correlation peaked
+ * at, and so where the next grain is taken from. */
+static void __cdecl sh_vDSP_maxvi(const float *A, vdsp_stride IA, float *C,
+                                  vdsp_length *I, vdsp_length N)
+{
+    vdsp_length n, best = 0;
+    float top;
+    if (!A || N == 0) return;
+    top = A[0];
+    for (n = 1; n < N; n++) {
+        float v = A[n * IA];
+        if (v > top) { top = v; best = n; }
+    }
+    if (C) *C = top;
+    if (I) *I = best;
+}
+
+/* vDSP_vma(A,IA,B,IB,C,IC,D,ID,N): D = A*B + C. */
+static void __cdecl sh_vDSP_vma(const float *A, vdsp_stride IA,
+                                const float *B, vdsp_stride IB,
+                                const float *C, vdsp_stride IC,
+                                float *D, vdsp_stride ID, vdsp_length N)
+{
+    vdsp_length n;
+    for (n = 0; n < N; n++)
+        D[n * ID] = A[n * IA] * B[n * IB] + C[n * IC];
+}
+
+/* vDSP_sve(A,IA,C,N): *C = sum of A -- svemg without the magnitudes. */
+static void __cdecl sh_vDSP_sve(const float *A, vdsp_stride IA, float *C,
+                                vdsp_length N)
+{
+    vdsp_length n;
+    double sum = 0.0;
+    for (n = 0; n < N; n++) sum += A[n * IA];
+    if (C) *C = (float)sum;
+}
+
+/* vDSP_vclip(A,IA,LO,HI,C,IC,N): clamp into [*LO, *HI]. */
+static void __cdecl sh_vDSP_vclip(const float *A, vdsp_stride IA,
+                                  const float *LO, const float *HI,
+                                  float *C, vdsp_stride IC, vdsp_length N)
+{
+    vdsp_length n;
+    float lo = LO ? *LO : 0.0f, hi = HI ? *HI : 0.0f;
+    for (n = 0; n < N; n++) {
+        float v = A[n * IA];
+        C[n * IC] = v < lo ? lo : (v > hi ? hi : v);
+    }
+}
+
+/* vDSP_vramp(A,B,C,IC,N): C[n] = *A + n * *B. */
+static void __cdecl sh_vDSP_vramp(const float *A, const float *B,
+                                  float *C, vdsp_stride IC, vdsp_length N)
+{
+    vdsp_length n;
+    double v = A ? *A : 0.0, step = B ? *B : 0.0;
+    for (n = 0; n < N; n++, v += step) C[n * IC] = (float)v;
+}
+
+/* catlas_sset(N, alpha, X, incX): fill.  The BLAS-adjacent spelling Apple
+ * ships rather than a vDSP one. */
+static void __cdecl sh_catlas_sset(int N, float alpha, float *X, int incX)
+{
+    int n;
+    for (n = 0; n < N; n++) X[n * incX] = alpha;
+}
+
+static float __cdecl sh_exp2f(float x) { return (float)pow(2.0, (double)x); }
+
+/* CFAbsoluteTimeGetCurrent: seconds since 2001, as a double.  The engine
+ * times itself with it, so only differences matter -- the epoch is honest
+ * rather than important. */
+static double __cdecl sh_CFAbsoluteTimeGetCurrent(void)
+{
+    FILETIME ft;
+    unsigned long long t;
+    GetSystemTimeAsFileTime(&ft);
+    t = ((unsigned long long)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+    return (double)t / 1e7 - 12622780800.0;   /* 1601 -> 2001 */
+}
+
+
+/* ---- --vdsp-check -------------------------------------------------------
+ *
+ * The Accelerate routines, on fixed inputs, printed for numpy to check.
+ *
+ * Written to **stdout** for the reason `--dyld-check` is: `printf` is
+ * redirected to stderr because serve mode puts PCM on stdout, and in a check
+ * the report *is* the data.  Both sides build the inputs from the same
+ * formula, so nothing has to be parsed back out of here except results.
+ */
+static void vd_emit(const char *name, const float *v, int n)
+{
+    int i;
+    fprintf(stdout, "[vdsp] %s", name);
+    for (i = 0; i < n; i++) fprintf(stdout, " %.9g", (double)v[i]);
+    fprintf(stdout, "\n");
+}
+
+/* sin(0.1 i) + 0.5 cos(0.37 i) -- deliberately not a single tone, which would
+ * land all its energy in one bin and hide almost any error. */
+static void vd_signal(float *out, int n, int skip)
+{
+    int i;
+    for (i = 0; i < n; i++) {
+        double t = (double)(i + skip);
+        out[i] = (float)(sin(0.1 * t) + 0.5 * cos(0.37 * t));
+    }
+}
+
+static int vdsp_check(void)
+{
+    enum { NMAX = 256 };
+    float x[NMAX], y[NMAX], z[NMAX], tmp[NMAX * 2];
+    float rp[NMAX], ip[NMAX];
+    split_complex sc, sa, sb, scc;
+    float ra[NMAX], ia[NMAX], rb[NMAX], ib[NMAX], rc[NMAX], ic[NMAX];
+    vdsp_length idx = 0;
+    float val = 0.0f;
+    int sizes[4], si;
+
+    sc.realp = rp; sc.imagp = ip;
+
+    /* ctoz and ztoc */
+    vd_signal(x, 16, 0);
+    sh_ctoz(x, 2, &sc, 1, 8);
+    {
+        float both[16];
+        int i;
+        for (i = 0; i < 8; i++) { both[i] = rp[i]; both[8 + i] = ip[i]; }
+        vd_emit("ctoz", both, 16);
+    }
+    sh_ztoc(&sc, 1, z, 2, 8);
+    vd_emit("ztoc", z, 16);
+
+    /* the FFT, forward and round trip */
+    sizes[0] = 8; sizes[1] = 16; sizes[2] = 64; sizes[3] = 256;
+    for (si = 0; si < 4; si++) {
+        int n = sizes[si], h = n / 2, i, log2n = 0;
+        char name[32];
+        void *setup;
+        while ((1 << log2n) < n) log2n++;
+        setup = sh_create_fftsetup((vdsp_length)log2n, 0);
+
+        vd_signal(x, n, 0);
+        sh_ctoz(x, 2, &sc, 1, h);
+        sh_fft_zrip(setup, &sc, 1, (vdsp_length)log2n, FFT_FORWARD);
+        {
+            float both[NMAX];
+            for (i = 0; i < h; i++) { both[i] = rp[i]; both[h + i] = ip[i]; }
+            _snprintf(name, sizeof(name), "fftfwd%d", n);
+            name[sizeof(name) - 1] = 0;
+            vd_emit(name, both, n);
+        }
+        /* and back: forward, inverse, divide by 2n */
+        sh_fft_zrip(setup, &sc, 1, (vdsp_length)log2n, FFT_INVERSE);
+        for (i = 0; i < h; i++) {
+            rp[i] /= (float)(2 * n);
+            ip[i] /= (float)(2 * n);
+        }
+        sh_ztoc(&sc, 1, tmp, 2, h);
+        _snprintf(name, sizeof(name), "fftrt%d", n);
+        name[sizeof(name) - 1] = 0;
+        vd_emit(name, tmp, n);
+        sh_destroy_fftsetup(setup);
+    }
+
+    /* zvcmul, on two different signals */
+    vd_signal(x, 8, 0);
+    vd_signal(y, 8, 3);
+    sa.realp = ra; sa.imagp = ia;
+    sb.realp = rb; sb.imagp = ib;
+    scc.realp = rc; scc.imagp = ic;
+    sh_ctoz(x, 2, &sa, 1, 4);
+    sh_ctoz(y, 2, &sb, 1, 4);
+    sh_vDSP_zvcmul(&sa, 1, &sb, 1, &scc, 1, 4);
+    {
+        float both[8];
+        int i;
+        for (i = 0; i < 4; i++) { both[i] = rc[i]; both[4 + i] = ic[i]; }
+        vd_emit("zvcmul", both, 8);
+    }
+
+    /* maxvi */
+    vd_signal(x, 32, 0);
+    sh_vDSP_maxvi(x, 1, &val, &idx, 32);
+    {
+        float pair[2];
+        pair[0] = val;
+        pair[1] = (float)idx;
+        vd_emit("maxvi", pair, 2);
+    }
+
+    /* vma: D = A*B + C */
+    vd_signal(x, 8, 0);
+    vd_signal(y, 8, 1);
+    vd_signal(z, 8, 2);
+    sh_vDSP_vma(x, 1, y, 1, z, 1, tmp, 1, 8);
+    vd_emit("vma", tmp, 8);
+
+    /* sve */
+    vd_signal(x, 16, 0);
+    sh_vDSP_sve(x, 1, &val, 16);
+    vd_emit("sve", &val, 1);
+
+    /* vclip */
+    {
+        float lo = -0.25f, hi = 0.75f;
+        vd_signal(x, 8, 0);
+        sh_vDSP_vclip(x, 1, &lo, &hi, tmp, 1, 8);
+        vd_emit("vclip", tmp, 8);
+    }
+
+    /* vramp */
+    {
+        float start = 1.5f, step = 0.25f;
+        sh_vDSP_vramp(&start, &step, tmp, 1, 8);
+        vd_emit("vramp", tmp, 8);
+    }
+
+    /* catlas_sset */
+    sh_catlas_sset(8, 3.5f, tmp, 1);
+    vd_emit("sset", tmp, 8);
+
+    return 0;
+}
