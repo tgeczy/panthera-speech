@@ -126,13 +126,18 @@ def _combined_message(missing):
     if one:
         head = ("%s has no engine yet.\n\nIt goes in:\n    %s\n"
                 % (missing[0]["label"], missing[0]["folder"]))
-        body = ("\nIt ships no part of Apple's or Berkeley's software. You "
-                "supply that from %s. There is a README in the folder naming "
-                "the extractor to run and what it needs.\n\n"
-                "The synthesizer is listed in NVDA either way, and says what "
-                "is missing if you select it, and you can ask this "
-                "question again whenever you like from NVDA's Tools "
-                "menu.\n\n" % missing[0]["source"])
+        body = ("\nThis add-on ships no part of Apple's or Berkeley's "
+                "software, and it never will. That is a decision rather than "
+                "an oversight, and the project README says why. You supply it "
+                "from %s.\n\n"
+                "There is a tool for that in this add-on: point it at an ISO "
+                "or a disk image and it works out which release it is and "
+                "installs the engine for you. Nothing else is needed -- no "
+                "Python and no unpacking software -- and nothing is "
+                "downloaded.\n\n"
+                "You can open it at any time from NVDA's Tools menu, under "
+                "Mac OS X speech data. It also says what each engine is "
+                "missing.\n\n" % missing[0]["source"])
         refuse = "No  -  do not ask again\n"
     else:
         head = ("%d Macintosh speech engines are missing:\n\n"
@@ -140,16 +145,21 @@ def _combined_message(missing):
         for m in missing:
             head += "    %s\n        %s\n" % (m["label"], m["folder"])
         body = ("\nNone of them ships any part of Apple's or Berkeley's "
-                "software. You supply that from your own Macintosh discs and "
-                "disk images. Each folder has a README naming the extractor to "
-                "run and what it needs.\n\n"
-                "All of these synthesizers are listed in NVDA either way, and "
-                "each says what is missing if you select it, and you can "
-                "ask this question again whenever you like from NVDA's "
-                "Tools menu.\n\n")
+                "software, and none of them ever will. That is a decision "
+                "rather than an oversight, and the project README says why. "
+                "You supply it from your own Macintosh discs and disk "
+                "images.\n\n"
+                "There is a tool for that in this add-on: point it at an ISO "
+                "or a disk image and it works out which release it is and "
+                "installs the engine for you. Nothing else is needed -- no "
+                "Python and no unpacking software -- and nothing is "
+                "downloaded.\n\n"
+                "You can open it at any time from NVDA's Tools menu, under "
+                "Mac OS X speech data. It also says what each engine is "
+                "missing.\n\n")
         refuse = "No  -  do not ask again about any of them\n"
     return (head + body +
-            "Yes  -  open the folder\n" + refuse +
+            "Yes  -  open the speech data tool now\n" + refuse +
             "Cancel  -  remind me next time NVDA starts")
 
 
@@ -744,6 +754,25 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
         except Exception:
             log.error("Panthera: combined dialog failed", exc_info=True)
 
+    def _openManager(self, missing):
+        """Show the speech data dialog. -> True if it opened.
+
+        Reporting success falsely here would leave somebody who just asked for
+        help with nothing at all, so the caller falls back to opening the
+        folder -- which is what this dialog did before there was better.
+        """
+        try:
+            import pantheramanager
+            lines, _still_missing = _engine_report()
+            pantheramanager.SpeechDataDialog.show(
+                gui.mainFrame, GENERATIONS, lines,
+                select=missing[0]["label"] if len(missing) == 1 else None)
+            return True
+        except Exception:
+            log.error("Panthera: could not open the speech data dialog",
+                      exc_info=True)
+            return False
+
     def _ask(self, missing):
         """Ask once, about all of them, and honour the answer for all of them.
 
@@ -764,7 +793,18 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
                                     _DIALOG_TITLE,
                                     wx.YES_NO | wx.CANCEL | wx.ICON_INFORMATION)
             if answer == wx.YES:
-                os.startfile(_folder_to_open(missing))
+                # **The tool, not the folder.**  Opening the folder was the
+                # only thing this dialog could offer while the answer to "how
+                # do I get the engine" was a README, a Python install and a
+                # command line.  It is a file picker now, and this dialog is
+                # the first thing a new user ever sees, so it should offer the
+                # thing that finishes the job rather than the folder it
+                # finishes into.
+                #
+                # The folder is not lost -- the tool has a button for it, and
+                # opens with the right generation already selected.
+                if not self._openManager(missing):
+                    os.startfile(_folder_to_open(missing))
             elif answer == wx.NO:
                 # Answered about all of them, so recorded for all of them.
                 for m in missing:

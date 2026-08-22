@@ -130,13 +130,68 @@ its own six releases intact.
 ## Nothing of Apple's is here
 
 **No engine and no voice ships from this repository**, and none is committed
-to it. Each add-on has an extractor that pulls the engine out of an install
-image *you own*; `package.py` refuses to build a release containing engine
-data, and `tools/check_clean.py` refuses one carrying a developer's paths.
+to it. The add-on reads an install image *you own* and takes the engine out of
+it; `package.py` refuses to build a release containing engine data, and
+`tools/check_clean.py` refuses one carrying a developer's paths.
 
 That is the whole arrangement, and it is not a formality: what is being
 licensed here is the work of making Apple's engine run somewhere it was never
 built to run, and nothing else.
+
+### Why it will not be bundled, however often it is asked
+
+It is asked often, and always in good faith, and the usual argument is that
+Apple has better things to do than sue a hobbyist. That is probably true and
+it is not the risk.
+
+**The risk is a takedown notice, not a lawsuit.** It costs a rights holder
+about an hour of a paralegal's time, GitHub removes the repository first and
+hears the dispute afterwards, and Apple demonstrably does this — the iBoot
+source leak, the Hackintosh distributions, Psystar, Corellium. None of those
+needed anyone at Apple to have an opinion about a screen reader.
+
+**And "it is a twenty-year-old system" helps less than it sounds.** Copyright
+does not lapse because a product is discontinued, and this particular data has
+not gone anywhere: Alex still ships in current macOS, and Lion's `meow` 2.0.0
+bank and Sequoia's declare the same version with 22 of 26 descriptor lines
+identical. Distributing Lion's Alex is closer to distributing a current
+product than to distributing an artefact.
+
+**The asymmetry settles it.** Bundling the data saves each user one setup
+step. One notice removes the repository — every release, the loader, the
+extractors, the drivers, four generations of work that infringes nothing and
+is the only part anyone here actually wrote. You cannot buy that back, and an
+add-on carrying Apple binaries would not be in the NVDA add-on store either,
+which is where the people who most need the convenience actually look.
+
+So the friction had to go somewhere else, and it went into the tool: **Tools →
+Mac OS X speech data → point it at your disc image.** No Python, no command
+line, no unpacking software, nothing downloaded. That is the answer to the
+convenience argument, and it is a better one than shipping the bytes.
+
+### The same posture, done by someone else
+
+[Google TTS For NVDA](https://github.com/nguyenanhduc09/Google-TTS-For-NVDA)
+is worth reading if this seems over-cautious. It bundles Google's WASM speech
+engine, because that engine is Chromium's and BSD-3-Clause explicitly permits
+binary redistribution. It does **not** bundle the voices: `voices.json` is a
+catalogue of URLs on Google's own CDN, and its own notice says so —
+*"Downloaded .zvoice voice packages are not distributed as part of this
+add-on."*
+
+Ship what the licence permits, fetch the rest from whoever owns it, document
+where everything came from. Apple gives us neither half — MacinTalk is not
+BSD, which is why this repository is a loader rather than a bundle, and Apple
+does not serve the voice data from a public URL, which is why there is an
+extractor.
+
+### This notice is also a fingerprint
+
+If a fork ever does bundle the engine, it cannot keep this section — it would
+be describing a rule it is breaking. Its absence, or its quiet replacement
+with something friendlier, is a reliable way to tell a redistribution apart
+from a genuine derivative of this work. That is worth stating plainly rather
+than leaving to be inferred.
 
 ## Sibling project
 

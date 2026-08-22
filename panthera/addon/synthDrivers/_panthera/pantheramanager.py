@@ -48,19 +48,24 @@ class SpeechDataDialog(wx.Dialog):
     _instance = None
 
     @classmethod
-    def show(cls, parent, generations, report_lines):
-        """Only ever one, and bring it forward if it is already up."""
+    def show(cls, parent, generations, report_lines, select=None):
+        """Only ever one, and bring it forward if it is already up.
+
+        `select` is a generation label to land on.  The start-up dialog knows
+        which engine it was asking about, and arriving on a different row
+        would make the user go and find it.
+        """
         if cls._instance is not None:
             try:
                 cls._instance.Raise()
                 return
             except RuntimeError:
                 cls._instance = None
-        dialog = cls(parent, generations, report_lines)
+        dialog = cls(parent, generations, report_lines, select)
         cls._instance = dialog
         dialog.Show()
 
-    def __init__(self, parent, generations, report_lines):
+    def __init__(self, parent, generations, report_lines, select=None):
         # Translators: the title of the Mac OS X speech data dialog.
         super().__init__(parent, title=_("Mac OS X speech data"))
         self._generations = generations
@@ -120,6 +125,12 @@ class SpeechDataDialog(wx.Dialog):
 
         self._report = report_lines
         self.refresh()
+        if select:
+            for index, row in enumerate(self._rows):
+                if row[0]["label"] == select:
+                    self.list.SetSelection(index)
+                    self._showDetails()
+                    break
         self.list.SetFocus()
 
     # -- what is installed ------------------------------------------------
