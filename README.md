@@ -40,9 +40,38 @@ The cat that is not is the **mountain lion** — a puma — and 10.8 Mountain Li
 is exactly where this work stops, because it is the first release with no i386
 slice at all. The name draws its own scope line, including the far edge of it.
 
-**64-bit is not under consideration**, and that is a decision about people
-rather than about difficulty: NVDA has a large base of users on builds where a
-64-bit-only engine simply would not load. A 32-bit engine reaches all of them.
+**32-bit is not a compatibility concession — it is the cheap path, and 64-bit
+is a different project.** This used to say the choice was about reaching users
+on 32-bit builds of NVDA. That argument does not survive contact: the engine
+runs in its **own process** and talks over a pipe, so NVDA's bitness has never
+mattered — the same binary already serves 32-bit NVDA 2023.1 and 64-bit NVDA
+2026.1. The only people a 64-bit host would exclude are those on 32-bit
+*Windows*, and in 2026 that is a rounding error.
+
+The real reason is the boundary, and it is measurable. Every engine through
+Lion ships an i386 slice, and **Darwin i386 and Win32 are both cdecl** —
+arguments on the stack, same order, same cleanup. So each of the ~360 symbols
+the engine imports can be an ordinary C function that it calls directly, with
+no glue at all.
+
+Darwin x86_64 and Windows x64 agree on almost nothing. System V AMD64 passes
+in RDI/RSI/RDX/RCX/R8/R9 with a 128-byte red zone below the stack pointer;
+Microsoft x64 passes in RCX/RDX/R8/R9 with 32 bytes of shadow space and no red
+zone, and the struct and varargs rules differ too. The import count barely
+moves — Lion is 364 symbols as i386 and 361 as x86_64, Mountain Lion 359 — but
+every one of them would need a translating thunk, in both directions, where
+today it needs none. Windows does not honour the red zone either, so the
+engine's own leaf functions could be clobbered by anything the OS runs on that
+stack.
+
+Then the exceptions. All of these carry `__eh_frame`, `__gcc_except_tab` and
+`__unwind_info` — DWARF unwind tables. Windows x64 mandates table-based SEH
+with registered function tables, and a foreign DWARF-described frame is simply
+not in them.
+
+So the trade is a fundamentally different host in exchange for **one more
+generation** — 10.8 and later, which is where Apple stopped shipping i386.
+That is a real project someone could do. It is not this one.
 
 ## One loader
 
