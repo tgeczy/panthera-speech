@@ -112,11 +112,15 @@ def test_every_plugin_registers_what_the_report_reads(path):
     handler -- which NVDA swallows into the log, so it presents as a menu item
     that does nothing."""
     src = _source(path)
-    call = re.search(r"_register_reporter\(\{(.+?)\n\s*\}\)", src, re.S)
-    assert call, "%s never registers a reporter" % os.path.basename(path)
-    keys = set(re.findall(r'"(\w+)":', call.group(1)))
-    assert keys == {"label", "source", "explain", "folder"}, (
-        "%s registers %s" % (os.path.basename(path), sorted(keys)))
+    calls = re.findall(r"_register_reporter\(\{(.+?)\n\s*\}\)", src, re.S)
+    assert calls, "%s never registers a reporter" % os.path.basename(path)
+    # *Every* registration, not the first one. There is more than one now --
+    # the generations, and the older-add-ons conflict, which registers as an
+    # entry of its own precisely so an older plugin's report will carry it.
+    for call in calls:
+        keys = set(re.findall(r'"(\w+)":', call))
+        assert keys == {"label", "source", "explain", "folder"}, (
+            "%s registers %s" % (os.path.basename(path), sorted(keys)))
 
 
 @pytest.mark.parametrize("path", PLUGINS, ids=lambda p: os.path.basename(p))

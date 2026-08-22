@@ -95,6 +95,61 @@ def test_the_conflict_message_does_not_promise_which_copy_wins(plugin):
         assert promise not in said, promise
 
 
+def test_the_conflict_reaches_the_tools_report(plugin):
+    """The one route it has, in the state it is about.
+
+    With both older add-ons running, this add-on skips registering both
+    generations -- so it owns no reporter, so it does not own the shared Tools
+    menu item either, and the report is being drawn by a 0.8.0 plugin that has
+    never heard of any of this. Appending the warning inside this add-on's own
+    `_onMenu` therefore renders it in exactly the case it is not needed and
+    never in the case it is.
+
+    A registered entry is what an older plugin *does* know how to print.
+    """
+    ok, lines = plugin._conflict_report([_FakeAddon("tigerspeech"),
+                                         _FakeAddon("leopardspeech")])
+    assert ok, "a False verdict would put this in the missing list and make " \
+               "the older plugin offer to open a folder for it"
+    body = " ".join(lines)
+    assert "tigerspeech and leopardspeech are still installed" in body
+    assert "depends on the order" in body
+    assert "Add-on Store" in body
+    assert "%" not in body
+    # The report indents each detail line under the label, so a line long
+    # enough to wrap twice is a line the user hears as one long run.
+    assert max(len(l) for l in lines) < 80, max(lines, key=len)
+
+
+def test_one_older_addon_reads_as_one(plugin):
+    ok, lines = plugin._conflict_report([_FakeAddon("tigerspeech")])
+    body = " ".join(lines)
+    assert "tigerspeech is still installed, and it has been replaced" in body
+    assert "Remove the older add-on in the Add-on Store" in body
+    # Not "the older add-ons". `add-ons folder` is in there too, so the check
+    # has to be the phrase and not the word -- the first version of this
+    # assertion failed on the sentence three lines above the one it meant.
+    assert "older add-ons" not in body
+
+
+def test_no_conflict_reports_nothing(plugin):
+    assert plugin._conflict_report([]) == (True, [])
+
+
+def test_the_conflict_is_only_said_once(plugin):
+    """It used to be appended in `_onMenu` as well as registered.
+
+    That renders it twice in the one case where this add-on owns the menu --
+    and a screen reader reads both."""
+    import io
+    src = io.open(os.path.join(ADDON, "globalPlugins", "pantheraData.py"),
+                  encoding="utf-8").read()
+    body = src[src.index("def _onMenu"):]
+    body = body[:body.index("\n    def ")]
+    assert "self._conflicts" not in body, (
+        "_onMenu adds the conflict as well as the registered entry")
+
+
 ENTRY = {"label": "Tiger speech -- Mac OS X 10.4, twenty-three voices",
          "folder": r"C:\Users\x\AppData\Roaming\nvda\macintalk\tiger",
          "source": "your own Mac OS X 10.4 install disc"}

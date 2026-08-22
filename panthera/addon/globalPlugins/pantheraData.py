@@ -26,6 +26,7 @@ or Lion is a table entry.
 """
 import os
 import sys
+import textwrap
 import threading
 
 import globalPluginHandler
@@ -370,6 +371,57 @@ def _old_addons():
         return []
 
 
+#: The heading the shared Tools report shows the conflict under.
+#:
+#: It is worded so that the line the report prints under it -- `ready` and a
+#: folder, in a format this add-on does not control -- says something true.
+#: "Panthera speech: ready" is correct; the detail underneath is the warning.
+_CONFLICT_LABEL = "Panthera speech -- installed, and so are the add-ons it replaces"
+
+
+def _macintalk_root():
+    """The folder both generations live under. -> str
+
+    Only ever printed. The report also looks for a `do-not-ask` beside it,
+    which nothing writes here -- and if one ever appeared it would add a
+    harmless "reminders are off" line to an entry that has no reminder.
+    """
+    return os.path.dirname(pantheratiger.config_dir())
+
+
+def _conflict_report(addons):
+    """The conflict, in the shape `_engine_report` reads. -> (True, [lines])
+
+    **This is how the warning reaches the Tools menu at all.** In the state it
+    describes, the older add-ons are running, so this add-on skips registering
+    both generations -- and then owns no reporter, and so does not own the
+    shared menu item either. The report is being drawn by one of the 0.8.0
+    plugins, whose code cannot be changed retroactively and knows nothing
+    about any of this.
+
+    What it does know is how to read a registered entry and print its detail
+    lines. So the conflict registers as an entry of its own: `True` for the
+    verdict, because Panthera speech itself is fine, and the sentences that
+    matter go in the detail.
+    """
+    if not addons:
+        return True, []
+    one = len(addons) == 1
+    names = " and ".join(a.name for a in addons)
+    # Wrapped rather than hand-broken: the report indents every detail line
+    # under its label, and two add-on names in one sentence is already past
+    # the width a hand-broken line was measured at.
+    return True, textwrap.wrap(
+        "%s %s still installed, and %s been replaced by this add-on. Both "
+        "offer a synthesizer of the same name, so which copy NVDA loads "
+        "depends on the order it reads the add-ons folder in. You can end up "
+        "running the older code with nothing saying so. Remove the older "
+        "add-on%s in the Add-on Store, under Tools."
+        % (names, "is" if one else "are", "it has" if one else "they have",
+           "" if one else "s"),
+        width=68)
+
+
 def _conflict_message(addons):
     """-> str, or the empty string when there is nothing to say.
 
@@ -436,6 +488,19 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
                     "folder": gen["tree"].config_dir,
             }):
                 owner = True
+        # After the loop, and unconditional on ownership: in the state this
+        # describes, every generation is covered, so nothing above registered
+        # and the shared menu item belongs to a 0.8.0 plugin that has never
+        # heard of any of this. Registering the conflict as an entry is what
+        # puts it into the report that plugin draws.
+        if self._conflicts:
+            if _register_reporter({
+                    "label": _CONFLICT_LABEL,
+                    "source": "the Add-on Store, under Tools",
+                    "explain": lambda: _conflict_report(self._conflicts),
+                    "folder": _macintalk_root,
+            }):
+                owner = True
         if owner:
             self._addMenuItem()
         log.info("Panthera: engine check armed")
@@ -484,19 +549,12 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
         this from a menu is asking the question right now.
         """
         try:
+            # The conflict is in here without being added here. It registered
+            # as a reporter at start-up, so it appears whether this add-on
+            # draws the report or one of the older plugins does -- and it
+            # cannot appear twice, which appending it here as well would have
+            # managed in the one case where this add-on owns the menu.
             lines, missing = _engine_report()
-            if self._conflicts:
-                # A conflict that can silently win is not a mention-once
-                # thing. Somebody who said "not now" at start-up needs a place
-                # to find out later what they said no to.
-                lines.append(
-                    "Also installed: %s. %s replaced by this add-on, and "
-                    "leaving %s in place means NVDA may load the older copy "
-                    "of a synthesizer instead of this one."
-                    % (", ".join(a.name for a in self._conflicts),
-                       "It was" if len(self._conflicts) == 1 else "They were",
-                       "it" if len(self._conflicts) == 1 else "them"))
-                lines.append("")
             log.info("Panthera: Tools menu report\n  %s" % "\n  ".join(lines))
             for m in missing:
                 try:
