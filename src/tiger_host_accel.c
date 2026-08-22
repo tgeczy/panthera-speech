@@ -485,7 +485,12 @@ static void __cdecl sh_vDSP_maxvi(const float *A, vdsp_stride IA, float *C,
         if (v > top) { top = v; best = n; }
     }
     if (C) *C = top;
-    if (I) *I = best;
+    /* **The index vDSP returns is strided**: `n * IA`, not the loop counter.
+     * At stride one the two are the same, which is exactly why a test written
+     * with stride one cannot tell them apart -- so the test uses a stride of
+     * two as well. Wrong, this hands the correlation peak back at a fraction
+     * of its real lag: not a crash, a grain taken from the wrong place. */
+    if (I) *I = best * (vdsp_length)(IA < 0 ? -IA : IA);
 }
 
 /* vDSP_vma(A,IA,B,IB,C,IC,D,ID,N): D = A*B + C. */
@@ -663,6 +668,17 @@ static int vdsp_check(void)
         pair[0] = val;
         pair[1] = (float)idx;
         vd_emit("maxvi", pair, 2);
+    }
+
+    /* maxvi again, with a stride of two: the index vDSP returns is
+     * n*IA, and at stride one that is indistinguishable from n. */
+    {
+        float pair[2];
+        vd_signal(x, 64, 0);
+        sh_vDSP_maxvi(x, 2, &val, &idx, 32);
+        pair[0] = val;
+        pair[1] = (float)idx;
+        vd_emit("maxvi2", pair, 2);
     }
 
     /* vma: D = A*B + C */

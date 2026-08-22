@@ -101,6 +101,13 @@ static unsigned g_pcmstat_n;
  * are giving the engine audio twice -- which is what an inserted phantom
  * fragment inside a word would be. */
 static unsigned g_pkts_fed, g_frames_out;
+/* TIGER_AAC_TRACE: one line per refill, and a count of streams that
+ * produced nothing at all -- a silent stream is a silent *word*, and
+ * the total duration stays right, so it is invisible in a waveform
+ * length and obvious in a transcript. */
+static int g_ac_trace = -1;
+static unsigned g_ac_silent_streams;
+
 
 /* ---- AAC, through the decoder Windows already ships -------------------- */
 /*
@@ -982,6 +989,7 @@ static int __cdecl sh_AudioConverterFillComplexBuffer(void *conv,
 
     if (g_sc.pcm_pos >= g_sc.pcm_n && proc && aac_open()) {
         int rounds = 0;
+        if (g_ac_trace < 0) g_ac_trace = getenv("TIGER_AAC_TRACE") ? 1 : 0;
         g_sc.pcm_n = g_sc.pcm_pos = 0;
         /* Keep asking until there is something to hand back.
          *
@@ -1105,6 +1113,14 @@ static int __cdecl sh_AudioConverterFillComplexBuffer(void *conv,
                 if (g_verbose && g_sc.sessions <= 1 && rounds <= 3)
                     printf("  [ac] round %d: %u packet(s) -> %u frames, "
                            "asked for %u\n", rounds, packets, g_sc.pcm_n, want);
+                /* TIGER_AAC_TRACE: every refill of every stream, not just the
+                 * first three of the first one.  Lion opens twenty-five short
+                 * streams where Leopard opens fifteen long ones, so the
+                 * interesting behaviour is never in stream 1. */
+                if (g_ac_trace)
+                    fprintf(stderr, "  [ac] s%u r%d: %u pkt -> %u frames, "
+                            "asked %u\n", g_sc.sessions, rounds, packets,
+                            g_sc.pcm_n, want);
             } else {
                 /* The engine has no more compressed data: flush the decoder's
                  * tail and close the stream, so the next utterance starts
@@ -1116,6 +1132,12 @@ static int __cdecl sh_AudioConverterFillComplexBuffer(void *conv,
                 break;
             }
         }
+        /* Nothing at all, after sixty-four tries.  The engine still
+         * advances its clock for this unit, so the render keeps its
+         * full length and simply has a hole in it -- which is why a
+         * missing word never shortens the wav and never looks like a
+         * fault until something reads the words back. */
+        if (g_sc.pcm_n == 0) g_ac_silent_streams++;
     }
 
     if (g_sc.pcm_pos < g_sc.pcm_n) {

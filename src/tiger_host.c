@@ -511,6 +511,15 @@ int main(int argc, char **argv)
                        "audio; %u samples handed to the engine (%+d)\n",
                        g_pkts_fed, g_pkts_fed * 1024, g_frames_out,
                        (int)g_frames_out - (int)(g_pkts_fed * 1024));
+            /* The number that matters more than the deficit: a refill the
+             * decoder answered with nothing is a **silent word**, and the
+             * engine advances its clock over it regardless -- so the render
+             * keeps its full length and simply has a hole. Nothing about the
+             * duration, the peak or the roughness shows it. */
+            if (g_ac_silent_streams)
+                printf("  [ac] %u refill(s) produced NO audio -- that is a "
+                       "hole in the speech, not a shorter render\n",
+                       g_ac_silent_streams);
             if (g_preads)
                 printf("  [io] %u pread(s), %u short\n",
                        g_preads, g_pread_short);

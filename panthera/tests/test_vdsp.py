@@ -164,3 +164,17 @@ def test_vramp_walks_by_a_step(out):
 
 def test_catlas_sset_fills(out):
     close(out["sset"], numpy.full(8, 3.5))
+
+
+def test_maxvi_index_is_strided(out):
+    """vDSP returns `n * IA`, not the loop counter.
+
+    At stride one those are the same number, so the case above cannot tell a
+    correct implementation from one that ignores the stride entirely. This one
+    can. Getting it wrong hands the correlation peak back at a fraction of its
+    real lag -- no crash, just a grain taken from the wrong place.
+    """
+    x = signal(64)[0::2]
+    got = out["maxvi2"]
+    assert abs(got[0] - float(x.max())) < 1e-4
+    assert int(got[1]) == 2 * int(x.argmax()), (got[1], x.argmax())
