@@ -140,6 +140,33 @@ static int __cdecl sh_close(int fd) { return _close(fd); }
  * upwards from the dictionary, since the extracted tree keeps it at the root
  * and a real install keeps it in usr/lib.
  */
+/* Search upwards from the engine for the first of `names` that exists.
+ *
+ * An extracted tree keeps these at its root and a real install keeps them in
+ * usr/lib, so both spellings are tried at every level before going up. */
+static int find_runtime(const char *start, const char **names, int count,
+                        char *out, size_t n)
+{
+    char dir[CFPATH];
+    int level, i;
+    if (!start) return 0;   /* `near` is still a keyword to MSVC */
+    strncpy(dir, start, sizeof(dir) - 1);
+    dir[sizeof(dir) - 1] = 0;
+    for (level = 0; level < 6; level++) {
+        char *a = strrchr(dir, '/');
+        char *b = strrchr(dir, '\\');
+        char *cut = (a > b) ? a : b;
+        if (!cut) break;
+        *cut = 0;
+        for (i = 0; i < count; i++) {
+            _snprintf(out, n, "%s/%s", dir, names[i]);
+            out[n - 1] = 0;
+            if (_access(out, 4) == 0) return 1;
+        }
+    }
+    return 0;
+}
+
 static int find_libstdcxx(const char *start, char *out, size_t n)
 {
     /* **Newest first.**  Leopard shipped 6.0.4 and Lion 6.0.9, and the choice
@@ -161,24 +188,29 @@ static int find_libstdcxx(const char *start, char *out, size_t n)
         "usr/lib/libstdc++.6.0.4.dylib",
         "usr/lib/libstdc++.6.dylib",
     };
-    char dir[CFPATH];
-    int level, i;
-    if (!start) return 0;   /* `near` is still a keyword to MSVC */
-    strncpy(dir, start, sizeof(dir) - 1);
-    dir[sizeof(dir) - 1] = 0;
-    for (level = 0; level < 6; level++) {
-        char *a = strrchr(dir, '/');
-        char *b = strrchr(dir, '\\');
-        char *cut = (a > b) ? a : b;
-        if (!cut) break;
-        *cut = 0;
-        for (i = 0; i < (int)(sizeof(names) / sizeof(names[0])); i++) {
-            _snprintf(out, n, "%s/%s", dir, names[i]);
-            out[n - 1] = 0;
-            if (_access(out, 4) == 0) return 1;
-        }
-    }
-    return 0;
+    return find_runtime(start, names,
+                        (int)(sizeof(names) / sizeof(names[0])), out, n);
+}
+
+/* 10.7 moved the C++ ABI out of libstdc++ and into its own library.
+ *
+ * Lion's 6.0.9 names `/usr/lib/libc++abi.dylib` in its own LC_LOAD_DYLIB and
+ * carries 150 N_INDR entries re-exporting it, so `__dynamic_cast`, the
+ * `__cxa_*` family and the three `__cxxabiv1::*_type_info` vtables all live
+ * there.  Without it every RTTI object in both engines has an unresolved
+ * vptr, and the guards around every function-local static are missing too.
+ *
+ * Leopard needs none of it -- 6.0.4 implements the ABI itself and has no
+ * indirect symbols at all -- so this is optional in exactly the way libstdc++
+ * is, and its absence costs only the generation that asks for it. */
+static int find_libcxxabi(const char *start, char *out, size_t n)
+{
+    static const char *names[] = {
+        "libc++abi.dylib",
+        "usr/lib/libc++abi.dylib",
+    };
+    return find_runtime(start, names,
+                        (int)(sizeof(names) / sizeof(names[0])), out, n);
 }
 static unsigned g_reads, g_read_bytes;
 static int __cdecl sh_read(int fd, void *b, unsigned n)

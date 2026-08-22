@@ -211,8 +211,8 @@ typedef int (__cdecl *SEOpen_t)(void **chan);
 
 int main(int argc, char **argv)
 {
-    image mt, sd, ls;
-    int have_ls = 0;
+    image mt, sd, ls, ab;
+    int have_ls = 0, have_ab = 0;
     SEOpen_t open_chan;
     void *chan = NULL;
     int err, i;
@@ -330,12 +330,24 @@ int main(int argc, char **argv)
 
     AddVectoredExceptionHandler(1, on_fault);
 
-    /* An optional third image, which so far only Leopard has wanted.  Loaded
-     * first so its initializers run before anything that calls into it. */
+    /* The optional runtime images, loaded before the engines so their
+     * initializers run before anything calls into them.
+     *
+     * libc++abi first: from 10.7 the C++ ABI lives there and libstdc++
+     * re-exports it, so libstdc++ is the one with the dependency.  Leopard
+     * wants neither ordering nor the library -- its 6.0.4 implements the ABI
+     * itself -- so its absence is reported and then ignored. */
     {
-        char lspath[CFPATH];
-        if (find_libstdcxx(argv[2], lspath, sizeof(lspath))) {
-            load(&ls, lspath);
+        char path[CFPATH];
+        if (find_libcxxabi(argv[2], path, sizeof(path))) {
+            load(&ab, path);
+            g_images[g_nimages++] = &ab;
+            have_ab = 1;
+        } else if (g_verbose) {
+            printf("no libc++abi beside the engine; only 10.7 wants one\n");
+        }
+        if (find_libstdcxx(argv[2], path, sizeof(path))) {
+            load(&ls, path);
             g_images[g_nimages++] = &ls;
             have_ls = 1;
         } else if (g_verbose) {
@@ -374,6 +386,10 @@ int main(int argc, char **argv)
         if (g_verbose) printf("dictionary bundle: %s\n", dir);
     }
 
+    if (have_ab) {
+        if (g_verbose) printf("binding libc++abi:\n");
+        resolve(&ab, NULL);
+    }
     if (have_ls) {
         if (g_verbose) printf("binding libstdc++:\n");
         resolve(&ls, NULL);
@@ -384,6 +400,7 @@ int main(int argc, char **argv)
     resolve(&mt, &sd);
 
     if (g_verbose) printf("running initializers:\n");
+    if (have_ab) run_initializers(&ab);
     if (have_ls) run_initializers(&ls);
     run_initializers(&sd);
     run_initializers(&mt);
