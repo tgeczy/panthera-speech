@@ -220,10 +220,15 @@ static void __cdecl sh_vDSP_hann_window(float *C, vdsp_length N, int flag)
     if (!C || !N) return;
     for (n = 0; n < count; n++)
         C[n] = (float)(scale * (1.0 - cos(6.2831853071795864769 * n / N)));
+    /* Report only what was *written*.  With vDSP_HALF_WINDOW -- which is what
+     * flag 1 means, and which Lion uses constantly where Leopard never does --
+     * only the first (N+1)/2 elements exist, and printing C[N/2] reads past
+     * them.  That produced values like -38.5 and 3.7e-34 and looked exactly
+     * like a broken window function for a while. */
     if (accel_debug())
-        printf("  [vDSP] hann N=%lu flag=%d -> C[0]=%g C[N/4]=%g C[N/2]=%g\n",
-               (unsigned long)N, flag, (double)C[0],
-               (double)C[N / 4], (double)C[N / 2]);
+        printf("  [vDSP] hann N=%lu flag=%d wrote %lu -> C[0]=%g C[mid]=%g "
+               "C[last]=%g\n", (unsigned long)N, flag, (unsigned long)count,
+               (double)C[0], (double)C[count / 2], (double)C[count - 1]);
 }
 
 /* lrintf: round to nearest, ties to even, which is what the default rounding
@@ -350,6 +355,22 @@ static void __cdecl sh_fft_zrip(void *setup, split_complex *io,
         fprintf(stderr, "tiger_host: fft_zrip asked for 2^%u with a setup "
                         "built for 2^%u\n", (unsigned)log2n, s->log2n);
         return;
+    }
+    /* What the engine actually asks for, under TIGER_ACCEL_DEBUG.  The input
+     * energy is the useful column: a correlation of an all-zero window
+     * returns a flat spectrum whose peak index is meaningless, so silence
+     * arriving here explains silence leaving, and silence *leaving* a dense
+     * input would mean the transform itself. */
+    if (accel_debug()) {
+        static unsigned calls;
+        double e = 0.0;
+        unsigned q;
+        for (q = 0; q < h; q++)
+            e += (double)io->realp[q * stride] * io->realp[q * stride]
+               + (double)io->imagp[q * stride] * io->imagp[q * stride];
+        if (++calls <= 12)
+            printf("  [vDSP] fft_zrip #%u n=%u stride=%ld dir=%d "
+                   "input energy=%.6g\n", calls, n, (long)stride, direction, e);
     }
     re = (double *)malloc(sizeof(double) * h);
     im = (double *)malloc(sizeof(double) * h);

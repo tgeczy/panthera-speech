@@ -172,6 +172,8 @@ static unsigned g_empty_run;          /* consecutive slices carrying nothing */
 static int      g_float_stats;
 static double   g_fstat_abs, g_fstat_d;
 static unsigned g_fstat_n;
+static unsigned g_fstat_zero;
+static unsigned g_fstat_slices, g_fstat_dead, g_fstat_holed;
 static unsigned g_last_hash, g_have_last, g_dup_slices;
 /* Groundwork for streaming the response instead of accumulating it.
  *
@@ -537,6 +539,30 @@ static void take_slice(unsigned char *slice)
                     g_fstat_abs += a < 0 ? -a : a;
                     g_fstat_d   += (b - a) < 0 ? (a - b) : (b - a);
                     g_fstat_n++;
+                }
+                /* **Silence, counted on the engine's side of the fence.**
+                 *
+                 * Lion's Alex arrives two thirds exact zeroes at full
+                 * duration, and roughness cannot see that -- it *improves*
+                 * as silence grows, which is how a render measured cleaner
+                 * than Leopard's while saying a third of the words.
+                 *
+                 * This splits the problem: dense here and sparse in the wav
+                 * means the audio is being lost on the way out; sparse here
+                 * means the engine is emitting silence and the fault is
+                 * upstream of anything in this file. */
+                {
+                    unsigned zeros = 0;
+                    for (j = 0; j < n; j++)
+                        if (data[j] == 0.0f) zeros++;
+                    g_fstat_zero += zeros;
+                    /* **Whole slices, or holes inside them?**  Two very
+                     * different faults wear the same percentage: an engine
+                     * emitting silent slices, and one filling each slice
+                     * only part way.  Counting both separates them. */
+                    g_fstat_slices++;
+                    if (zeros == n) g_fstat_dead++;
+                    else if (zeros > n / 10) g_fstat_holed++;
                 }
             }
             /* Is any slice delivered twice?  "It inserts phantom fragments"

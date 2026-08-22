@@ -530,6 +530,19 @@ int main(int argc, char **argv)
                        "samples\n",
                        g_fstat_d / (g_fstat_abs > 1e-9 ? g_fstat_abs : 1.0),
                        g_fstat_n);
+            /* Silence on the engine's side of the fence.  Roughness cannot
+             * see it -- roughness *improves* as silence grows, which is how
+             * Lion's Alex measured cleaner than Leopard's while saying a
+             * third of the words. */
+            if (g_fstat_n)
+                printf("  [flt] engine float output is %.1f%% exact zero "
+                       "(%u of %u samples)\n",
+                       100.0 * g_fstat_zero / (double)g_fstat_n,
+                       g_fstat_zero, g_fstat_n);
+            if (g_fstat_slices)
+                printf("  [flt] of %u slice(s): %u entirely silent, %u more "
+                       "than a tenth silent\n",
+                       g_fstat_slices, g_fstat_dead, g_fstat_holed);
             if (g_pcmstat_n)
                 printf("  [pcm] decoder output roughness %.3f over %u samples "
                        "(clean speech is about 0.10)\n",

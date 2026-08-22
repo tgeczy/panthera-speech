@@ -982,11 +982,26 @@ static int __cdecl sh_AudioConverterFillComplexBuffer(void *conv,
                                                       au_bufferlist *outdata,
                                                       au_packetdesc *outdesc)
 {
-    unsigned want, give = 0;
+    unsigned want, give = 0, cap;
     (void)conv; (void)outdesc;
     if (!iopackets || !outdata || !outdata->mNumberBuffers) return -50;
     want = *iopackets;
+    cap = outdata->mBuffers[0].mDataByteSize / 2;
+    if (want > cap) want = cap;
 
+    /* **Fill the whole request, not one decode round of it.**
+     *
+     * A decoded AAC packet is 1024 samples and 10.7's engine asks for 2257 at
+     * a time, so returning after a single round handed back 1024 frames and
+     * left the remaining 1233 as whatever the buffer already held -- zero.
+     * The engine believed the count, advanced its clock over the lot, and
+     * emitted a slice that was half silence.
+     *
+     * Leopard's engine asks again when it is short-changed and so never
+     * noticed; Lion's does not. That one difference cost **two thirds of
+     * Alex**: 335 of 508 slices came back entirely silent, at full duration,
+     * with the roughness *improving* as the silence grew. */
+    while (give < want) {
     if (g_sc.pcm_pos >= g_sc.pcm_n && proc && aac_open()) {
         int rounds = 0;
         if (g_ac_trace < 0) g_ac_trace = getenv("TIGER_AAC_TRACE") ? 1 : 0;
@@ -1140,14 +1155,18 @@ static int __cdecl sh_AudioConverterFillComplexBuffer(void *conv,
         if (g_sc.pcm_n == 0) g_ac_silent_streams++;
     }
 
-    if (g_sc.pcm_pos < g_sc.pcm_n) {
-        give = g_sc.pcm_n - g_sc.pcm_pos;
-        if (give > want) give = want;
-        if (give * 2 > outdata->mBuffers[0].mDataByteSize)
-            give = outdata->mBuffers[0].mDataByteSize / 2;
-        memcpy(outdata->mBuffers[0].mData, g_sc.pcm + g_sc.pcm_pos, give * 2);
-        g_sc.pcm_pos += give;
-        g_frames_out += give;
+    if (g_sc.pcm_pos >= g_sc.pcm_n)
+        break;                      /* the source is dry; a short fill is
+                                     * now the honest answer */
+    {
+        unsigned take = g_sc.pcm_n - g_sc.pcm_pos;
+        if (take > want - give) take = want - give;
+        memcpy((unsigned char *)outdata->mBuffers[0].mData + give * 2,
+               g_sc.pcm + g_sc.pcm_pos, take * 2);
+        g_sc.pcm_pos += take;
+        g_frames_out += take;
+        give += take;
+    }
     }
     outdata->mBuffers[0].mDataByteSize = give * 2;
     *iopackets = give;
