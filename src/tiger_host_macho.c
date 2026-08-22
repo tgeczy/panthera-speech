@@ -196,8 +196,13 @@ static void *lookup_shim(const char *name)
 {
     int i;
     const char *dollar;
+    void *k;
     for (i = 0; g_shims[i].name; i++)
         if (!strcmp(g_shims[i].name, name)) return g_shims[i].fn;
+    /* 10.7's speech property constants, which are a family rather than a list
+     * -- see speech_const_lookup(). */
+    k = speech_const_lookup(name);
+    if (k) return k;
     /* Leopard's libSystem publishes conformance variants -- `_open$UNIX2003`,
      * `_pread$UNIX2003`, `_pthread_cond_wait$UNIX2003` and ten more.  They are
      * the same functions with standards-mandated behaviour on edge cases none

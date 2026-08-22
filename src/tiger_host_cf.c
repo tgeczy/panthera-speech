@@ -737,6 +737,203 @@ static unsigned long __cdecl sh_CFDictionaryGetTypeID(void)
 static int __cdecl sh_CFBooleanGetValue(const void *o)
 { return cf_ours(o) && ((const cfobj *)o)->num != 0.0; }
 
+/* ---- 10.7's property keys ---------------------------------------------- */
+/*
+ * Lion moved rate, pitch, volume and inflection **out** of `SESetSpeechInfo`.
+ * Its `SetSpeechInfo` compares exactly nine selectors -- xtnc, xtnd, latd,
+ * late, dopt, popt, picn, pico, prld -- all internal, and answers OSErr -231
+ * to `rate` and `pbas`.  They live in
+ * `SESetSpeechProperty(chan, CFStringRef key, CFTypeRef value)` now.
+ *
+ * `SpeechChannelManager::SetSpeechProperty` dispatches by `CFStringCompare`
+ * against imported `kSpeech*` constants -- and being **imports, this host
+ * defines them**, so both sides of every comparison are objects we made and a
+ * match is guaranteed by construction.
+ *
+ * The strings are still Apple's documented values rather than anything
+ * convenient. The comparison the engine performs is against the constant it
+ * was handed, so the text does not strictly matter -- but if any path ever
+ * compares against an internal literal instead, only the real one matches,
+ * and a wrong guess would present as a property that silently does nothing.
+ *
+ * The value is a **CFNumber read as Float32 and multiplied by 65536.0** --
+ * verified from the constant in `__const`, not assumed.  That is a `Fixed`,
+ * which is exactly what `soRate` and `soPitchBase` always were, so nothing
+ * measured in the pitch or inflection work changes; only the delivery.
+ *
+ * These are *data* symbols: the engine loads the pointer slot and then
+ * dereferences it, so the shim table must hand out **the address of a
+ * variable holding the object**, not the object.  A thunk here would be a
+ * code address masquerading as a CFStringRef, which is the `__stack_chk_guard`
+ * mistake in a new hat.
+ */
+/* **All of them, not only the interesting ones.** `SetSpeechProperty` walks
+ * its keys in order, comparing the caller's string against each in turn, so
+ * every constant it might reach on the way to `rate` has to be a real object.
+ * Leaving the rest unshimmed thunked them to code addresses, and the first
+ * comparison read a `cstr` field out of x86 instructions -- a fault inside
+ * `CFStringCompare` on the very call that was meant to prove rate works.
+ *
+ * The strings are Apple's documented values, and unlike almost everything
+ * else in this host they are **not verified against the binary** -- they
+ * cannot be, being imports with no data behind them. That is acceptable here
+ * for a specific reason: the engine only ever compares a key it was handed
+ * against a constant this host defined, so both sides are ours and the text
+ * is a label rather than a protocol. If a path ever compares against an
+ * internal literal instead, a wrong value here would present as a property
+ * that silently does nothing, which is why they are the real ones anyway. */
+typedef struct { const char *sym, *text; void *obj; } speech_const;
+
+static speech_const g_speech_consts[] = {
+    { "_kSpeechRateProperty",             "rate" },
+    { "_kSpeechPitchBaseProperty",        "pitchBase" },
+    { "_kSpeechPitchModProperty",         "pitchMod" },
+    { "_kSpeechVolumeProperty",           "volume" },
+    { "_kSpeechResetProperty",            "reset" },
+    { "_kSpeechStatusProperty",           "status" },
+    { "_kSpeechErrorsProperty",           "errors" },
+    { "_kSpeechInputModeProperty",        "inputMode" },
+    { "_kSpeechCharacterModeProperty",    "characterMode" },
+    { "_kSpeechNumberModeProperty",       "numberMode" },
+    { "_kSpeechCommandDelimiterProperty", "commandDelimiter" },
+    { "_kSpeechRecentSyncProperty",       "recentSync" },
+    { "_kSpeechPhonemeSymbolsProperty",   "phonemeSymbols" },
+    { "_kSpeechPhonemeOptionsProperty",   "phonemeOptions" },
+    { "_kSpeechOutputToFileURLProperty",  "outputToFileURL" },
+    { "_kSpeechOfflineModeProperty",      "offlineMode" },
+    { "_kSpeechAudioGraphProperty",       "audioGraph" },
+    { "_kSpeechAudioUnitProperty",        "audioUnit" },
+    { "_kSpeechRefConProperty",           "refCon" },
+    { "_kSpeechCommandPrefix",            "commandPrefix" },
+    { "_kSpeechCommandSuffix",            "commandSuffix" },
+    /* Callbacks. Nothing installs one yet, but they are compared against on
+     * the way to the properties that matter, so they must exist. When index
+     * marks arrive for the driver, `kSpeechSyncCallBack` and
+     * `kSpeechWordCFCallBack` are the two to reach for. */
+    { "_kSpeechTextDoneCallBack",         "textDoneCallBack" },
+    { "_kSpeechSpeechDoneCallBack",       "speechDoneCallBack" },
+    { "_kSpeechSyncCallBack",             "syncCallBack" },
+    { "_kSpeechErrorCFCallBack",          "errorCallBack" },
+    { "_kSpeechPhonemeCallBack",          "phonemeCallBack" },
+    { "_kSpeechWordCFCallBack",           "wordCallBack" },
+    /* Values rather than keys. */
+    { "_kSpeechModeText",                 "TEXT" },
+    { "_kSpeechModePhoneme",              "PHON" },
+    { "_kSpeechModeTune",                 "TUNE" },
+    { "_kSpeechModeNormal",               "NORM" },
+    { "_kSpeechModeLiteral",              "LTRL" },
+    { "_kSpeechNoSpeechInterrupt",        "NoSpeechInterrupt" },
+    { "_kSpeechPreflightThenPause",       "PreflightThenPause" },
+    { "_kSpeechErrorCount",               "count" },
+    { "_kSpeechErrorNewest",              "newest" },
+    { "_kSpeechErrorNewestCharacterOffset", "newestCharacterOffset" },
+    { "_kSpeechErrorOldest",              "oldest" },
+    { "_kSpeechErrorOldestCharacterOffset", "oldestCharacterOffset" },
+    { "_kSpeechErrorCallbackSpokenString", "spokenString" },
+    { "_kSpeechErrorCallbackCharacterOffset", "characterOffset" },
+    { "_kSpeechStatusOutputBusy",         "outputBusy" },
+    { "_kSpeechStatusOutputPaused",       "outputPaused" },
+    { "_kSpeechStatusNumberOfCharactersLeft", "numberOfCharactersLeft" },
+    { "_kSpeechStatusPhonemeCode",        "phonemeCode" },
+    /* Found by the diagnostic below rather than by reading a header: the
+     * phoneme-symbols dictionary is built at startup, before anything asks
+     * for a property, so these were reached on the very first run. */
+    { "_kSpeechPhonemeInfoOpcode",        "opcode" },
+    { "_kSpeechPhonemeInfoSymbol",        "symbol" },
+    { "_kSpeechPhonemeInfoExample",       "example" },
+    { "_kSpeechPhonemeInfoHiliteStart",   "hiliteStart" },
+    { "_kSpeechPhonemeInfoHiliteEnd",     "hiliteEnd" },
+};
+#define SPEECH_CONST_N \
+        (int)(sizeof(g_speech_consts) / sizeof(g_speech_consts[0]))
+
+/* The named ones, by index into the table above. */
+#define SPK_RATE       0
+#define SPK_PITCHBASE  1
+#define SPK_PITCHMOD   2
+#define SPK_VOLUME     3
+#define SPK_RESET      4
+#define SPK_STATUS     5
+
+static void *g_speech_key[6];
+
+/* Pinned, like the bundle: the engine retains and releases these as though it
+ * owned them, and a real CoreFoundation constant cannot be freed. */
+static void speech_keys_init(void)
+{
+    int i;
+    for (i = 0; i < SPEECH_CONST_N; i++)
+        if (!g_speech_consts[i].obj)
+            g_speech_consts[i].obj = cf_pinned(g_speech_consts[i].text);
+    for (i = 0; i < 6; i++)
+        g_speech_key[i] = g_speech_consts[i].obj;
+}
+
+/* -> the address of the slot holding the constant, which is what an imported
+ * *data* symbol resolves to: the engine loads the pointer slot and then
+ * dereferences it. Handing back the object itself would be one indirection
+ * short, and a thunk would be a code address wearing a CFStringRef's clothes
+ * -- the `__stack_chk_guard` mistake in a new hat.
+ *
+ * Consulted by `lookup_shim` rather than written out as forty-five rows in
+ * the shim table: they are one family, resolved one way, and a row each would
+ * be forty-five chances to mistype a name that fails silently. */
+static void *speech_const_lookup(const char *name)
+{
+    int i;
+    if (strncmp(name, "_kSpeech", 8)) return NULL;
+    speech_keys_init();
+    for (i = 0; i < SPEECH_CONST_N; i++)
+        if (!strcmp(g_speech_consts[i].sym, name))
+            return &g_speech_consts[i].obj;
+    /* Named the family but not a member: say so. Being thunked from here is
+     * how the first attempt at this crashed. */
+    printf("  [cf] no constant for %s -- it will be thunked\n", name);
+    return NULL;
+}
+
+/* A CFNumber the engine can read back through `CFNumberGetValue`. */
+static cfobj *cf_number(double v)
+{
+    cfobj *o = cf_new("");
+    if (!o) return NULL;
+    o->kind = CF_NUMBER;
+    o->num  = v;
+    return o;
+}
+
+/* The engine's own direction: `CopySpeechProperty` builds a CFNumber to hand
+ * a value *back*.  Stubbed, it returned NULL, and the caller could not read
+ * the voice's base pitch -- so the pitch offset was applied to nothing and
+ * every render came out byte-identical whatever the slider said. Rate worked
+ * throughout, which is what made it look like pitch was simply unsupported.
+ *
+ * The types are CFNumber.h's, and the same list `CFNumberGetValue` answers --
+ * this is its inverse and the two must agree. */
+static void * __cdecl sh_CFNumberCreate(void *alloc, int type,
+                                        const void *value)
+{
+    double v;
+    (void)alloc;
+    if (!value) return NULL;
+    switch (type) {
+    case 1:  case 7:  v = *(const char *)value;      break;
+    case 2:  case 8:  v = *(const short *)value;     break;
+    case 3:  case 9:  case 14: case 15:
+                      v = *(const int *)value;       break;
+    case 10:          v = (double)*(const long *)value;    break;
+    case 4:  case 11: v = (double)*(const __int64 *)value; break;
+    case 5:  case 12: case 16:
+                      v = *(const float *)value;     break;
+    case 6:  case 13: v = *(const double *)value;    break;
+    default:
+        fprintf(stderr, "tiger_host: CFNumberCreate asked for type %d, which "
+                        "this does not know\n", type);
+        return NULL;
+    }
+    return cf_number(v);
+}
+
 /* CFNumberType, from CFNumber.h.  The engine asks for whichever C type the
  * variable it is filling happens to be, so all of them are answered. */
 static int __cdecl sh_CFNumberGetValue(const void *o, int type, void *out)

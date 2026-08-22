@@ -225,9 +225,16 @@ static unsigned stream_chunk(unsigned sent, unsigned upto)
 static int serve(image *mt, void *chan, const char *voicesdir)
 {
     SEUseVoice_t use     = (SEUseVoice_t)find_export(mt, "_SEUseVoice");
-    SESpeak_t    speak   = (SESpeak_t)find_export(mt, "_SESpeakBuffer");
+    /* **The shared layer, not a second copy of it.**  This function used to
+     * resolve `_SESpeakBuffer` and `_SESetSpeechInfo` for itself -- which is
+     * exactly the drift tiger_host_speech.c warns about at the top, and it
+     * cost both halves of Lion's serve mode: 10.7 exports no `SESpeakBuffer`
+     * at all, so the text call jumped to address zero, and its
+     * `SESetSpeechInfo` answers -231 to `rate`, so every utterance would have
+     * come out at the engine's own 180 wpm. The one-shot render has used this
+     * layer since Lion's text path was written; serve mode had not. */
+    speech_api   api     = speech_api_of(mt);
     SESetInfo_t  setinfo = (SESetInfo_t)find_export(mt, "_SESetSpeechInfo");
-    SEGetInfo_t  getinfo = (SEGetInfo_t)find_export(mt, "_SEGetSpeechInfo");
     SEStop_t     stopnow = (SEStop_t)find_export(mt, "_SEStopSpeechAt");
     SEStatus_t   status  = (SEStatus_t)find_export(mt, "_SESpeechStatus");
     {
@@ -290,8 +297,7 @@ static int serve(image *mt, void *chan, const char *voicesdir)
                     voicechanged = 1;
                     /* Ask the voice what it sounds like before changing it. */
                     basepitch = 0;
-                    if (getinfo && call_aligned3((void *)getinfo, chan,
-                            (void *)SEL_PITCH, &basepitch) != 0)
+                    if (!get_param(&api, chan, PARAM_PITCH, &basepitch))
                         basepitch = 0;
                     if (g_verbose)
                         printf("  [pitch] %s base %.2f\n", name,
@@ -305,10 +311,9 @@ static int serve(image *mt, void *chan, const char *voicesdir)
          * stray command in a web page would otherwise slow every later
          * utterance until the user happened to move a slider.  Two cheap
          * setter calls buy immunity from that. */
-        if (!err && wpm > 0 && setinfo) {
+        if (!err && wpm > 0) {
             unsigned fixed = (unsigned)wpm << 16;       /* Fixed 16.16 wpm */
-            int rc = call_aligned3((void *)setinfo, chan, (void *)SEL_RATE,
-                                   &fixed);
+            int rc = set_param(&api, chan, PARAM_RATE, fixed);
             if (rc == 0) currate = wpm;
             else
                 /* Worth saying out loud.  A rate that fails to apply is not a
@@ -322,11 +327,10 @@ static int serve(image *mt, void *chan, const char *voicesdir)
         /* Pitch is re-applied whenever it changes *or* the voice changed: a
          * new voice arrives with its own pitch and would otherwise keep it
          * until the user happened to move the slider. */
-        if (!err && setinfo && basepitch) {
+        if (!err && basepitch) {
             /* offset is tenths of a semitone, and the scale is semitones */
             unsigned fx = (unsigned)((int)basepitch + (pitch * 65536) / 10);
-            if (call_aligned3((void *)setinfo, chan, (void *)SEL_PITCH,
-                              &fx) == 0) curpitch = pitch;
+            if (set_param(&api, chan, PARAM_PITCH, fx) == 0) curpitch = pitch;
         }
 
         /* Embedded commands -- "[[rate 100]]", "[[volm 0.5]]", even
@@ -375,8 +379,7 @@ static int serve(image *mt, void *chan, const char *voicesdir)
          * paragraph -- and this request's own flags word already means
          * REQF_COMMANDS, so forwarding it would have made "accept embedded
          * commands" quietly mean kNoEndingProsody as well.  Zero it stays. */
-        if (!err) err = call_aligned4((void *)speak, chan, text,
-                                      (void *)textlen, (void *)0);
+        if (!err) err = speak_text(&api, chan, text, textlen);
         speak_ms = wall_ms() - g_utt_t0;
         free(text);
 
@@ -479,9 +482,14 @@ static int serve(image *mt, void *chan, const char *voicesdir)
                             Sleep(2);
                             if (g_slices != last) { last = g_slices; quiet = 0; }
                             else quiet++;
-                            if (getinfo) {
+                            /* 10.7 moved `stat` to kSpeechStatusProperty as
+                             * well, so this asks and is refused there. The
+                             * loop is a bounded settle either way -- it only
+                             * costs the full 200 ms instead of stopping as
+                             * soon as the engine says it is idle. */
+                            if (api.getinfo) {
                                 memset(info, 0, sizeof(info));
-                                if (call_aligned3((void *)getinfo, chan,
+                                if (call_aligned3((void *)api.getinfo, chan,
                                                   (void *)SEL_STATUS,
                                                   info) == 0 && info[0] == 0)
                                     break;      /* it says it is idle */

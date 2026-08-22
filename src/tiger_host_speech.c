@@ -34,11 +34,48 @@ typedef int (__cdecl *SESpeakBuffer_t)(void *chan, const void *buf,
 typedef int (__cdecl *SESpeakCFString_t)(void *chan, const void *cfstr,
                                          const void *options);
 
+/* Parameters moved house in the same release, and separately from the text.
+ *
+ * Leopard and earlier: `SESetSpeechInfo(chan, 'rate', &Fixed)`.
+ * Lion: `SESetSpeechProperty(chan, kSpeechRateProperty, CFNumber)`. Its
+ * `SetSpeechInfo` compares nine internal selectors and answers **OSErr -231**
+ * to `rate` and `pbas` -- which reads as "the engine refused the rate" and
+ * leaves the user at the engine's own 180 wpm with no way off it.
+ *
+ * Both ends are told in `Fixed`, so no caller has to know which generation it
+ * is talking to: the property form divides by 65536 going in, because the
+ * engine multiplies by 65536 coming out. That constant was read out of
+ * `__const` rather than assumed. */
+typedef int (__cdecl *SESetSpeechInfo_t)(void *chan, unsigned sel, void *val);
+typedef int (__cdecl *SEGetSpeechInfo_t)(void *chan, unsigned sel, void *val);
+typedef int (__cdecl *SESetSpeechProperty_t)(void *chan, const void *key,
+                                             const void *val);
+typedef int (__cdecl *SECopySpeechProperty_t)(void *chan, const void *key,
+                                              const void **out);
+
 typedef struct {
     SESpeakBuffer_t   buffer;      /* one of these two is NULL */
     SESpeakCFString_t cfstring;
     const char       *which;       /* for the log line */
+    SESetSpeechInfo_t      setinfo;      /* 10.6 and earlier */
+    SEGetSpeechInfo_t      getinfo;
+    SESetSpeechProperty_t  setprop;      /* 10.7 */
+    SECopySpeechProperty_t copyprop;
+    const char            *whichparam;
 } speech_api;
+
+/* One row per parameter, in both spellings, so a call site names the
+ * parameter and never the generation. */
+#define PARAM_RATE   0
+#define PARAM_PITCH  1
+#define PARAM_VOLUME 2
+#define PARAM_INFLEC 3
+static const struct { unsigned sel; int key; const char *name; } PARAMS[] = {
+    { 0x72617465u, SPK_RATE,      "rate"   },   /* 'rate' */
+    { 0x70626173u, SPK_PITCHBASE, "pitch"  },   /* 'pbas' */
+    { 0x766f6c6du, SPK_VOLUME,    "volume" },   /* 'volm' */
+    { 0x706d6f64u, SPK_PITCHMOD,  "inflec" },   /* 'pmod' */
+};
 
 /* Resolve the text-submitting entry point of whichever generation this is.
  *
@@ -60,7 +97,64 @@ static speech_api speech_api_of(image *mt)
     if (a.buffer && a.cfstring)
         printf("  note: this engine exports both text entry points; "
                "using SESpeakBuffer\n");
+
+    a.setinfo  = (SESetSpeechInfo_t)find_export(mt, "_SESetSpeechInfo");
+    a.getinfo  = (SEGetSpeechInfo_t)find_export(mt, "_SEGetSpeechInfo");
+    a.setprop  = (SESetSpeechProperty_t)
+                 find_export(mt, "_SESetSpeechProperty");
+    a.copyprop = (SECopySpeechProperty_t)
+                 find_export(mt, "_SECopySpeechProperty");
+    /* **Preferred, not merely present.** Lion exports SESetSpeechInfo too --
+     * it simply refuses `rate` and `pbas` through it. Choosing by which
+     * symbol exists would pick the one that answers -231, which is how this
+     * was found: as "the engine refused 180 wpm". */
+    a.whichparam = a.setprop ? "SESetSpeechProperty"
+                             : (a.setinfo ? "SESetSpeechInfo" : NULL);
+    if (a.setprop) speech_keys_init();
+    if (g_verbose && a.whichparam)
+        printf("  parameters via %s\n", a.whichparam);
     return a;
+}
+
+/* Set one parameter, in `Fixed`, whichever way this generation takes it.
+ * -> OSErr, and 0 is success in both spellings. */
+static int set_param(const speech_api *a, void *chan, int which, unsigned fx)
+{
+    if (a->setprop) {
+        /* The engine reads this back as Float32 and multiplies by 65536, so
+         * hand it the same number divided by 65536. Not freed: the engine may
+         * hold the value, and one CFNumber per utterance is not a leak worth
+         * a use-after-free. */
+        cfobj *n = cf_number((double)fx / 65536.0);
+        if (!n) return -108;                    /* memFullErr */
+        return call_aligned3((void *)a->setprop, chan,
+                             g_speech_key[PARAMS[which].key], n);
+    }
+    if (a->setinfo)
+        return call_aligned3((void *)a->setinfo, chan,
+                             (void *)PARAMS[which].sel, &fx);
+    return -231;                                /* siUnknownInfoType */
+}
+
+/* Read one parameter back, in `Fixed`.  -> non-zero on success. */
+static int get_param(const speech_api *a, void *chan, int which, unsigned *out)
+{
+    if (!out) return 0;
+    if (a->copyprop) {
+        const void *v = NULL;
+        float f = 0.0f;
+        if (call_aligned3((void *)a->copyprop, chan,
+                          g_speech_key[PARAMS[which].key], &v) != 0 || !v)
+            return 0;
+        if (!sh_CFNumberGetValue(v, 5 /* kCFNumberFloat32Type */, &f))
+            return 0;
+        *out = (unsigned)(f * 65536.0f);
+        return 1;
+    }
+    if (a->getinfo)
+        return call_aligned3((void *)a->getinfo, chan,
+                             (void *)PARAMS[which].sel, out) == 0;
+    return 0;
 }
 
 /* Hand `text` to the engine.  -> OSErr

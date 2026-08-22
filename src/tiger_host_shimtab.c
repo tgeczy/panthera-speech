@@ -155,6 +155,7 @@ static const shim g_shims[] = {
     { "_CFBooleanGetTypeID",      (void *)sh_CFBooleanGetTypeID      },
     { "_CFDictionaryGetTypeID",   (void *)sh_CFDictionaryGetTypeID   },
     { "_CFNumberGetValue",        (void *)sh_CFNumberGetValue        },
+    { "_CFNumberCreate",          (void *)sh_CFNumberCreate          },
     { "_CFBooleanGetValue",       (void *)sh_CFBooleanGetValue       },
     { "___CFConstantStringClassReference", (void *)&g_cfstring_class },
     { "_NewAUGraph",              (void *)sh_NewAUGraph              },
@@ -259,6 +260,10 @@ static const shim g_shims[] = {
     { "_cblas_sdot",   (void *)sh_sdot   }, { "_cblas_snrm2", (void *)sh_snrm2 },
     { "_cblas_sgemv",  (void *)sh_sgemv  },
     { "__DefaultRuneLocale", (void *)g_rune_locale },
+    /* 10.7's `kSpeech*` property constants are not here on purpose: they are
+     * one family resolved one way, and `lookup_shim` consults
+     * `speech_const_lookup` for them.  Forty-five rows would be forty-five
+     * chances to mistype a name in a way that fails silently. */
     { "___maskrune", (void *)sh_maskrune },
     /* Lion's `_l` family: the same functions taking a locale this host has
      * only one of.  Safe to ignore the trailing argument on cdecl. */
