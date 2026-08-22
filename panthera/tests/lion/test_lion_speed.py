@@ -28,12 +28,14 @@ import pytest
 #: Rendering must outrun speaking by at least this much.
 #:
 #: Real numbers on the machine this was written on, best of three, one
-#: sentence of Fred: Tiger 77x, Leopard 87x, Lion 16x. Lion is lower for a
-#: reason that is not the engine -- 10.7 never calls `AUGraphStop`, so every
-#: utterance sits out the serve loop's quiet period after its audio is already
-#: complete. That is a fixed 150 ms, so it costs a short utterance
+#: sentence of Fred: Tiger 77x, Leopard 87x, **Lion 8x**. Lion is an order
+#: lower for a reason that is not the engine and not this bug -- 10.7 never
+#: calls `AUGraphStop`, measured 0 times in 96, so every utterance sits out
+#: the serve loop's quiet period after its audio is already complete. That is
+#: a fixed 300 ms, and `tiger_host_serve.c` says at length why it is still 300
+#: rather than the 150 that was tried. A fixed cost hurts a short utterance
 #: proportionally more, which is why the floor is set where a *long* sentence
-#: comfortably clears it.
+#: clears it easily.
 MIN_REALTIME = 3.0
 
 TEXT = ("The US Chamber of Commerce warned Tuesday that higher tariffs would "
