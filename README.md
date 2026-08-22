@@ -6,12 +6,32 @@ maps Apple's Intel `MacinTalk` into memory, fills the pointer slots `dyld`
 would have filled, and calls the engine directly. An utterance costs about
 twelve milliseconds.
 
-Two add-ons for NVDA so far, one per engine generation:
+**One add-on for NVDA**, `pantheraspeech`, declaring one synthesizer per
+engine generation:
 
-| | | voices |
+| synthesizer | | voices |
 |---|---|---|
 | [**tigerspeech**](tiger/README.md) | Mac OS X 10.4 Tiger | twenty-three, including Fred as he sounded in 2005 |
 | [**leopardspeech**](leopard/README.md) | Mac OS X 10.5 Leopard | twenty-four, including **Alex** |
+
+## One add-on, several synthesizers
+
+They were an add-on each until 0.9.0, with an engine selector planned to bring
+them together. That was the wrong shape. Changing generation tears down a host
+and loads up to 700 MB of samples, and it changes the voice list, the settings
+and the pitch scale — which is precisely what NVDA already calls *changing
+synthesizer*. Every hard problem in the selector design was created by cramming
+two engines into one synth, and stating it the other way round dissolves all of
+them: the config spec stays static, no control is inert, and NVDA remembers a
+voice per generation because it already stores settings per synth.
+
+What it does not solve is per-language voice mapping *across* synthesizers.
+That is a real gap in NVDA and it is worth saying so rather than leaving it to
+be discovered.
+
+The driver *module* names — `tigerspeech`, `leopardspeech` — are frozen for
+good. NVDA keys every speech setting by synth name, so renaming one silently
+resets the voice, rate, pitch and volume of everybody who had it selected.
 
 ## Why the cats
 
@@ -48,20 +68,31 @@ build.sh      builds it and stages it into every add-on below
 tools/        Mach-O dissection: machosyms, machodis, cfstrings, render_once
 bridge/       the original QEMU bridge, kept as an oracle
 docs/         engine notes that are not specific to one generation
-tiger/        the tigerspeech add-on: driver, tests, extractor, package.py
-leopard/      the leopardspeech add-on, likewise
+panthera/     the add-on: both drivers, the shared plugin, tests, package.py
+tiger/        Tiger's extractor and engine notes
+leopard/      Leopard's extractor and engine notes
 ```
 
-An add-on folder is self-contained apart from the loader: its own `tests/`,
-its own extractor, its own `package.py`. `py -3 -m pytest tests/ -q` from
-inside one runs that add-on's suite.
+`py -3 -m pytest tests/ -q` from inside `panthera/` runs the whole suite; the
+NVDA fakes are shared and each generation's engine fixtures live in
+`tests/tiger/` and `tests/leopard/`.
+
+The extractors stay one per generation, under `tiger/` and `leopard/`, because
+they read different install images by different means — and because the
+dialogs that name their URLs have already shipped.
 
 ## Releases
 
-Each add-on versions and ships on its own, so **tags carry the add-on name** —
-`tigerspeech/v0.7.9`, `leopardspeech/v0.7.4` — and each release attaches only
-its own `.nvda-addon`. A bare `vN.N.N` tag here means nothing any more; the
-ones that predate the merge are Tiger's and are left alone.
+**Tags carry the add-on name** — `pantheraspeech/v0.9.0`. The
+`tigerspeech/…` and `leopardspeech/…` tags are the releases from before the two
+became one, and are left alone; a bare `vN.N.N` tag predates all of it and is
+Tiger's.
+
+Upgrading from those releases does not remove them: NVDA's manifest has no
+`replaces` field, so both can sit installed at once and each offers a
+synthesizer of the same name. The add-on notices at start-up and offers to
+remove the older copies, because which one NVDA loads otherwise depends on the
+order it reads the add-ons folder in.
 
 Releases published before this repository was renamed are still reachable:
 the old `tiger-speech` URL redirects, and `leopard-speech` is archived with

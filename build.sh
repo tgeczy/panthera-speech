@@ -57,12 +57,14 @@ eval "\"$CL\" -nologo -O2 -MT -W3 $INC \"$ROOT/src/tiger_host.c\" \
 
 echo "  -> build/tiger_host.exe"
 
-# Stage it into each add-on immediately.  A driver loads its own copy, not
-# this one, and a stale copy there presents as "the fix did not work" -- which
-# cost a confusing test failure once already.
+# Stage it into the add-on immediately.  A driver loads its own copy, not this
+# one, and a stale copy there presents as "the fix did not work" -- which cost
+# a confusing test failure once already.
 #
-# Add a line here when an add-on joins.  Missing one is silent: the add-on
-# simply keeps running last month's loader.
+# One line, now that Tiger and Leopard are one add-on: there used to be two,
+# staging the same bytes twice under two names.  Add a line here if a second
+# add-on ever joins.  Missing one is silent: the add-on simply keeps running
+# last month's loader.
 stage() {                          # <add-on folder> <_private folder> <name>
     dest="$ROOT/$1/addon/synthDrivers/$2/$3"
     [ -d "$ROOT/$1" ] || return 0  # not checked out; nothing to stage into
@@ -71,5 +73,4 @@ stage() {                          # <add-on folder> <_private folder> <name>
     echo "  -> $1/addon/synthDrivers/$2/$3"
 }
 
-stage tiger   _tigerspeech   tiger_host.exe
-stage leopard _leopardspeech leopard_host.exe
+stage panthera _panthera panthera_host.exe

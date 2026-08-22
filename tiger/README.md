@@ -34,10 +34,10 @@ supply your own Tiger install.
 That refusal is the point, not a formality. Run it and see:
 
 ```
-$ py -3 package.py
+$ py -3 ../panthera/package.py
 REFUSING to package -- these are not ours to distribute:
-   synthDrivers/_tigerspeech/MacinTalk
-   synthDrivers/_tigerspeech/VoiceDescription
+   synthDrivers/_panthera/MacinTalk
+   synthDrivers/_panthera/VoiceDescription
 ```
 
 ## Getting the engine
@@ -246,8 +246,8 @@ Set `TIGER_SPEED=1` to render in true real time if you ever need to compare.
 ## Building
 
 ```
-sh build.sh            # -> build/tiger_host.exe   (32-bit, MSVC)
-py -3 package.py       # -> tigerspeech-N.nvda-addon
+sh build.sh                  # -> build/tiger_host.exe   (32-bit, MSVC)
+py -3 panthera/package.py    # -> pantheraspeech-N.nvda-addon
 ```
 
 **The host is 32-bit because Apple's engine is i386, and there is no second
@@ -261,8 +261,8 @@ NVDA 2023.1 runs.
 Useful while working on it:
 
 ```
-py -3 tools/speak.py "hello there" Fred 180    # drive the host directly
-py -3 tools/test_driver.py                     # exercise the driver outside NVDA
+py -3 tools/speak.py "hello there" Fred 180       # drive the host directly
+py -3 tiger/tools/test_driver.py                  # the driver, outside NVDA
 ```
 
 ## Notes for anyone reading the host
@@ -285,17 +285,22 @@ A few things cost a debugging round each and are worth knowing:
 ## Layout
 
 ```
-addon/synthDrivers/tigerspeech.py            the NVDA driver
-addon/synthDrivers/_tigerspeech/tree.py      finding the user's engine
-addon/synthDrivers/_tigerspeech/tiger_host.exe
-addon/globalPlugins/tigerSpeechData.py       first-run "your engine folder is empty"
-src/tiger_host.c                             the loader and the shims
-tools/extract_tiger.py                       get the engine from your own disc
-tools/speak.py                               drive the host from a command line
-tools/check_clean.py                         refuse to ship anybody's disk layout
-tests/                                       the driver rules, as regressions
-docs/macintalk-3.3.md                        how the engine works
-bridge/                                      the original QEMU bridge, kept as an oracle
+panthera/addon/synthDrivers/tigerspeech.py          the NVDA driver
+panthera/addon/synthDrivers/_panthera/pantheratiger.py   finding the user's engine
+panthera/addon/synthDrivers/_panthera/panthera_host.exe
+panthera/addon/globalPlugins/pantheraData.py        first-run "your engine folder is empty"
+panthera/tests/tiger/                               the driver rules, as regressions
+panthera/package.py                                 build the .nvda-addon
+src/tiger_host.c                                    the loader and the shims
+tiger/tools/extract_tiger.py                        get the engine from your own disc
+tools/speak.py                                      drive the host from a command line
+tools/check_clean.py                                refuse to ship anybody's disk layout
+docs/macintalk-3.3.md                               how the engine works
+bridge/                                             the original QEMU bridge, kept as an oracle
+
+The driver, the plugin and the host are shared with Leopard: since 0.9.0 both
+generations are one add-on declaring two synthesizers. What stays here is
+Tiger's extractor and the engine notes.
 ```
 
 ## Status

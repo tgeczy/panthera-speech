@@ -12,7 +12,7 @@ there is the starting point here, and most of it transfers unchanged.
 ## One loader, at the root
 
 **There is one loader in this repository and there will only ever be one.**
-`sh ../build.sh` builds it and stages it into every add-on, so all of them
+`sh ../build.sh` builds it and stages it into the add-on, so both generations
 ship the same binary under different local names.
 
 That is deliberate, and it paid for itself twice in a single day. The defect
