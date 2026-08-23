@@ -36,6 +36,42 @@ static const char *nearest_symbol(const image *im, unsigned addr,
 static image *g_images[4];
 static int    g_nimages;
 
+/* An address inside the engine, written the way a disassembly lists it.
+ *
+ * Three places want this -- a fault, the end-of-utterance summary, and a GCD
+ * handler firing -- and each had grown its own loop over `g_images`.  The
+ * third one is why it became a function: a handler that fires while the engine
+ * is supposed to be idle has to be *named* in the log, not left as a bare
+ * pointer that lands somewhere different every run.
+ *
+ * Returns a static buffer, so one call per printf. */
+static const char *engine_symbol(void *addr)
+{
+    static char buf[192];
+    unsigned v = (unsigned)addr;
+    int i;
+    for (i = 0; i < g_nimages; i++) {
+        image *im = g_images[i];
+        unsigned off, symaddr = 0;
+        const char *sym, *base;
+        if (v < im->lo + im->slide || v >= im->hi + im->slide) continue;
+        off = v - im->slide;
+        sym = nearest_symbol(im, off, &symaddr);
+        base = strrchr(im->path, 0x2f);
+        if (!base) base = im->path; else base++;
+        if (sym)
+            _snprintf(buf, sizeof(buf) - 1, "%s + 0x%x  (%s)",
+                      sym, off - symaddr, base);
+        else
+            _snprintf(buf, sizeof(buf) - 1, "%s + 0x%x", base, off);
+        buf[sizeof(buf) - 1] = 0;
+        return buf;
+    }
+    _snprintf(buf, sizeof(buf) - 1, "%p, in none of the loaded images", addr);
+    buf[sizeof(buf) - 1] = 0;
+    return buf;
+}
+
 /* ---- surviving the engine's own divide by zero ------------------------- */
 /*
  * MacinTalk 3 divides by (index2 - index1) when interpolating segment

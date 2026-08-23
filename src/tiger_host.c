@@ -159,6 +159,16 @@ static volatile long g_stopped; /* AUGraphStop: the engine's end-of-utterance */
 static int g_no_abbrev;
 /* TIGER_PREF_LOG: name every tuning parameter the engine asks for. */
 static int g_pref_log;
+/* TIGER_DEFERRED_STOP=1 lets Lion's deferred audio-graph stop fire, which
+ * wedges the engine; see tiger_host_gcd.c.  Here so the bug can be reproduced
+ * on demand rather than only remembered. */
+static int g_deferred_stop;
+/* TIGER_GCD_LOG: narrate every GCD handler and every stage of a request.
+ *
+ * For hangs rather than for wrong answers.  Everything in the end-of-utterance
+ * summary prints when the utterance ends, which is no help at all when the
+ * complaint is that it never does. */
+static int g_gcd_log;
 
 static void die(const char *fmt, ...)
 {
@@ -334,6 +344,8 @@ int main(int argc, char **argv)
     cf_params_init();       /* TIGER_PARAMS; does nothing when it is unset */
     g_no_abbrev = getenv("TIGER_NO_ABBREV") ? 1 : 0;
     g_pref_log  = getenv("TIGER_PREF_LOG") ? 1 : 0;
+    g_gcd_log   = getenv("TIGER_GCD_LOG") ? 1 : 0;
+    g_deferred_stop = getenv("TIGER_DEFERRED_STOP") ? 1 : 0;
     if (g_no_abbrev)
         fprintf(stderr, "tiger_host: abbreviation rules are off\n");
 

@@ -381,8 +381,14 @@ static int serve(image *mt, void *chan, const char *voicesdir)
          * paragraph -- and this request's own flags word already means
          * REQF_COMMANDS, so forwarding it would have made "accept embedded
          * commands" quietly mean kNoEndingProsody as well.  Zero it stays. */
+        if (g_gcd_log)
+            fprintf(stderr, "tiger_host: [%u] speaking %u byte(s)\n",
+                    g_utt, textlen);
         if (!err) err = speak_text(&api, chan, text, textlen);
         speak_ms = wall_ms() - g_utt_t0;
+        if (g_gcd_log)
+            fprintf(stderr, "tiger_host: [%u] speak returned %d at %.1f ms\n",
+                    g_utt, err, speak_ms);
         free(text);
 
         /* A streamed response says how it went before it says anything else.
@@ -584,6 +590,9 @@ static int serve(image *mt, void *chan, const char *voicesdir)
              * Wait for the queue to drain.  Two-millisecond ticks, a second's
              * worth: an utterance's worth of slices drains in a few of them at
              * the default clock, and if it ever does not, say so. */
+            if (g_gcd_log)
+                fprintf(stderr, "tiger_host: [%u] scheduling ended, %u slice(s)"
+                                ", %u frame(s)\n", g_utt, g_slices, g_pcm_n);
             for (ticks = 0; !pacer_idle() && ticks < 500; ticks++) Sleep(2);
             if (!pacer_idle())
                 fprintf(stderr, "tiger_host: the pacer was still collecting "
@@ -639,22 +648,9 @@ static int serve(image *mt, void *chan, const char *voicesdir)
                             "gcd timer %u/%.0f ms, condvar %u/%.0f ms\n",
                     g_w_usleep_n, g_w_usleep_ms, g_w_mpq_n, g_w_mpq_ms,
                     g_w_src_n, g_w_src_ms, g_w_cnd_n, g_w_cnd_ms);
-        if (g_float_stats && g_gcd_handler) {
-            int ii;
-            for (ii = 0; ii < g_nimages; ii++) {
-                image *im = g_images[ii];
-                unsigned v = (unsigned)g_gcd_handler;
-                if (v < im->lo + im->slide || v >= im->hi + im->slide)
-                    continue;
-                {   unsigned off = v - im->slide, symaddr = 0;
-                    const char *sym = nearest_symbol(im, off, &symaddr);
-                    const char *b = strrchr(im->path, 0x2f);
-                    if (!sym) continue;
-                    fprintf(stderr, "  [gcd] handler %s + 0x%x  (%s)\n",
-                            sym, off - symaddr, b ? b + 1 : im->path);
-                    break; }
-            }
-        }
+        if (g_float_stats && g_gcd_handler)
+            fprintf(stderr, "  [gcd] handler %s\n",
+                    engine_symbol(g_gcd_handler));
         if (g_float_stats)
             fprintf(stderr, "  [stat] answered %u, refused %u, said idle %u\n",
                     g_stat_ok, g_stat_refused, g_stat_idle);

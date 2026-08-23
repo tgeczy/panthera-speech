@@ -25,6 +25,9 @@
  * failure worth having.
  */
 
+/* Defined in tiger_host_fault.c, which is included after this one. */
+static const char *engine_symbol(void *addr);
+
 /* **Every call from here into engine code goes through this.**
  *
  * Darwin's i386 ABI requires esp to be 16-byte aligned *at the call*, and the
@@ -133,6 +136,7 @@ typedef struct {
     HANDLE    thread;
     volatile long running;
     unsigned  fired;
+    int       reaps_graph;              /* the deferred audio-graph stop */
 } dsource;
 
 static dsource g_sources[16];
@@ -201,10 +205,22 @@ static DWORD WINAPI source_thread(LPVOID param)
             static void *seen[8]; static int nseen; int k, known = 0;
             for (k = 0; k < nseen; k++) if (seen[k] == (void *)s->handler) known = 1;
             if (!known && nseen < 8) { seen[nseen++] = (void *)s->handler;
-                fprintf(stderr, "tiger_host: gcd source %p handler %p ctx %p\n",
-                        (void *)s, (void *)s->handler, s->ctx); }
+                fprintf(stderr, "tiger_host: gcd source %p fired on time, "
+                                "handler %s\n", (void *)s,
+                        engine_symbol((void *)s->handler)); }
             g_gcd_handler = (void *)s->handler;
-            enter_engine(s->handler, s->ctx); s->fired++; }
+            /* Say so on the way in *and* on the way out.  A handler that fires
+             * seconds after the last utterance and never returns is how the
+             * channel wedges while the host still looks alive, and the two
+             * cases -- ran and returned, versus went in and stayed -- are
+             * indistinguishable from a single line. */
+            if (g_gcd_log)
+                fprintf(stderr, "tiger_host: gcd %p entering %s\n",
+                        (void *)s, engine_symbol((void *)s->handler));
+            enter_engine(s->handler, s->ctx); s->fired++;
+            if (g_gcd_log)
+                fprintf(stderr, "tiger_host: gcd %p returned after %u "
+                                "firing(s)\n", (void *)s, s->fired); }
         if (s->period_ms) {                     /* a real repeating timer */
             s->delay_ms = s->period_ms;
             s->armed = 1;
@@ -242,11 +258,47 @@ static void * __cdecl sh_dispatch_get_context(void *o)
     return s ? s->ctx : NULL;
 }
 
+/* **The audio graph must not be torn down between utterances.**
+ *
+ * A few seconds after it stops speaking, Lion's engine arms a one-shot timer
+ * on `_MTBEAudioUnitDeferredStopAudioGraph`, which calls `AUGraphStop` and puts
+ * `MTBEAudioUnitSoundOutput` into its stopped state.  On a Mac that is good
+ * manners: it hands the audio device back so the machine can idle.
+ *
+ * Here it wedges the engine.  Once it has fired, the next `SESpeakBuffer` does
+ * not return -- measured, a fresh host speaks fine, sits quiet for five
+ * seconds and then never speaks again.  That is Jerry's report exactly ("if I
+ * don't do anything for a minute or two, then the next thing I do doesn't
+ * talk"), and it is why Lion drops focus announcements where Leopard does not:
+ * 10.5's MacinTalk has no GCD at all and so has no deferred anything.
+ *
+ * The graph it is being polite about does not exist.  There is no device, no
+ * power to save and nothing to hand back -- `tiger_host_audio.c` is a fake
+ * AUGraph that only collects buffers.  So the stop costs us the bug and buys
+ * nothing, and refusing to arm it leaves the engine in the state it is in
+ * while speech is flowing, which is the state every measurement in this
+ * repository was taken in.
+ *
+ * Refused at the source rather than inside `sh_AUGraphStop`, because the
+ * engine sets its own stopped flag straight after that call returns and we
+ * cannot decline that part.  Nothing else stops the graph: `[au] stop` is 0 on
+ * 96 of 96 Lion utterances.
+ *
+ * Named, not addressed -- the load address moves every run.  The lookup is
+ * done once, here, because `set_timer` is called two and a half thousand times
+ * an utterance and `engine_symbol` walks the symbol table. */
 static void __cdecl sh_dispatch_source_set_event_handler_f(
         void *o, void (__cdecl *fn)(void *))
 {
     dsource *s = as_source(o);
-    if (s) s->handler = fn;
+    if (s) {
+        s->handler = fn;
+        s->reaps_graph = fn && strstr(engine_symbol((void *)fn),
+                                      "DeferredStopAudioGraph") != NULL;
+        if (s->reaps_graph)
+            fprintf(stderr, "tiger_host: the engine's deferred audio-graph "
+                            "stop is disarmed for the life of this host\n");
+    }
     if (g_verbose)
         printf("  [gcd] handler %p on source %p%s\n", (void *)fn, o,
                s ? "" : "  <- NOT one of ours");
@@ -270,6 +322,20 @@ static void __cdecl sh_dispatch_source_set_timer(void *o,
     unsigned __int64 now;
     (void)leeway;
     if (!s) return;
+    /* See `sh_dispatch_source_set_event_handler_f`.  The engine arms and
+     * disarms this one freely; we simply never let it become due.  The delay
+     * it asks for is the engine's own patience with a silent listener, and it
+     * is the number the regression test has to outwait. */
+    if (s->reaps_graph && !g_deferred_stop) {
+        if (g_gcd_log) {
+            unsigned __int64 t = (unsigned __int64)GetTickCount64() * 1000000ULL;
+            fprintf(stderr, "tiger_host: refusing a deferred graph stop "
+                            "%.0f ms out\n",
+                    start > t ? (double)(start - t) / 1e6 : 0.0);
+        }
+        s->armed = 0;
+        return;
+    }
 
     /* `DISPATCH_TIME_FOREVER` arrives as INT64_MAX, not as ~0ull, and a
      * threshold set at the unsigned end missed it -- turning "never repeat"
@@ -284,8 +350,23 @@ static void __cdecl sh_dispatch_source_set_timer(void *o,
 
     /* The same clock `sh_dispatch_time` hands out, so the subtraction means
      * something.  `DISPATCH_TIME_NOW` is 0 and any start already past is due
-     * immediately rather than overdue by a very large unsigned number. */
+     * immediately rather than overdue by a very large unsigned number.
+     *
+     * **A start of `DISPATCH_TIME_FOREVER` means disarm**, and it was being
+     * read as a delay and clamped -- so "never fire this" became "fire this in
+     * a minute".  `MTBEAudioUnitSoundOutput::StartAudioGraph` disarms the
+     * deferred stop exactly this way, with `~0ull` for the start, which is the
+     * one caller where getting it wrong is a timer going off behind the
+     * engine's back.  Same bug the interval already had a guard for, one
+     * argument along. */
     now = (unsigned __int64)GetTickCount64() * 1000000ULL;
+    if (start > (unsigned __int64)3600 * 24 * 1000000000ULL + now) {
+        s->armed = 0;
+        s->delay_ms = 0;
+        g_w_settimer++;
+        if (g_verbose) printf("  [gcd] timer on %p: disarmed\n", o);
+        return;
+    }
     if (start == 0 || start <= now)
         s->delay_ms = 0;
     else {
