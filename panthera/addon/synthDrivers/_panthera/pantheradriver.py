@@ -650,6 +650,7 @@ if _HERE not in sys.path:
 #: Prefixed for the same reason, and one worse: `numbers` is a module in
 #: Python's own standard library, and this folder is at the front of
 #: `sys.path`, so a file of that name would shadow it for the whole of NVDA.
+import pantheraabbrev                                         # noqa: E402
 import pantheranumbers                                        # noqa: E402
 #: Prefixed for the same reason as the two above.
 import pantherastress                                         # noqa: E402
@@ -851,7 +852,11 @@ class PantheraDriver(SynthDriver):
         ),
         BooleanDriverSetting(
             "expandAbbreviations",
-            _("Expand &abbreviations (5KB, 1,234MB, 20ish)"),
+            # Translators: a synthesizer setting.  The examples are the shapes
+            # it covers, and they are there because "abbreviations" alone
+            # describes several things the engine does and this is only some
+            # of them.
+            _("Expand &abbreviations (5KB, 1,234MB, 20ish, DR, ST)"),
             defaultVal=True,
         ),
         # Alex says "cologne" for "colon" whenever a word follows it, which is
@@ -1461,6 +1466,22 @@ class PantheraDriver(SynthDriver):
             text = "".join(
                 part if part.startswith("[[")
                 else pantheranumbers.expand(part, self._numberStyle)
+                for part in COMMAND_SPLIT_RE.split(text))
+        if not self._expandAbbreviations:
+            #: **The engine's own abbreviation table, which no setting of its
+            #: own reaches.**  TIGER_NO_ABBREV turns off the dictionary rules
+            #: that rewrite units and quantities, and those are regular
+            #: expressions this host compiles, so declining to compile one
+            #: turns it off.  "DR" is not one of them: it is a lexical entry
+            #: inside MacinTalk, tagged `Abbrev` and `Doctor`, and rendering it
+            #: runs no regular expression and no query at all.
+            #:
+            #: So the switch only did half of what its label promised, and the
+            #: half it missed is the half Tomi noticed.  See pantheraabbrev.py
+            #: for what is covered and, more to the point, what deliberately is
+            #: not.
+            text = "".join(
+                part if part.startswith("[[") else pantheraabbrev.spell(part)
                 for part in COMMAND_SPLIT_RE.split(text))
         if self._fixStress:
             #: Outside the commands for the same reason the numbers are: a

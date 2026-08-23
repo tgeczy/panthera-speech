@@ -4,6 +4,11 @@ Reported as "sometimes I have to toggle the checkbox several times to get the
 dictionary to fire up... no rhyme or reason as to how many".  The checkbox was
 never the variable: the same text, in one host, with nothing touched between,
 came back expanded or not depending on the run.
+
+These are the *dictionary* rules -- 5KB, 1,234MB, 20ish -- which are regular
+expressions this host compiles, so "Expand abbreviations" turns them off by
+declining to compile them.  The engine has a second, separate set that no
+setting of its own reaches: `tests/test_acronyms.py`, and DR read as "doctor".
 """
 
 
