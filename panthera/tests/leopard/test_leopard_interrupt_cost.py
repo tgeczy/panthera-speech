@@ -32,27 +32,61 @@ def _pid(driver):
     return proc.pid if proc is not None else None
 
 
+def _waitFor(pred, seconds=20.0):
+    end = time.time() + seconds
+    while time.time() < end and not pred():
+        time.sleep(0.01)
+    return pred()
+
+
+def test_a_cancelled_render_ends_well_inside_the_grace_period(driver):
+    """The measurement the backstop rests on, as an assertion.
+
+    **This is the property, and the pid test below is the consequence.**  If a
+    cancelled response ends promptly, waiting is cheaper than killing; if it
+    ever stops doing so, the driver is back to holding the worker in a read
+    and the grace period becomes a delay rather than a saving.  Either way
+    this is the number that decides, so it is the one worth watching.
+    """
+    driver.speak(["a paragraph long enough that cancelling it part way "
+                  "through leaves a great deal of it unspoken, which is the "
+                  "whole situation the host has to handle promptly. " * 3])
+    assert _waitFor(lambda: driver._rendering), "the render never started"
+    driver.cancel()
+    started = time.time()
+    assert _waitFor(lambda: not driver._rendering, 10.0),         "the host never finished the response it was told to abandon"
+    took = time.time() - started
+    assert took < driver.ABANDON_GRACE, (
+        "a cancelled response took %.2f s to end, against a grace period of "
+        "%.2f s -- the backstop will now fire on ordinary interruptions"
+        % (took, driver.ABANDON_GRACE))
+
+
 def test_interrupting_does_not_restart_the_host(driver):
     """A burst of cancels must leave the same process running.
 
     The assertion is on the pid rather than on any timing, because the cost
     being avoided is a process start plus a voice load, and a machine under
     load can hide that in a wall-clock number while still paying it.
+
+    Each interruption waits for the response to end before the next one, which
+    is what a person arrowing through text does -- the keystroke that
+    interrupts is also the one that asks for the next thing.  Firing eight
+    cancels at a fixed 30 ms regardless made this fail on a loaded machine for
+    a reason that was not the bug: the worker really was still rendering when
+    the grace period expired, and the backstop was right to act.
     """
     driver.speak(["warming up the engine"])
-    end = time.time() + 20.0
-    while time.time() < end and _pid(driver) is None:
-        time.sleep(0.02)
+    assert _waitFor(lambda: _pid(driver) is not None), "no host was started"
     started = _pid(driver)
-    assert started is not None, "no host was ever started"
-    driver.cancel()
-    time.sleep(driver.ABANDON_GRACE + 0.2)
+    assert _waitFor(lambda: not driver._rendering), "the warm-up never ended"
 
     for _ in range(8):
         driver.speak(["The quick brown fox jumps over the lazy dog, and then "
                       "carries on for long enough to still be rendering."])
-        time.sleep(0.03)                     # mid-render, as a keypress would
+        assert _waitFor(lambda: driver._rendering), "a render never started"
         driver.cancel()
+        assert _waitFor(lambda: not driver._rendering, 10.0),             "a cancelled response never ended"
 
     #: Long enough that any grace timer this started has had its chance.
     time.sleep(driver.ABANDON_GRACE + 0.5)
@@ -70,11 +104,8 @@ def test_a_host_that_stops_answering_is_still_retired(driver, monkeypatch):
     merely severe.
     """
     driver.speak(["warming up the engine"])
-    end = time.time() + 20.0
-    while time.time() < end and _pid(driver) is None:
-        time.sleep(0.02)
+    assert _waitFor(lambda: _pid(driver) is not None)
     started = _pid(driver)
-    assert started is not None
     #: Wait for the warm-up to *finish*.  Setting the flag while the worker is
     #: still in a render means the worker clears it a moment later and the
     #: grace period reads that as the host letting go by itself -- which is

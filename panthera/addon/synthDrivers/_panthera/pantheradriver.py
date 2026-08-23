@@ -1185,10 +1185,21 @@ class PantheraDriver(SynthDriver):
     #: `_rendering` still true, and any keystroke inside that window retired
     #: the host.
     #:
-    #: 500 ms is far above every number above and far below what anybody would
-    #: sit through if the host really has stopped answering -- which it can,
-    #: and did, for the whole of 0.95.0.
-    ABANDON_GRACE = 0.5
+    #: **1.5 s, and 500 ms was tried first.**  It is eleven times the worst
+    #: number above, which looked absurdly generous and was not: under a
+    #: loaded machine -- the full test suite running beside it -- a burst of
+    #: eight interruptions still had the worker rendering half a second after
+    #: the last cancel, and the backstop fired and retired a host that was
+    #: about to answer.  That is the fault this exists to remove, arriving by
+    #: a different route on a slower machine.
+    #:
+    #: The asymmetry says which way to err.  A grace period that is too long
+    #: costs a wedged host an extra second before it recovers, and wedges
+    #: should now be extinct -- see the deferred audio-graph stop in
+    #: `tiger_host_gcd.c`.  One that is too short costs a process restart and
+    #: a voice reload on an ordinary keystroke, on exactly the machines least
+    #: able to afford it.
+    ABANDON_GRACE = 1.5
 
     def _abandonHost(self):
         """Take the host away from an utterance nobody is going to hear --
