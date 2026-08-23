@@ -307,7 +307,18 @@ static const shim g_shims[] = {
     { "___cxa_guard_release", (void *)sh_guard_release },
     { "___cxa_pure_virtual",  (void *)sh_pure_virtual  },
     { "_OSMemoryBarrier", (void *)sh_memory_barrier },
-    { "_getenv",  (void *)sh_getenv  }, { "_random",  (void *)sh_random  },
+    /* **`_getenv` was here too, and had never once been reached.**  It mapped
+     * to a stub returning NULL, but `lookup_shim` is a linear first-match and
+     * the real `getenv` is registered two hundred rows above.  So the engine
+     * has always read the host's actual environment -- which is what makes
+     * `MTX_DEBUG=1` and `MEOW_DEBUG=1` work: measured, 207 lines of the
+     * engine's own narration with it set and none without.
+     *
+     * Removed rather than left, because a dead row saying the opposite of what
+     * happens is worse than no row, and this file is where somebody looks to
+     * find out.  Found while writing `docs/macintalk-3.6.md`, which is an
+     * argument for writing documentation. */
+    { "_random",  (void *)sh_random  },
     { "_srandom", (void *)sh_srandom }, { "_usleep",  (void *)sh_usleep  },
 
     /* Accelerate, for Alex.  Leopard's concatenative voice time-scales

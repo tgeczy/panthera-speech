@@ -13,6 +13,7 @@ engine generation:
 |---|---|---|
 | [**tigerspeech**](tiger/README.md) | Mac OS X 10.4 Tiger | twenty-three, including Fred as he sounded in 2005 |
 | [**leopardspeech**](leopard/README.md) | Mac OS X 10.5 Leopard | twenty-four, including **Alex** |
+| [**lionspeech**](lion/README.md) | Mac OS X 10.7 Lion | twenty-four, including a later, smaller **Alex** |
 
 ## One add-on, several synthesizers
 
@@ -29,8 +30,8 @@ What it does not solve is per-language voice mapping *across* synthesizers.
 That is a real gap in NVDA and it is worth saying so rather than leaving it to
 be discovered.
 
-The driver *module* names — `tigerspeech`, `leopardspeech` — are frozen for
-good. NVDA keys every speech setting by synth name, so renaming one silently
+The driver *module* names — `tigerspeech`, `leopardspeech`, `lionspeech` —
+are frozen for good. NVDA keys every speech setting by synth name, so renaming one silently
 resets the voice, rate, pitch and volume of everybody who had it selected.
 
 ## Why the cats
@@ -86,28 +87,31 @@ renders byte-for-byte identical. One loader, per-engine paths inside it.
 Forked, that fix would have had to be found twice.
 
 Each lineage added since has pushed more of the host behind an interface
-rather than adding a branch to it, and the ones still to come — Snow Leopard
-and Lion — are expected to modularise it further. The aim is a host that can
-serve any 32-bit MacinTalk generation, with what differs between them stated
-once, in one place, per generation.
+rather than adding a branch to it. Lion cost the most and gave the most: a
+dyld-info interpreter, a libdispatch layer and an FFT, all of them in the host
+rather than in a branch. **Snow Leopard is the one still to come**, and it is
+the same loader problem exactly — a driver and a table entry, not a new add-on.
+The aim is a host that can serve any 32-bit MacinTalk generation, with what
+differs between them stated once, in one place, per generation.
 
 ```
 src/          the loader, the shims, the host
 build.sh      builds it and stages it into every add-on below
 tools/        Mach-O dissection: machosyms, machodis, cfstrings, render_once
 bridge/       the original QEMU bridge, kept as an oracle
-docs/         engine notes that are not specific to one generation
+docs/         one note per engine generation, plus the tunables
 panthera/     the add-on: both drivers, the shared plugin, tests, package.py
 tiger/        Tiger's extractor and engine notes
 leopard/      Leopard's extractor and engine notes
+lion/         Lion's extractor and engine notes
 ```
 
 `py -3 -m pytest tests/ -q` from inside `panthera/` runs the whole suite; the
 NVDA fakes are shared and each generation's engine fixtures live in
-`tests/tiger/` and `tests/leopard/`.
+`tests/tiger/`, `tests/leopard/` and `tests/lion/`.
 
-The extractors stay one per generation, under `tiger/` and `leopard/`, because
-they read different install images by different means — and because the
+The extractors stay one per generation, under `tiger/`, `leopard/` and
+`lion/`, because they read different install images by different means — and because the
 dialogs that name their URLs have already shipped.
 
 ## Releases
@@ -126,6 +130,19 @@ order it reads the add-ons folder in.
 Releases published before this repository was renamed are still reachable:
 the old `tiger-speech` URL redirects, and `leopard-speech` is archived with
 its own six releases intact.
+
+## Notes on the engines themselves
+
+One per generation, in `docs/`. They are written for somebody doing this work
+rather than for somebody using the add-on, and everything in them was measured
+against the binaries rather than remembered.
+
+| | |
+|---|---|
+| [`macintalk-3.3.md`](docs/macintalk-3.3.md) | Tiger. The loader, the twelve-function interface, the fake AUGraph, and Vicki's AAC through the Sound Manager. **Read this one first** -- the other two assume it. |
+| [`macintalk-3.6.md`](docs/macintalk-3.6.md) | Leopard. Alex and the 669 MB sample bank, AudioConverter and its priming, the slice timeline that restarts at zero, the dictionary's SQLite and POSIX regex, and what prosody is and is not tunable. |
+| [`macintalk-4.0.md`](docs/macintalk-4.0.md) | Lion. Compressed dyld info, Grand Central Dispatch and the timer that stops the audio graph, rate and pitch on a new API, and WSOLA moved into the frequency domain. |
+| [`engine-tunables.md`](docs/engine-tunables.md) | The 283 named parameters, and which 82 are live. |
 
 ## Faithful, including the flaws
 

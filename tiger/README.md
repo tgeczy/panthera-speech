@@ -74,7 +74,7 @@ it found, so you learn this in a second rather than from a silent synthesizer.
 setting, it is [leopard-speech][leopard] — Leopard's MacinTalk 3.6 dropped the
 check again, and it carries Fred and the whole MacinTalk 3 roster as well as
 Alex. What you lose is that Leopard's Fred is a later engine; see
-[docs/macintalk-3.3.md](docs/macintalk-3.3.md) for what changed and why 3.3 is
+[docs/macintalk-3.3.md](../docs/macintalk-3.3.md) for what changed and why 3.3 is
 the Fred nearly everyone remembers.
 
 [leopard]: https://github.com/tgeczy/leopard-speech

@@ -750,7 +750,6 @@ static void __cdecl sh_sgemv(int order, int trans, int m, int n, float alpha,
     }
 }
 
-static char * __cdecl sh_getenv(const char *n) { (void)n; return NULL; }
 static long   __cdecl sh_random(void)          { return rand(); }
 static void   __cdecl sh_srandom(unsigned s)   { srand(s); }
 static void __cdecl sh_usleep(unsigned us)
