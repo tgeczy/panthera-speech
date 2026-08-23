@@ -1156,41 +1156,97 @@ class PantheraDriver(SynthDriver):
                          self._phrasing))
             return self._proc
 
+    #: How long a cancelled response is given to end on its own before the
+    #: host is killed instead.
+    #:
+    #: **Measured, and the number this replaces was measured too -- against a
+    #: host that behaved differently.**  When `_abandonHost` was written, a
+    #: paragraph of Alex took 815 ms to render and 832 ms rendered then
+    #: cancelled after 50 ms: honouring the cancel saved nothing, so killing
+    #: the process was the only way to free the worker.
+    #:
+    #: The host answers a cancel properly now -- the serve loop checks the
+    #: event every 10 ms and stops the channel -- and the same measurement
+    #: today, cancelling at 50 ms:
+    #:
+    #:     lion     a long paragraph   588.5 ms  ->   95.8 ms
+    #:     leopard  a long paragraph   436.7 ms  ->  133.0 ms
+    #:     lion     a single letter    326.8 ms  ->  100.1 ms
+    #:
+    #: So the wait is already over before a kill could have finished, and
+    #: killing costs a fresh start-up and a voice reload -- which for Alex is a
+    #: 422 MB bank on Lion and 701 MB on Leopard.
+    #:
+    #: Reported by Timothy Wynn, who could hear it: "interrupt the voice close
+    #: to the start of the utterance, e.g. navigating rapidly by letter.  You
+    #: will hear that the executable runs again."  Lion made it constant, for a
+    #: reason that is not the driver's fault -- 10.7 never stops its audio
+    #: graph, so every utterance sits out a 300 ms quiet window with
+    #: `_rendering` still true, and any keystroke inside that window retired
+    #: the host.
+    #:
+    #: 500 ms is far above every number above and far below what anybody would
+    #: sit through if the host really has stopped answering -- which it can,
+    #: and did, for the whole of 0.95.0.
+    ABANDON_GRACE = 0.5
+
     def _abandonHost(self):
-        """Take the host away from an utterance nobody is going to hear.
+        """Take the host away from an utterance nobody is going to hear --
+        but only if it does not let go by itself.
 
-        **Signalling the cancel is not enough, and measuring is what said so.**
-        The host honours it by throwing its audio away, but it goes on
-        synthesising to the end of the utterance, so the response takes just as
-        long as if nothing had been cancelled: a paragraph of Alex measured
-        815 ms rendered, and 832 ms rendered then cancelled after 50 ms.  The
-        worker cannot start the next utterance until it has read that response
-        out of the pipe -- and it is not even reading, because once the cancel
-        is honoured no further chunks arrive.  It is asleep in a read that has
-        nothing left to deliver.
+        The worker cannot start the next utterance until it has read the
+        current response out of the pipe, and that wait is the lag people
+        report around a long post: arrowing past a paragraph, press down and
+        hear nothing for the better part of a second; a 6429-character post
+        where twelve keypresses over five and a half seconds produced no speech
+        at all until the render ended after 7455 ms.  It looks exactly like the
+        synthesizer has died, and alt-tabbing appears to fix it only because
+        the wait ends on its own.
 
-        That wait is the lag people report around a long post.  Two logs of it:
-        arrowing past a paragraph, press down and hear nothing for the better
-        part of a second; and a 6429-character post, where twelve keypresses
-        over five and a half seconds produced no speech at all until the render
-        ended after 7455 ms.  It looks exactly like the synthesizer has died,
-        and alt-tabbing appears to fix it only because the wait ends on its own.
-
-        Killing the process ends that read in 1.3 ms, measured, and a
-        replacement is ready to speak about 40 ms later.
+        Killing the process ends that read in 1.3 ms, measured.  What has
+        changed is that it is almost never needed: see `ABANDON_GRACE`.  So
+        wait that long first, and kill only a host that is still holding the
+        worker afterwards.
 
         Off this thread, always.  `cancel()` runs on NVDA's main thread, and
         while killing a process is not the pipe -- rule 5 stands -- it does
-        take the process lock, and the replacement it starts costs those 40 ms.
+        take the process lock, and the replacement it starts costs 40 ms.
         Neither belongs in front of a keystroke.
         """
         if self._stopped or self._retiring or not self._rendering:
             return
         self._retiring = True
         try:
-            threading.Thread(target=self._retire, name=self.name + "-retire",
-                             daemon=True).start()
+            threading.Thread(target=self._retireIfStuck,
+                             args=(self._epoch,),
+                             name=self.name + "-retire", daemon=True).start()
         except Exception:
+            self._retiring = False
+
+    def _retireIfStuck(self, epoch):
+        """Give the response its grace period, then kill what is left.
+
+        `epoch` pins this to the cancel that started it.  A burst of arrow keys
+        raises the epoch each time, and only the last cancel's timer should
+        still be entitled to retire anything -- an earlier one waking up late
+        would be killing the host that is rendering what the user actually
+        asked for.
+        """
+        try:
+            deadline = time.time() + self.ABANDON_GRACE
+            while time.time() < deadline:
+                if self._stopped or not self._rendering:
+                    return                      # it let go on its own
+                if self._epoch != epoch:
+                    return                      # a later cancel owns this now
+                time.sleep(0.01)
+            if self._stopped or not self._rendering:
+                return
+            log.debugWarning(
+                "%s: the host has not answered %.1f s after a cancel; "
+                "retiring it" % (self.name, self.ABANDON_GRACE))
+            self._retire()
+        finally:
             self._retiring = False
 
     def _retire(self):
