@@ -220,6 +220,18 @@ static void __cdecl sh_vDSP_hann_window(float *C, vdsp_length N, int flag)
     if (!C || !N) return;
     for (n = 0; n < count; n++)
         C[n] = (float)(scale * (1.0 - cos(6.2831853071795864769 * n / N)));
+    /* **The count is right, and it was worth proving rather than assuming.**
+     *
+     * With vDSP_HALF_WINDOW and an even N this writes N/2 points -- 0 up to
+     * but not including the peak, so C[last] is 0.99997 and the 1.0 in the
+     * middle of the window is never stored.  If Apple wrote one more, a
+     * crossfade built from two of these would sum to exactly one where ours
+     * wobbles, which is the shape of the roughness in Lion's Alex.
+     *
+     * Writing one extra element -- any value -- crashes the engine with
+     * STATUS_HEAP_CORRUPTION.  The buffer is allocated at exactly (N+1)/2
+     * floats, so that is exactly what Apple writes, and nothing reads past
+     * it. */
     /* Report only what was *written*.  With vDSP_HALF_WINDOW -- which is what
      * flag 1 means, and which Lion uses constantly where Leopard never does --
      * only the first (N+1)/2 elements exist, and printing C[N/2] reads past
@@ -475,7 +487,15 @@ static void __cdecl sh_ztoc(const split_complex *Z, vdsp_stride IZ,
  * **The conjugate is the whole point.**  Multiplying two spectra convolves;
  * multiplying by a conjugate correlates, and correlation is what a WSOLA
  * search wants.  Backwards, it mirrors the result and puts the peak at minus
- * the lag -- which would not crash, and would sound like a stutter. */
+ * the lag -- which would not crash, and would sound like a stutter.
+ *
+ * Which way round it goes is **still asserted rather than established**.
+ * `test_vdsp.py` checks this against numpy computing conj(A)*B, which is the
+ * same belief written twice and cannot catch the two being swapped.  Tried:
+ * computing A*conj(B) instead and re-rendering all 26 letters in Alex, which
+ * came back **byte-identical** -- because at ordinary rates the engine never
+ * reaches the FFT path at all.  So it is not currently observable from here,
+ * and settling it means disassembling Apple's own libvDSP. */
 static void __cdecl sh_vDSP_zvcmul(const split_complex *A, vdsp_stride IA,
                                    const split_complex *B, vdsp_stride IB,
                                    const split_complex *C, vdsp_stride IC,

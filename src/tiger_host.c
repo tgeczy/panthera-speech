@@ -170,6 +170,7 @@ static int g_deferred_stop;
  * complaint is that it never does. */
 static int g_gcd_log;
 
+
 static void die(const char *fmt, ...)
 {
     va_list ap;
