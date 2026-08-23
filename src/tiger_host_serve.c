@@ -46,8 +46,53 @@
  * the single-frame probe that opens each epoch, covered again immediately by
  * the 229-frame slice at the same position.  Sent audio cannot be unsent, so
  * hold back a margin far larger than anything observed; 512 frames is 23 ms,
- * which no listener notices and no measurement came close to. */
+ * which no listener notices and no measurement came close to.
+ *
+ * **The size was never the problem.  Being last was.**  The margin is released
+ * when the response ends, and on 10.7 that is 300 ms after the audio is
+ * finished, because 10.7 never stops its audio graph and the quiet period is
+ * the only thing that ends an utterance.  At ordinary rates it is a fraction
+ * of a long utterance and nothing notices.  With rate boost the whole
+ * utterance is smaller than the margin's own delay:
+ *
+ *     lion  640 wpm, letter "O"   77 ms of audio, then the player has
+ *                                 nothing for 247 ms, then the last 23 ms
+ *     lion 1200 wpm, letter "O"   33 ms, nothing for 293 ms, then 23 ms
+ *
+ * The output stream drains, and what the listener hears is the speech, a gap,
+ * and then a tail fading in -- reported by Tomi at rate 50 with rate boost,
+ * who described it as sounding like an old synthesizer closing its wave
+ * socket.  That is exactly what it is: the player underrunning and being
+ * started again for a fragment.  Leopard never does it, because AUGraphStop
+ * ends its response about 11 ms after the audio and the tail arrives while
+ * 77 ms is still buffered.
+ *
+ * So the margin is now released on `STREAM_SETTLE` rather than at the end. */
 #define STREAM_LOOKBEHIND 512u
+
+/* Ticks of 10 ms with no new slice, after which the held-back margin goes out
+ * rather than waiting for the response to end.
+ *
+ * **30 ms, and it is deliberately shorter than the 40.2 ms widest gap between
+ * two slices of one utterance.**  60 ms was tried first, on the reasoning that
+ * the flush should never fire while an utterance is still being produced.  It
+ * left the fault in place at the rates that have it: the whole utterance is
+ * shorter than the wait, so the player still ran dry -- 22 ms at 640 wpm and
+ * 40 ms at 1200.  At 30 ms every rate measured on both generations comes back
+ * at 11 ms, which is the first-chunk latency and not a hole at all.
+ *
+ * Flushing early is close to free.  A slice arriving afterwards only matters
+ * if it lands *behind* the frontier, and the worst ever measured is **one
+ * frame** -- the single-frame probe that opens an epoch, which the next slice
+ * covers at the same position anyway.  So the listener would hear 45
+ * microseconds of the probe instead of the sample, against a quarter-second
+ * hole.  Slices that land ahead simply append, which is what a long token's
+ * silences do.
+ *
+ * The margin is still worth having while slices are arriving quickly: it costs
+ * nothing then, because more audio is on its way.  This releases it at exactly
+ * the moment it stops being free. */
+#define STREAM_SETTLE 3u
 
 /* Abandoning an utterance the listener has interrupted.
  *
@@ -580,9 +625,18 @@ static int serve(image *mt, void *chan, const char *voicesdir)
                 /* Send what has settled, every tick.  The engine runs at about
                  * ninety times real time, so after the first chunk there are
                  * seconds of audio buffered ahead and playback cannot underrun
-                 * however long the text is. */
-                if (streaming && g_pcm_n > STREAM_LOOKBEHIND)
-                    sent = stream_chunk(sent, g_pcm_n - STREAM_LOOKBEHIND);
+                 * however long the text is.
+                 *
+                 * And once the slices have stopped coming, send the margin
+                 * too, rather than sitting on it until the response ends --
+                 * see STREAM_SETTLE.  This is what keeps a rate-boosted
+                 * utterance in one piece. */
+                if (streaming) {
+                    if (quiet >= STREAM_SETTLE)
+                        sent = stream_chunk(sent, g_pcm_n);
+                    else if (g_pcm_n > STREAM_LOOKBEHIND)
+                        sent = stream_chunk(sent, g_pcm_n - STREAM_LOOKBEHIND);
+                }
             }
             /* The engine has stopped *scheduling*, which is not the same as
              * the audio having been read.
