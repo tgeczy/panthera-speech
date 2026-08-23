@@ -353,26 +353,25 @@ class SynthDriver(SynthDriver):
 
     @classmethod
     def check(cls):
-        """Always offer the synthesizer, and explain on selection if it cannot
-        run.
+        """**Listed only when there is an engine to run.**
 
-        This used to hide itself when the engine was missing, reasoning that a
-        synthesizer which is selectable and then silent is worse than one that
-        is absent. That is still true -- but it describes a driver that *loads*
-        and then produces no audio, which was the 32-bit DLL case. It does not
-        describe one that refuses to load: NVDA catches the failure, falls back
-        to the previous synthesizer, and speech never stops.
+        Both halves of this were once right and they disagreed.  Tiger and
+        Leopard were always offered and explained themselves in a dialog when
+        chosen, because hiding them had left people with an add-on, no
+        synthesizer and nothing to go on.  Lion, added later, listed itself
+        only when it had an engine, because nobody should arrow past
+        synthesizers that cannot speak to reach one that can.
 
-        What hiding did cost was every route to an explanation. People
-        installed the add-on, extracted the engine, found nothing in the
-        synthesizer list, and had nothing to go on. The start-up dialog was
-        supposed to cover that, and on at least one machine it never appears.
+        Timothy Wynn found the combination: install with no data at all and
+        `Leopard speech (Alex, MacinTalk 3.6)` is sitting there, selectable and
+        mute, while Lion -- equally dataless -- is not.
 
-        So be present and say why. Selecting it now fails cleanly and puts up a
-        dialog naming the folder the engine belongs in, every time, with no
-        dependence on catching the user during start-up.
+        `synthDrivers/pantheraspeech.py` is what makes hiding safe here.  When
+        no generation can speak it takes their place, as one entry, and opens
+        the tool that fixes it.  So there is still a route to the explanation,
+        which is the thing whose absence made hiding wrong the first time.
         """
-        return True
+        return tree.usable()
 
     def __init__(self):
         super().__init__()

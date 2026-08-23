@@ -147,7 +147,15 @@ def test_voices_are_read_from_the_install(engine_tree):
 
 def test_missing_tree_refuses_to_load_rather_than_going_silent(monkeypatch,
                                                                tmp_path):
-    """Selectable, and then it refuses -- which is not the same as silent.
+    """Not offered without data -- and if chosen anyway, it refuses.
+
+    **The first half of this used to assert the opposite**, and the reason it
+    changed is in `tests/test_placeholder_synth.py`: with four generations,
+    always-offered meant somebody with no data at all met three mute entries.
+    A single placeholder stands in for them now and leads to the tool, so
+    hiding no longer costs the explanation.  What follows is the old rationale,
+    which still holds for the second half -- data can go missing after this was
+    chosen, and `check()` is not consulted then.
 
     The synthesizer is always offered now, so that choosing it produces an
     explanation rather than an absence nobody could account for. What must
@@ -168,10 +176,14 @@ def test_missing_tree_refuses_to_load_rather_than_going_silent(monkeypatch,
     assert not ok
     assert any("no tree found" in ln for ln in lines), lines
 
-    # Offered, so that selecting it is a way to find out why.
-    assert tigerspeech.SynthDriver.check()
+    # Not offered, because the placeholder is what the user should find --
+    # `synthDrivers/pantheraspeech.py`, and tests/test_placeholder_synth.py.
+    # This assertion used to be the opposite; see the docstring.
+    assert not tigerspeech.SynthDriver.check()
 
-    # And refuses to load, so NVDA falls back and speech carries on.
+    # And if it is reached anyway -- a saved setting, or data removed after it
+    # was chosen -- it refuses to load, so NVDA falls back and speech carries
+    # on.
     told = []
     monkeypatch.setattr(tigerspeech, "_explainLater",
                         lambda *a, **k: told.append(a))

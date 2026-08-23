@@ -61,3 +61,25 @@ class SynthDriver(pantheradriver.PantheraDriver):
     DISC = "Mac OS X 10.5 install disc"
     EXTRACTOR = "extract_leopard.py"
     VOLUME_NORM = pantheradriver.VOLUME_NORM_LEOPARD
+
+    @classmethod
+    def check(cls):
+        """**Listed only when there is an engine to run.**
+
+        Both halves of this were once right and they disagreed.  Tiger and
+        Leopard were always offered and explained themselves in a dialog when
+        chosen, because hiding them had left people with an add-on, no
+        synthesizer and nothing to go on.  Lion, added later, listed itself
+        only when it had an engine, because nobody should arrow past
+        synthesizers that cannot speak to reach one that can.
+
+        Timothy Wynn found the combination: install with no data at all and
+        `Leopard speech (Alex, MacinTalk 3.6)` is sitting there, selectable and
+        mute, while Lion -- equally dataless -- is not.
+
+        `synthDrivers/pantheraspeech.py` is what makes hiding safe here.  When
+        no generation can speak it takes their place, as one entry, and opens
+        the tool that fixes it.  So there is still a route to the explanation,
+        which is the thing whose absence made hiding wrong the first time.
+        """
+        return pantheraleopard.usable()

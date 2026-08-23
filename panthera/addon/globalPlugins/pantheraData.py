@@ -174,6 +174,15 @@ def _combined_message(missing):
 #: lineage in a different repository: classic Mac OS engines, not Mac OS X.
 _REPORTERS = "_macosxSpeechEngineReporters"
 
+#: How the placeholder synthesizer opens the speech data tool.
+#:
+#: `synthDrivers/pantheraspeech.py` is the one entry in the synthesizer list
+#: when no generation has any data, and all it does is offer the tool that
+#: fixes that.  It cannot import this module -- a synth driver reaching into a
+#: global plugin is a bet on load order -- so the plugin leaves a callable here
+#: and the driver uses it if it finds one.
+_OPENER = "_macosxSpeechDataOpener"
+
 
 def _register_reporter(entry):
     """-> True if this add-on should own the shared Tools menu item."""
@@ -520,6 +529,26 @@ def _conflict_message(addons):
            "it" if one else "them"))
 
 
+def open_speech_data_dialog(select=None):
+    """Show the speech data tool. -> True if it opened.
+
+    Module level, and registered in `globalVars` under `_OPENER`, so that the
+    placeholder synthesizer can reach it without importing this file.
+    """
+    try:
+        import gui
+        import pantheramanager
+        lines, _still_missing = _engine_report()
+        pantheramanager.SpeechDataDialog.show(gui.mainFrame, GENERATIONS,
+                                              lines, select=select)
+        return True
+    except Exception:
+        log.error("Panthera: could not open the speech data dialog",
+                  exc_info=True)
+        return False
+
+
+
 class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 
     #: Shown in NVDA's Tools menu. Translators: an item in NVDA's Tools menu.
@@ -534,6 +563,11 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
         if globalVars.appArgs.secure:
             log.info("Panthera: secure mode, not checking for the engines")
             return
+
+        # The placeholder synthesizer's route to the tool.  Left here rather
+        # than imported, so a driver never has to know whether this plugin has
+        # loaded -- if the key is absent it falls back to opening the folder.
+        globalVars.__dict__[_OPENER] = open_speech_data_dialog
 
         self._conflicts = _old_addons()
         if self._conflicts:

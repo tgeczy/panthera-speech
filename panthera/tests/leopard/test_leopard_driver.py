@@ -153,12 +153,22 @@ def test_voices_are_read_from_the_install(engine_tree):
 
 def test_missing_tree_refuses_to_load_rather_than_going_silent(monkeypatch,
                                                                tmp_path):
-    """Selectable, and then it refuses -- which is not the same as silent.
+    """Not offered without data -- and if chosen anyway, it refuses.
 
-    The synthesizer is always offered now, so that choosing it produces an
-    explanation rather than an absence nobody could account for. What must
-    never happen is the other failure: loading successfully and then saying
-    nothing. So `__init__` has to raise, and it has to tell the user first.
+    **The first half of this used to assert the opposite.**  The synthesizer
+    was always offered, so that choosing it produced an explanation rather than
+    an absence nobody could account for.  Timothy Wynn found what that costs
+    once there are four generations: install with no data and `Leopard speech
+    (Alex, MacinTalk 3.6)` is sitting in the list, selectable and mute, next to
+    a Lion that correctly hid itself.  `synthDrivers/pantheraspeech.py` now
+    stands in for all of them and leads to the tool, so hiding no longer costs
+    the explanation -- see `tests/test_placeholder_synth.py`.
+
+    The second half is unchanged and still matters: data can go missing after
+    somebody has already chosen this, and `check()` is not consulted then.  So
+    `__init__` still has to raise, and still has to tell the user first.  What
+    must never happen is the other failure -- loading successfully and then
+    saying nothing.
 
     Patch `tree`, not the driver: the lookup lives there, so the global plugin
     that offers to open the folder gets exactly the same answer.
@@ -177,10 +187,12 @@ def test_missing_tree_refuses_to_load_rather_than_going_silent(monkeypatch,
     assert not ok
     assert any("no tree found" in ln for ln in lines), lines
 
-    # Offered, so that selecting it is a way to find out why.
-    assert leopardspeech.SynthDriver.check()
+    # Not offered, because the placeholder is what the user should find.
+    assert not leopardspeech.SynthDriver.check()
 
-    # And refuses to load, so NVDA falls back and speech carries on.
+    # And if it is reached anyway -- a saved setting, or data removed after it
+    # was chosen -- it refuses to load, so NVDA falls back and speech carries
+    # on.
     told = []
     monkeypatch.setattr(pantheradriver, "_explainLater",
                         lambda folder, *rest: told.append(folder))
