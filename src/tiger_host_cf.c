@@ -47,9 +47,29 @@ typedef struct { void *isa; unsigned flags; const char *cstr; unsigned len; }
  * not `buf`: these are whole dictionary files. */
 #define CF_DATA    3
 
+/* `big` holds a string too long for `buf`, and it exists because of a bug that
+ * reached users.
+ *
+ * `CFPATH` is 512 because these objects began life carrying **file paths**,
+ * and `cf_make` truncated to 511 characters with `strncpy`.  Then Lion started
+ * speaking through them: 10.7 takes its text as a `CFStringRef` rather than as
+ * a buffer and a length, so every utterance passes through here -- and
+ * anything past 511 characters was silently cut, mid-word, in every Lion
+ * voice.
+ *
+ * Reported by Amir, who found the boundary from outside and supplied the exact
+ * paragraph: *"if a paragraph contains more than 500 characters, Alex skips or
+ * omits the rest... the following paragraph is cut on the word date"*.
+ * Measured afterwards: "dates" begins at character 496, and the audio stops
+ * growing at exactly 511.
+ *
+ * Leopard never had it -- `SESpeakBuffer` takes the pointer and the length and
+ * never comes near this.  Nor was it a `meow` fault, though it looked like
+ * one: Fred, Kathy and Bruce are cut identically, and that is what said the
+ * cause was above the voice rather than inside it. */
 typedef struct { cfstring str; unsigned magic; long rc; char buf[CFPATH];
                  int kind; double num;
-                 unsigned char *bytes; unsigned nbytes; }
+                 unsigned char *bytes; unsigned nbytes; char *big; }
         cfobj;
 
 /* Bundles handed back by CFBundleGetBundleWithIdentifier are *not* owned by
@@ -65,14 +85,29 @@ static void *g_cfstring_class;           /* ___CFConstantStringClassReference */
 
 static cfobj *cf_make(const char *path, long rc)
 {
+    size_t n;
     cfobj *o = (cfobj *)calloc(1, sizeof(*o));
     if (!o) return NULL;
     o->magic = CF_MAGIC;
     o->rc    = rc;
-    strncpy(o->buf, path, CFPATH - 1);
+    if (!path) path = "";
+    n = strlen(path);
+    /* Short strings -- every path, key and table name -- still live in `buf`,
+     * so the common case allocates nothing extra.  Only an utterance is ever
+     * likely to need the heap, and a fixed buffer of any size would only move
+     * the cliff: NVDA hands over whatever the user asked it to read, and a
+     * clipboard can be tens of kilobytes. */
+    if (n < CFPATH) {
+        memcpy(o->buf, path, n + 1);
+        o->str.cstr = o->buf;
+    } else {
+        o->big = (char *)malloc(n + 1);
+        if (!o->big) { free(o); return NULL; }
+        memcpy(o->big, path, n + 1);
+        o->str.cstr = o->big;
+    }
     o->str.isa  = &g_cfstring_class;
-    o->str.cstr = o->buf;
-    o->str.len  = (unsigned)strlen(o->buf);
+    o->str.len  = (unsigned)n;
     return o;
 }
 static cfobj *cf_new(const char *path)    { return cf_make(path, 1); }
@@ -183,6 +218,11 @@ static void   __cdecl sh_CFRelease(void *o)
     if (cf_ours(o) && InterlockedDecrement(&((cfobj *)o)->rc) <= 0) {
         long i = InterlockedIncrement(&g_grave_i) & (CF_GRAVE - 1);
         void *old = InterlockedExchangePointer(&g_grave[i], o);
+        /* `old` has already been evicted from the ring, so its string is as
+         * safe to release as the object itself -- and it has to be, because a
+         * paragraph's worth of text per utterance is not a leak anybody would
+         * notice until they read a book. */
+        if (old) free(((cfobj *)old)->big);
         free(old);
     }
 }

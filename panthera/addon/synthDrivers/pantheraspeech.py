@@ -131,11 +131,20 @@ class SynthDriver(SynthDriver):
         that actually matters.
         """
         super().__init__()
+        #: **Offering the tool must never change the refusal.**  Any exception
+        #: raised here would escape in place of the `RuntimeError` below, and
+        #: while NVDA falls back either way, what it reports would no longer
+        #: say why.
+        #:
+        #: Not hypothetical: `wx.CallAfter` asserts that an application object
+        #: exists, and outside NVDA there is none -- which surfaced the moment
+        #: a real wxPython was installed beside the suite's fake one.
         try:
             import wx
             wx.CallAfter(_offerTheTool)
-        except ImportError:
-            pass
+        except Exception:
+            log.debugWarning("pantheraspeech: could not offer the speech data "
+                             "tool", exc_info=True)
         raise RuntimeError("no Mac OS X speech data is installed yet")
 
     def terminate(self):
