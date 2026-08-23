@@ -987,6 +987,20 @@ class PantheraDriver(SynthDriver):
         #: start-up in front of each keystroke, which is the fault this
         #: was written to remove, not one to add.
         self._rendering = False
+        #: Which render is in flight, counted rather than flagged.
+        #:
+        #: **`_rendering` alone cannot answer the question the grace period
+        #: asks.**  It is False only between one render and the next, and
+        #: during continuous speech that window is microseconds wide -- so a
+        #: timer polling it every 10 ms can miss every one of them and reach
+        #: its deadline with the flag true, having watched the cancelled
+        #: response end and three more begin.  It would then retire a host
+        #: that is speaking exactly what the user asked for.
+        #:
+        #: A counter cannot be missed.  The question is "is the render I was
+        #: started for still the one in flight", and that is what this
+        #: answers.
+        self._renderSeq = 0
         #: Whether a retirement is already under way, so that a burst of
         #: cancels starts one thread rather than one per keystroke.
         self._retiring = False
@@ -1229,33 +1243,46 @@ class PantheraDriver(SynthDriver):
         self._retiring = True
         try:
             threading.Thread(target=self._retireIfStuck,
-                             args=(self._epoch,),
+                             args=(self._renderSeq,),
                              name=self.name + "-retire", daemon=True).start()
         except Exception:
             self._retiring = False
 
-    def _retireIfStuck(self, epoch):
+    def _retireIfStuck(self, seq):
         """Give the response its grace period, then kill what is left.
 
-        `epoch` pins this to the cancel that started it.  A burst of arrow keys
-        raises the epoch each time, and only the last cancel's timer should
-        still be entitled to retire anything -- an earlier one waking up late
-        would be killing the host that is rendering what the user actually
-        asked for.
+        `seq` pins this to the render it was started for, and **the sequence
+        number rather than the epoch is what makes it safe.**
+
+        Pinning to the cancel epoch was the first attempt and it was wrong two
+        ways at once.  A second cancel inside the grace window bumped the epoch
+        and retired this timer -- "a later cancel owns this now", except that
+        `_abandonHost` had already refused to start one, seeing `_retiring`
+        still set, so nothing owned it and a genuinely stuck host went
+        unwatched.  And nothing about the epoch noticed the *good* case: the
+        cancelled response ending and ordinary speech carrying on.  For that it
+        fell back to polling `_rendering`, which during continuous speech is
+        False for microseconds between renders and can be missed on every
+        single poll.
+
+        A changed sequence number means the response this was started for is
+        over and the worker is free, which is the whole purpose, however the
+        flag happened to look when it was read.
         """
         try:
             deadline = time.time() + self.ABANDON_GRACE
             while time.time() < deadline:
-                if self._stopped or not self._rendering:
-                    return                      # it let go on its own
-                if self._epoch != epoch:
-                    return                      # a later cancel owns this now
+                if self._stopped or self._renderSeq != seq:
+                    return                      # that response is over
+                if not self._rendering:
+                    return                      # it let go and nothing followed
                 time.sleep(0.01)
-            if self._stopped or not self._rendering:
+            if self._stopped or self._renderSeq != seq or not self._rendering:
                 return
             log.debugWarning(
-                "%s: the host has not answered %.1f s after a cancel; "
-                "retiring it" % (self.name, self.ABANDON_GRACE))
+                "%s: render %d has not answered %.1f s after a cancel; "
+                "retiring the host"
+                % (self.name, seq, self.ABANDON_GRACE))
             self._retire()
         finally:
             self._retiring = False
@@ -1516,6 +1543,7 @@ class PantheraDriver(SynthDriver):
             # From here until the response ends, this is what cancel() may
             # take the host away from.
             self._rendering = True
+            self._renderSeq += 1
             proc.stdin.write(struct.pack("<IiiIII", req, wpm, pitch,
                                          0, len(v), len(t)) + v + t)
             proc.stdin.flush()

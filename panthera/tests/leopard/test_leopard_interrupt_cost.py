@@ -95,6 +95,43 @@ def test_interrupting_does_not_restart_the_host(driver):
         % (started, _pid(driver)))
 
 
+def test_speech_that_carries_on_after_a_cancel_keeps_its_host(driver):
+    """The case the grace period got wrong, and the reason it counts renders.
+
+    Arrow into a long article: one cancel, then speech that keeps going for
+    longer than the grace period, split across several renders.  The timer that
+    cancel armed is still running, and if it decides by polling `_rendering` it
+    can miss every microsecond-wide gap between those renders, reach its
+    deadline with the flag true and retire a host that is speaking exactly what
+    the user asked for -- Timothy Wynn's glitch back again, in the middle of a
+    say-all, at random.
+
+    A render sequence number cannot be missed, which is why `_abandonHost`
+    passes one.
+    """
+    driver.speak(["warming up the engine"])
+    assert _waitFor(lambda: _pid(driver) is not None), "no host was started"
+    started = _pid(driver)
+    assert _waitFor(lambda: not driver._rendering), "the warm-up never ended"
+
+    driver.speak(["something the listener is about to interrupt"])
+    assert _waitFor(lambda: driver._rendering), "the render never started"
+    driver.cancel()
+
+    #: Now keep it busy for longer than the grace period, the way NVDA does
+    #: when it hands over a paragraph: several sentences, back to back.
+    deadline = time.time() + driver.ABANDON_GRACE + 1.0
+    while time.time() < deadline:
+        driver.speak(["The quick brown fox jumps over the lazy dog. ",
+                      "Pack my box with five dozen liquor jugs. ",
+                      "How vexingly quick daft zebras jump. "])
+        time.sleep(0.05)
+
+    assert _pid(driver) == started, (
+        "the host was retired while it was speaking: %s then %s"
+        % (started, _pid(driver)))
+
+
 def test_a_host_that_stops_answering_is_still_retired(driver, monkeypatch):
     """The kill has to remain available, because a wedged host is real.
 
