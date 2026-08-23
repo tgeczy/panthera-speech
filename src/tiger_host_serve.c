@@ -432,10 +432,23 @@ static int serve(image *mt, void *chan, const char *voicesdir)
          * which change cured it.
          *
          * So the number stays where a reported bug says it has to be, and
-         * Lion pays 300 ms it should not have to.  The honest fix is not a
-         * shorter guess -- it is `kSpeechStatusOutputBusy`, which 10.7 does
-         * export and which would answer the question directly instead of
-         * inferring it from silence. */
+         * Lion pays 300 ms it should not have to.
+         *
+         * **And asking instead of inferring does not work on Lion -- measured,
+         * not assumed.**  `TIGER_STATUS=1` puts the Speech Manager's own
+         * `stat` selector in the wait loop, whose first long is `outputBusy`.
+         * Tiger answers it and says idle; Leopard answers it; **Lion refuses
+         * it, 32 times out of 32**.  10.7 moved rate and pitch to
+         * `SESetSpeechProperty` and it evidently moved status the same way, to
+         * `SECopySpeechProperty` with a CFString key and a CFDictionary back
+         * -- which this host cannot read yet, because
+         * `sh_CFDictionaryGetValue` is a stub returning NULL.
+         *
+         * That is the shape of the real fix, and it is worth more than the
+         * 300 ms: while the wait runs, the driver still counts the utterance
+         * as rendering, so a cancel from the next keystroke retires the whole
+         * host.  Reported by Timothy Wynn as hearing "the executable runs
+         * again" when arrowing quickly by letter. */
         if (!err) {
             unsigned last = 0, quiet = 0, ticks = 0;
             while (!g_stopped && quiet < 30 && ticks < 900) {

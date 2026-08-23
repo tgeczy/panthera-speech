@@ -121,6 +121,36 @@ def test_fft_zrip_round_trips(n, out):
     close(out["fftrt%d" % n], signal(n))
 
 
+@pytest.mark.parametrize("n", [8, 16, 64, 256])
+def test_fft_zrip_inverse_matches_numpy(n, out):
+    """The inverse, on a spectrum this code did not produce.
+
+    **The round trip above cannot catch a pair that is wrong in cancelling
+    ways**, and for a long time it was all the inverse had.  It is also not
+    what the engine does: `MTMBModRateWsola` transforms two signals, multiplies
+    them with `zvcmul` and inverts *that* -- a packed array whose slot 0 holds
+    the elementwise product of two (DC, Nyquist) pairs, which is not the
+    forward transform of anything.
+
+    So the host inverts a spectrum built from a formula and numpy inverts the
+    same numbers, unpacking vDSP's convention explicitly: `realp[0]` is DC,
+    `imagp[0]` is Nyquist, and the result is scaled by two like the forward.
+    """
+    h = n // 2
+    packed = numpy.array(
+        [math.cos(0.23 * i) + 0.4 * math.sin(0.71 * i) for i in range(h)] +
+        [math.sin(0.17 * i) - 0.3 * math.cos(0.53 * i) for i in range(h)],
+        dtype=numpy.float64)
+    #: Back to numpy's N/2+1 half-spectrum.  Slot 0 carries two real bins.
+    full = numpy.zeros(h + 1, dtype=numpy.complex128)
+    full[0] = packed[0]
+    full[h] = packed[h]
+    for k in range(1, h):
+        full[k] = complex(packed[k], packed[h + k])
+    want = numpy.fft.irfft(full, n) * n           # irfft divides by n
+    close(out["fftinv%d" % n], want)
+
+
 # -- the vector helpers ---------------------------------------------------
 
 def test_zvcmul_conjugates_the_first_argument(out):

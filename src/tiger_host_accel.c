@@ -489,13 +489,26 @@ static void __cdecl sh_ztoc(const split_complex *Z, vdsp_stride IZ,
  * search wants.  Backwards, it mirrors the result and puts the peak at minus
  * the lag -- which would not crash, and would sound like a stutter.
  *
- * Which way round it goes is **still asserted rather than established**.
- * `test_vdsp.py` checks this against numpy computing conj(A)*B, which is the
- * same belief written twice and cannot catch the two being swapped.  Tried:
- * computing A*conj(B) instead and re-rendering all 26 letters in Alex, which
- * came back **byte-identical** -- because at ordinary rates the engine never
- * reaches the FFT path at all.  So it is not currently observable from here,
- * and settling it means disassembling Apple's own libvDSP. */
+ * **Settled against Apple's own reference**, because `test_vdsp.py` checks it
+ * against numpy computing conj(A)*B -- the same belief written twice, which
+ * could never have caught the two operands being swapped.  *vDSP
+ * Vector-to-Vector Arithmetic Operations Reference*, 2009-01-06, on
+ * vDSP_zvcmul: "Multiplies vector B by the complex conjugates of vector A."
+ * So conj(A) * B, which is what is written here.
+ *
+ * Computing A*conj(B) instead was tried, and the measurement is the
+ * interesting part.  It makes Vicki plainly worse -- her letter tails go from
+ * 0.134 to 0.148 at 180 wpm and 0.154 to 0.220 at 300, away from the Leopard
+ * numbers she otherwise tracks.  And it makes **Alex's envelope smoother**,
+ * 0.673 down to 0.533, which looks like an improvement and is the opposite: a
+ * WSOLA splicing at the wrong lag re-emits material it has already used, and
+ * repeated material has a flatter envelope than speech does.
+ *
+ * Keep that the standing caution about envelope metrics here.  Also worth
+ * knowing: Alex reaches the FFT only above about 250 wpm, which is why this
+ * shows up under NVDA's rate boost and not otherwise -- but Vicki calls
+ * zvcmul at 180 with no FFT at all, so "no fft_zrip in the log" does not
+ * mean this code is idle. */
 static void __cdecl sh_vDSP_zvcmul(const split_complex *A, vdsp_stride IA,
                                    const split_complex *B, vdsp_stride IB,
                                    const split_complex *C, vdsp_stride IC,
@@ -680,6 +693,28 @@ static int vdsp_check(void)
         }
         sh_ztoc(&sc, 1, tmp, 2, h);
         _snprintf(name, sizeof(name), "fftrt%d", n);
+        name[sizeof(name) - 1] = 0;
+        vd_emit(name, tmp, n);
+
+        /* **The inverse on a spectrum we did not produce.**
+         *
+         * A round trip cannot tell a correct pair from two halves that are
+         * wrong in cancelling ways, and the round trip is all the inverse had.
+         * The engine never feeds it our own forward output either: it
+         * transforms two signals, multiplies them with `zvcmul`, and inverts
+         * *that* -- a packed array whose DC and Nyquist slots hold whatever
+         * the elementwise product of two such slots comes to.
+         *
+         * So hand it a spectrum built from a formula, and let numpy invert the
+         * same numbers by its own route. */
+        for (i = 0; i < h; i++) {
+            double t = (double)i;
+            rp[i] = (float)(cos(0.23 * t) + 0.4 * sin(0.71 * t));
+            ip[i] = (float)(sin(0.17 * t) - 0.3 * cos(0.53 * t));
+        }
+        sh_fft_zrip(setup, &sc, 1, (vdsp_length)log2n, FFT_INVERSE);
+        sh_ztoc(&sc, 1, tmp, 2, h);
+        _snprintf(name, sizeof(name), "fftinv%d", n);
         name[sizeof(name) - 1] = 0;
         vd_emit(name, tmp, n);
         sh_destroy_fftsetup(setup);
