@@ -300,7 +300,8 @@ static void __cdecl sh_dispatch_source_set_event_handler_f(
                             "stop is disarmed for the life of this host\n");
     }
     if (g_verbose)
-        printf("  [gcd] handler %p on source %p%s\n", (void *)fn, o,
+        printf("  [gcd] handler %s on source %p%s\n",
+               engine_symbol((void *)fn), o,
                s ? "" : "  <- NOT one of ours");
 }
 
@@ -354,31 +355,77 @@ static void __cdecl sh_dispatch_source_set_timer(void *o,
         s->period_ms = ms ? ms : 1;     /* never spin */
     }
 
-    /* The same clock `sh_dispatch_time` hands out, so the subtraction means
-     * something.  `DISPATCH_TIME_NOW` is 0 and any start already past is due
-     * immediately rather than overdue by a very large unsigned number.
+    /* **A deadline arrives on one of two clocks, and which one is the
+     * generation talking.**
      *
-     * **A start of `DISPATCH_TIME_FOREVER` means disarm**, and it was being
-     * read as a delay and clamped -- so "never fire this" became "fire this in
-     * a minute".  `MTBEAudioUnitSoundOutput::StartAudioGraph` disarms the
-     * deferred stop exactly this way, with `~0ull` for the start, which is the
-     * one caller where getting it wrong is a timer going off behind the
-     * engine's back.  Same bug the interval already had a guard for, one
-     * argument along. */
+     * 10.7 builds its start from `dispatch_time`, which this host answers with
+     * `GetTickCount64` -- a monotonic uptime, a few days' worth of
+     * nanoseconds.  **10.6 builds its own from `gettimeofday`**, so its start
+     * is a *wall-clock* nanosecond count: 1.79e18 for 2026 against 3.5e14 for
+     * an uptime.  Read on the wrong clock, 10.6's deadline is 56 years out,
+     * the guard below reads that as `DISPATCH_TIME_FOREVER`, and
+     * `_MTBEWorkerExecuteTask` is never called even once -- which is a
+     * synthesizer that opens a channel, accepts text, answers noErr and
+     * produces a single frame of silence.
+     *
+     * So decide by *proximity to a clock* rather than by magnitude.  The two
+     * are four orders of magnitude apart on any real machine, so nothing can
+     * be near both; and testing proximity rather than size is what keeps
+     * `DISPATCH_TIME_FOREVER` (9.22e18) from being mistaken for a wall-clock
+     * deadline, which a bare threshold would do.
+     *
+     * Order matters.  **The disarm has to be decided first**: a start of
+     * `~0ull` or `INT64_MAX` means "never fire this", and
+     * `MTBEAudioUnitSoundOutput::StartAudioGraph` disarms the deferred stop
+     * exactly that way.  Getting it wrong is a timer going off behind the
+     * engine's back -- it read as "fire this in a minute" once already.
+     *
+     * The wall-clock delay is divided by `g_speed` because the engine read a
+     * clock that runs that much faster than this one: the real wait until our
+     * wall clock reads `start` is the scaled distance over the scale.  Same
+     * arithmetic `sh_uptime` does for 10.5, one step further out. */
+#define DISPATCH_NEAR ((unsigned __int64)3600 * 24 * 1000000000ULL)
     now = (unsigned __int64)GetTickCount64() * 1000000ULL;
-    if (start > (unsigned __int64)3600 * 24 * 1000000000ULL + now) {
-        s->armed = 0;
-        s->delay_ms = 0;
-        g_w_settimer++;
-        if (g_verbose) printf("  [gcd] timer on %p: disarmed\n", o);
-        return;
-    }
-    if (start == 0 || start <= now)
-        s->delay_ms = 0;
-    else {
-        unsigned __int64 d = (start - now) / 1000000ULL;
-        s->delay_ms = d > 60000ULL ? 60000u : (unsigned)d;  /* a minute is
-                                                             * already absurd */
+    {
+        unsigned __int64 wall = wall_us_scaled() * 1000ULL;
+        int near_wall = (start < wall + DISPATCH_NEAR) &&
+                        (start + DISPATCH_NEAR > wall);
+        int near_mono = (start < now + DISPATCH_NEAR);
+        /* Loud on purpose, and loud is the word: 10.7 arms this about
+         * 39,000 times an utterance, so TIGER_GCD_LOG is a diagnostic to
+         * reach for deliberately rather than to leave on. */
+        if (g_gcd_log)
+            fprintf(stderr, "tiger_host: set_timer on %p start=%llu "
+                            "interval=%llu (mono %llu, wall %llu) -> %s\n",
+                    o, start, interval, now, wall,
+                    near_wall ? "wall clock" :
+                    (near_mono ? "monotonic" : "disarm"));
+        if (!near_wall && !near_mono) {
+            s->armed = 0;
+            s->delay_ms = 0;
+            g_w_settimer++;
+            if (g_verbose) printf("  [gcd] timer on %p: disarmed\n", o);
+            return;
+        }
+        if (near_wall) {
+            /* 10.6.  Scaled nanoseconds, so the real wait is that over the
+             * scale -- and a deadline already past fires now, which is the
+             * ordinary case rather than a fault: ten milliseconds of engine
+             * time is under a hundred microseconds of ours. */
+            if (start <= wall) s->delay_ms = 0;
+            else {
+                unsigned __int64 d =
+                    (unsigned __int64)((double)(start - wall) / g_speed)
+                    / 1000000ULL;
+                s->delay_ms = d > 60000ULL ? 60000u : (unsigned)d;
+            }
+        } else if (start == 0 || start <= now)
+            s->delay_ms = 0;
+        else {
+            unsigned __int64 d = (start - now) / 1000000ULL;
+            s->delay_ms = d > 60000ULL ? 60000u : (unsigned)d;  /* a minute is
+                                                                 * already absurd */
+        }
     }
     s->armed = 1;
     g_w_settimer++;
@@ -427,8 +474,22 @@ static unsigned __int64 __cdecl sh_dispatch_time(unsigned __int64 when,
 
 static unsigned __int64 __cdecl sh_dispatch_walltime(void *when, __int64 delta)
 {
-    (void)when;
-    return (unsigned __int64)GetTickCount64() * 1000000ULL + delta;
+    /* **A walltime is on the wall clock, and the name is not decoration.**
+     * Returning an uptime here made 10.6 compute a deadline four days out --
+     * see `sh_dispatch_source_set_timer`.  `when` is a `struct timespec`, or
+     * NULL for "now"; the scaled clock is the one the engine reads for itself
+     * with `gettimeofday`, so it has to be the one it gets back here too. */
+    unsigned __int64 base;
+    if (when) {
+        const unsigned *ts = (const unsigned *)when;   /* i386: sec, nsec */
+        base = (unsigned __int64)ts[0] * 1000000000ULL + ts[1];
+    } else {
+        base = wall_us_scaled() * 1000ULL;
+    }
+    if (g_gcd_log)
+        fprintf(stderr, "tiger_host: dispatch_walltime(when=%p, delta=%lld) "
+                        "-> %llu\n", when, delta, base + delta);
+    return base + delta;
 }
 
 static void * __cdecl sh_dispatch_queue_create(const char *label, void *attr)

@@ -224,24 +224,40 @@ static unsigned long long qpc_us(void)
  * call means dates are right when they are first asked for and run fast
  * afterwards, which is exactly what `UpTime` has always done here.
  */
-static int __cdecl sh_gettimeofday(void *tv, void *tz)
+/* The scaled wall clock, in microseconds since 1970.
+ *
+ * **One anchor, shared.**  10.6 computes a GCD deadline by reading this clock
+ * and adding to it, so `tiger_host_gcd.c` has to subtract *the same* clock
+ * back off to recover the delay.  A second copy of this function with its own
+ * `epoch_us`/`start_us` would look identical and be wrong: the two anchors are
+ * taken at different moments, and the gap between them is multiplied by
+ * `g_speed`.  A tenth of a second of real anchor drift becomes thirteen
+ * seconds of disagreement, which lands every engine deadline somewhere else.
+ */
+static unsigned long long wall_us_scaled(void)
 {
-    /* struct timeval on i386 Darwin is two 32-bit words: seconds, then
-     * microseconds. */
-    unsigned *out = (unsigned *)tv;
     static unsigned long long epoch_us, start_us;
     FILETIME ft;
     unsigned long long t;
-    (void)tz;
-    g_c_gtod++;
-    if (!out) return -1;
     GetSystemTimeAsFileTime(&ft);
     t = ((unsigned long long)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
     t /= 10;                                   /* 100 ns ticks -> microseconds */
     t -= 11644473600000000ULL;                 /* 1601 epoch -> 1970 epoch */
     if (!epoch_us) { epoch_us = t; start_us = qpc_us(); }
-    t = epoch_us + (unsigned long long)((double)(qpc_us() - start_us)
-                                        * g_speed);
+    return epoch_us + (unsigned long long)((double)(qpc_us() - start_us)
+                                           * g_speed);
+}
+
+static int __cdecl sh_gettimeofday(void *tv, void *tz)
+{
+    /* struct timeval on i386 Darwin is two 32-bit words: seconds, then
+     * microseconds. */
+    unsigned *out = (unsigned *)tv;
+    unsigned long long t;
+    (void)tz;
+    g_c_gtod++;
+    if (!out) return -1;
+    t = wall_us_scaled();
     out[0] = (unsigned)(t / 1000000ULL);
     out[1] = (unsigned)(t % 1000000ULL);
     return 0;
