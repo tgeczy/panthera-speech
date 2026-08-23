@@ -127,6 +127,24 @@ Releases published before this repository was renamed are still reachable:
 the old `tiger-speech` URL redirects, and `leopard-speech` is archived with
 its own six releases intact.
 
+## Faithful, including the flaws
+
+Lion's Alex says **"Dropbox"** without much of the P. It is not a decoding
+fault and it is not the loader: Leopard's Alex says it properly, and the two
+are different recordings of the same voice — Lion's bank is 422 MB where
+Leopard's is 669, and Apple rebuilt it between the two. `meow` 1.0 and `meow`
+2.0 genuinely disagree about that word.
+
+Which is, in its way, the point. You can put the two Alexes side by side and
+hear what Apple changed in 2011, on a machine Apple never shipped either of
+them for. A loader that quietly patched the P back in would be a nicer
+synthesizer and a worse record of one.
+
+The line moves when the engine says a *different word* — "cologne" for
+"colon", or "doctor" for the acronym "DR". Those are repaired in the text
+before the engine sees it, each behind a setting, and each written down where
+it happens: see `pantherastress.py` and `pantheraabbrev.py`.
+
 ## Nothing of Apple's is here
 
 **No engine and no voice ships from this repository**, and none is committed
