@@ -975,7 +975,7 @@ static int __cdecl sh_AudioFormatGetProperty(unsigned sel, unsigned specsize,
 /* The engine's callback hands over one blob and the packet boundaries inside
  * it, then reports no more.  Decode the lot, then dole it out: the engine
  * calls back until it has the frames it asked for. */
-static int __cdecl sh_AudioConverterFillComplexBuffer(void *conv,
+static int __cdecl sh_AudioConverterFillComplexBuffer_inner(void *conv,
                                                       ac_input_proc proc,
                                                       void *user,
                                                       unsigned *iopackets,
@@ -1171,6 +1171,22 @@ static int __cdecl sh_AudioConverterFillComplexBuffer(void *conv,
     outdata->mBuffers[0].mDataByteSize = give * 2;
     *iopackets = give;
     return 0;
+}
+
+/* The same call, timed; see g_t_aac in tiger_host_shims.c. */
+static int __cdecl sh_AudioConverterFillComplexBuffer(void *conv,
+                                                      ac_input_proc proc,
+                                                      void *user,
+                                                      unsigned *iopackets,
+                                                      au_bufferlist *outdata,
+                                                      au_packetdesc *outdesc)
+{
+    __int64 t0 = prof_now();
+    int rc = sh_AudioConverterFillComplexBuffer_inner(conv, proc, user,
+                                                      iopackets, outdata,
+                                                      outdesc);
+    g_t_aac += prof_now() - t0; g_n_aac++;
+    return rc;
 }
 
 /* Opened once per voice, at load time.  `SoundComponentData` is

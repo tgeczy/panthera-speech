@@ -327,6 +327,12 @@ static void __cdecl sh_dispatch_source_set_timer(void *o,
      * it asks for is the engine's own patience with a silent listener, and it
      * is the number the regression test has to outwait. */
     if (s->reaps_graph && !g_deferred_stop) {
+        /* Only a real future time is the engine saying "speech is
+         * over"; DISPATCH_TIME_FOREVER here is StartAudioGraph
+         * disarming it as an utterance begins. */
+        now = (unsigned __int64)GetTickCount64() * 1000000ULL;
+        if (start <= (unsigned __int64)3600 * 24 * 1000000000ULL + now)
+            g_defer_arm++;
         if (g_gcd_log) {
             unsigned __int64 t = (unsigned __int64)GetTickCount64() * 1000000ULL;
             fprintf(stderr, "tiger_host: refusing a deferred graph stop "

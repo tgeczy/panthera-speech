@@ -153,6 +153,25 @@ static unsigned g_c_gtod, g_c_uptime;
 static unsigned g_stat_ok, g_stat_refused, g_stat_idle;
 /* Off until measured; TIGER_STATUS=1 turns it on. */
 static int g_ask_status;
+/* How many times this utterance armed the deferred audio-graph stop.
+ *
+ * **10.7's own end-of-speech gesture, and the only one it makes.**  Tiger and
+ * Leopard say so by stopping the audio graph; 10.7 never does, and arms a
+ * deferred stop instead.  `tiger_host_serve.c` ends the utterance on this
+ * rather than on 300 ms of silence -- see there for the measurements. */
+static unsigned g_defer_arm;
+/* Where a concatenative utterance spends its time, under
+ * TIGER_FLOAT_STATS.
+ *
+ * **The instrument that found the speed.**  "Alex is slow on long posts" had
+ * been reported for weeks and answered with guesses; two counters said in one
+ * line that two thirds of a Lion render was inside our own FFT and none of it
+ * was the engine.  Cheap enough to leave in: the calls it wraps number in the
+ * hundreds, not the hundreds of thousands.  See [[measure-dont-reason]]. */
+static __int64 g_t_aac, g_t_fft;
+static unsigned g_n_aac, g_n_fft;
+static __int64 prof_now(void)
+{ LARGE_INTEGER t; QueryPerformanceCounter(&t); return t.QuadPart; }
 
 /* How much faster than the wall the engine's clock runs.  Defined further
  * down, with the note that explains why it is 128; declared here because

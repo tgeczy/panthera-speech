@@ -856,7 +856,7 @@ class PantheraDriver(SynthDriver):
             # it covers, and they are there because "abbreviations" alone
             # describes several things the engine does and this is only some
             # of them.
-            _("Expand &abbreviations (5KB, 1,234MB, 20ish, DR, ST)"),
+            _("Expand &abbreviations (5KB, 1,234MB, 20ish, DR, ST, XIV)"),
             defaultVal=True,
         ),
         # Alex says "cologne" for "colon" whenever a word follows it, which is

@@ -66,3 +66,59 @@ def test_the_rule_is_still_doing_something(driver):
     # Fred "5KB" grows from 27440 frames to 30800 when it becomes "kilobytes",
     # but "20ish" *shrinks* from 35056 to 21056 when it stops being spelt out,
     # so the direction belongs to the text and the voice, not to the rule.
+
+
+# -- the whole driver, not just the rule ----------------------------------
+#
+# `tests/test_acronyms.py` proves the table and the pattern; this proves the
+# *setting* reaches them.  The gap is real: the first version of this check
+# assigned `driver.expandAbbreviations = False` and every case passed with the
+# rewrite never running, because the fake `SynthDriver` has no property
+# machinery and the assignment simply made a new attribute.  It is the setter
+# that has to be called, and that is what NVDA calls.
+
+def _both_ways(driver, text):
+    """-> (audio with the setting on, audio with it off).
+
+    **On Fred, deliberately.**  The fixture's default voice is Alex, and Alex
+    is concatenative: "II" and "two" go through the same front end and come out
+    as the same words, but not as the same samples, so comparing them proves
+    nothing.  A formant voice renders the same phonemes to the same bytes,
+    which is what makes "the engine really does expand this" a fact rather than
+    an opinion.  Found by writing this on Alex first and watching it fail.
+    """
+    driver._set_voice("Fred")
+    driver._set_expandAbbreviations(True)
+    on = _say(driver, text)
+    driver._set_expandAbbreviations(False)
+    off = _say(driver, text)
+    driver._set_expandAbbreviations(True)
+    return on, off
+
+
+def test_turning_it_off_really_stops_dr(driver):
+    """DR is a lexical entry in MacinTalk, not a rule out here."""
+    on, off = _both_ways(driver, "DR")
+    assert on == _say(driver, "doctor"), \
+        "the engine no longer expands DR, so this test is about nothing"
+    assert off != on, "the setting did not reach the acronym rewrite"
+
+
+def test_turning_it_off_really_stops_a_roman_numeral(driver):
+    """Tomi: "Roman numerals, like XL, are not honored with abbreviations
+    off." They were not: the host's list of which dictionary rules the setting
+    covers had an entry for them that never matched a pattern, because the
+    dictionary has no roman-numeral rule at all."""
+    on, off = _both_ways(driver, "II")
+    assert on == _say(driver, "two"), \
+        "the engine no longer reads II as two, so this test is about nothing"
+    assert off != on, "the setting did not reach the roman numerals"
+    assert off == _say(driver, "I I"), \
+        "II with abbreviations off is not read as its letters"
+
+
+def test_and_leaves_an_ordinary_word_alone(driver):
+    """`MIX` is a valid roman numeral -- M + IX, 1009 -- and an ordinary
+    English word. It is the only one, and it stays a word either way."""
+    on, off = _both_ways(driver, "MIX")
+    assert on == off, "MIX changed when abbreviations were turned off"

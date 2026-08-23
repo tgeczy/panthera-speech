@@ -81,12 +81,82 @@ ACRONYMS = {
 _RE = re.compile(r"\b(%s)\b(?!\.)" % "|".join(sorted(ACRONYMS)))
 
 
+# -- roman numerals -------------------------------------------------------
+#
+# **The other half of the same complaint, reported by Tomi the morning after
+# the first half shipped:**
+#
+#     "Roman numerals, like XL, are not honored with abbreviations off."
+#
+# He is right, and *why* is worth writing down, because the code claimed
+# otherwise.  `k_abbrev_marks` in `tiger_host_regex.c` -- the list of which
+# dictionary rules "Expand abbreviations" covers -- carried an entry reading
+# "IVXLCDM", commented "roman numerals".  **It never matched anything.**
+#
+# Logging every regular expression `SpeechDictionary` actually compiles, on
+# text full of roman numerals, gives six patterns, and not one of them is
+# about roman numerals:
+#
+#     ^((JAN(UARY)?)|(FEB(RUARY)?)|...)$                 the month alternation
+#     ^(([[:digit:]]{1,3}(,[[:digit:]]{3})*)|...)[[:upper:]]+$  5KB, 1,234MB
+#     ^(K|M|G|T|P)B$                                     a bare unit
+#     ^[[:digit:]]+ISH$                                  20ish
+#     ^[[:digit:]]{7,}$                                  long digit runs
+#     ^[[:upper:]]+&[[:upper:]]+$                        AT&T
+#
+# So roman numerals are not a dictionary rule at all.  They are where `DR`
+# lives: inside MacinTalk's own lexicon, which no setting of the engine's
+# reaches.  A mark for a rule that does not exist is worse than no mark,
+# because it reads as coverage -- it has been removed.
+#
+# Measured on Leopard, the token against the word it might become:
+#
+#     II -> "two", III -> "three", and VI, VII, VIII, XI, XII, XIII, XIV,
+#     XVI..XIX, XXI..XXXIX, XLV, XLIX, XCIX, LXX, LXXX, MCM and MMXXVI all
+#     read as something other than their letters.
+#
+#     IV, IX, XX, XL, XC, L, C, D and M already read as letters, so spelling
+#     those changes nothing -- which is why the rule can be a rule rather than
+#     another hand-kept table.
+#
+#: A strict roman numeral: thousands, then hundreds, tens and units, each
+#: group in descending order.  Strictness is the whole point.  A loose
+#: `[IVXLCDM]+` would claim `DIM`, `MILD`, `LID` and `CIVIL`, none of which is
+#: a number; this pattern rejects all four, because their letters are out of
+#: order.
+_ROMAN = re.compile(r"\b(?=[MDCLXVI]{2,}\b)"
+                    r"(M{0,3}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})"
+                    r"(?:IX|IV|V?I{0,3}))\b")
+
+#: Valid roman numerals that are also ordinary English words.
+#:
+#: Checked rather than guessed, and the answer is short: of every word tried,
+#: exactly one survives the pattern above.  `MIX` is `M` + `IX`, 1009.
+#:
+#: `CD`, `DC`, `MD`, `CM`, `MM`, `XL` and `DIV` survive it as well and are
+#: deliberately **not** here.  They are abbreviations, and reading an
+#: abbreviation as its letters is the whole point of the setting being off.
+_ROMAN_NOT = frozenset(["MIX"])
+
+
+def _roman(m):
+    tok = m.group(1)
+    return tok if tok in _ROMAN_NOT else " ".join(tok)
+
+
 def spell(text):
     """-> `text` with acronym-shaped abbreviations spelt out.
 
     Case-sensitive on purpose: only the all-capitals form is touched, so
     "Dr. Who" and "Ali vs Frazier" are left exactly as written.
+
+    **No trailing-stop exception for the numerals**, unlike the acronyms
+    above, and the difference is real: a full stop after `DR` is the mark that
+    says "abbreviation", while a full stop after `II` is the end of a
+    sentence.  "He fought in World War II." should not keep its expansion for
+    having ended a paragraph.
     """
     if not text:
         return text
-    return _RE.sub(lambda m: " ".join(m.group(1)), text)
+    text = _RE.sub(lambda m: " ".join(m.group(1)), text)
+    return _ROMAN.sub(_roman, text)

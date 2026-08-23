@@ -168,8 +168,30 @@ Strides are signed and may run backwards, so walk pointers rather than index.
 read from two places. They must sum to one at every sample or every join gets
 an amplitude step. Measured on both generations: **1.0000, zero deviation**.
 
+### And it is where a Leopard render's time goes
+
+**205,000 calls into `svemg` and `vmsb` for one ordinary post, 74% of an Alex
+render.** That is the time-domain search doing exactly what it is supposed to;
+it just does a great deal of it.
+
+The engine only ever passes **unit strides**, and the general form pays a
+multiply per element for the stride it never uses. Saying so took Alex from
+524 ms to 356 for a long post, and Bruce from 273 to 141.
+
+Two rules for touching anything in here, and they are not the same rule:
+
+* `vmsb` is elementwise, so each output depends on one input triple. Widening
+  it is safe and the result is bit-identical.
+* `svemg` is a **running sum of floats**. Its accumulation order is part of the
+  answer — reassociate it and the numbers change, the WSOLA search scores
+  differently, and grains join in different places. Keep the order.
+
+Verify by hashing every voice before and after, not by listening. Tiger and
+Leopard are exactly reproducible run to run; **Lion's mtk3 voices are not**, so
+do not use one as a check.
+
 Lion moves this whole search into the frequency domain — see `macintalk-4.0.md`
-§7.
+§7, where the same lesson cost more.
 
 ---
 

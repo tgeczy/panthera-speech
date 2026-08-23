@@ -201,22 +201,55 @@ Tiger and Leopard start and stop the graph once per utterance — measured, 92 o
 92 and 96 of 96 — so `AUGraphStop` is a clean end-of-utterance signal.
 
 **Lion starts the graph once for the whole session and never stops it: 0 of
-96.** There is nothing to end an utterance on, so the host falls back to a
-quiet period — 300 ms with no new slice. That is a fixed 300 ms on the end of
-every Lion render, and it is why Lion measures 16× real time where Leopard
-measures 87×.
+96.** There is nothing obvious to end an utterance on, so the host used to fall
+back to a quiet period — 300 ms with no new slice, on the end of every single
+render. That is why Lion measured 16× real time where Leopard measured 87×.
+(Lion measures 64× on Alex now, and Leopard 36×, for the two reasons below.)
 
-It costs more than the time. While the wait runs the driver still counts the
-utterance as rendering, so a keystroke arriving inside that window used to
-retire the whole host process — audible as the engine restarting on every arrow
-key.
+It cost more than the time. While the wait ran the driver still counted the
+utterance as rendering, so a keystroke arriving inside that window could retire
+the whole host process — audible as the engine restarting on every arrow key.
 
-Shortening the window is not the answer and was tried: the widest silence
+Shortening the window is not the answer, and was tried: the widest silence
 between two slices of one utterance is 40.2 ms across 284 utterances, so 150 ms
 looks like three times the worst case — until an unbroken 370-character token
 gives Alex enough morphology to go quiet for longer than that in the middle of
-one utterance. The honest fix is `kSpeechStatusOutputBusy` via
-`SECopySpeechProperty`, which needs §2.
+one utterance.
+
+### It does signal the end. It arms a *deferred* stop.
+
+The signal was already passing through this host and being discarded. 10.7
+schedules `_MTBEAudioUnitDeferredStopAudioGraph` on a GCD one-shot when an
+utterance finishes, five seconds out; §4 is about why that timer must never be
+allowed to fire. **The moment it is armed is the engine saying it has
+finished**, and refusing the timer is where that can be seen.
+
+Measured before being trusted, with a temporary `TIGER_TAIL_LOG` instrument
+that printed the engine’s activity per tick and was removed once it had done
+its job:
+
+| | last slice | deferred stop armed |
+|---|---|---|
+| one sentence, Fred | 33 ms | 30 ms |
+| three sentences, Alex | 323 ms | 320 ms |
+| an unbroken 370-character token, Alex | 1598 ms | 1573 ms |
+
+**Armed exactly once per utterance in all three**, and within 25 ms of the last
+slice — including the long-token case that rules out every fixed timeout. Over
+the 300 ms that used to follow, the engine made **zero `gettimeofday` calls and
+armed zero timers**: it was finished, not thinking.
+
+Slices still in flight are not a risk, because scheduling ending was never the
+same as the audio having been read — the pacer drain after the wait loop is
+what covers that, and it is unchanged.
+
+Tiger and Leopard are untouched by construction: neither arms this timer
+(Leopard imports no libdispatch at all), so the counter stays zero and they
+leave on `AUGraphStop` exactly as before.
+
+`kSpeechStatusOutputBusy` via `SECopySpeechProperty` would also work and is
+still the tidier answer, but it needs a real `CFDictionary` (§2) and this needs
+nothing at all.
 
 ### And the streamed tail has to be released early
 
@@ -304,6 +337,47 @@ Alex's amplitude envelope *smoother* — 0.673 down to 0.533 on letter tails —
 which reads as an improvement and is the opposite: **a WSOLA splicing at the
 wrong lag re-emits material it has already used, and repeated material has a
 flatter envelope than speech.** Do not rank these by envelope statistics.
+
+### It is also the most expensive thing in the host
+
+About **1,400 transforms for one ordinary post**, and until 0.98.0 they were
+**141 ms of a 210 ms Alex render — two thirds of it, none of it Apple's code.**
+
+Two ordinary mistakes, both in `fft_complex`:
+
+* The twiddle factors were computed **inside the block loop**, where they
+  depend only on the two outer indices. A 512-point transform evaluated 2,304
+  sine-cosine pairs where 511 would do.
+* Every call allocated and freed **six buffers**, and the forward branch
+  computed a second sine and cosine per bin to recombine with.
+
+The angles and the scratch belong in the `FFTSetup`, which is created once with
+the size and had been carrying nothing but that size. **141 ms became 18.**
+
+The constraint that shapes the fix: **not one sample may move.** So the
+expressions are kept exactly as they were rather than being simplified —
+`cos(2·π·k/len)` for a table indexed by stage, not one table for the largest
+stage indexed by a stride, because those are mathematically equal and *not*
+bit-equal. Stages of a smaller transform are a prefix of a larger one's, which
+is what lets one table serve both the n/2-point forward and the n-point
+inverse; the recombination angles divide by `n` and are *not* a prefix, so they
+are used only at the size the setup was built for.
+
+Leopard has the same shape of cost in the time domain: **205,000 calls into
+`svemg` and `vmsb` for one post, 74% of the render.** Same treatment — the
+engine only ever passes unit strides, and saying so lets the compiler do the
+obvious thing. `svemg` keeps its accumulation order, because it sums floats and
+a different order is a different number; `vmsb` is elementwise and safe to
+widen.
+
+Verify with hashes, not with listening: every voice on all three generations,
+rendered before and after. Tiger and Leopard are byte-identical, and so are
+Lion's Alex and Vicki.
+
+**Lion's mtk3 voices are not byte-reproducible run to run** — Fred renders the
+same text to two different results at the same frame count, with an unmodified
+host. Tiger and Leopard are exactly reproducible. Do not use a Lion mtk3 hash
+as a regression check.
 
 ---
 

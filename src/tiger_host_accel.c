@@ -59,8 +59,22 @@ static void __cdecl sh_vDSP_svemg(const float *A, vdsp_stride IA,
     vdsp_length n;
     const float *p = A;
     if (!A || !C) return;
-    for (n = 0; n < N; n++, p += IA)
-        sum += (*p < 0.0f) ? -*p : *p;
+    /* **Unit stride is what the engine actually passes**, and saying so is
+     * worth 74% of a Leopard Alex render being in here and in `vmsb`.
+     * Measured: 205,088 calls to the two of them for one ordinary post, 237
+     * of a 320 ms render.  10.5 does its WSOLA search in the time domain, so
+     * this pair is to Leopard what the FFT is to Lion.
+     *
+     * **The accumulation order is unchanged**, which is the part that matters:
+     * these are floats, and adding them in a different order gives a different
+     * answer.  This only removes a multiply from the address arithmetic. */
+    if (IA == 1) {
+        for (n = 0; n < N; n++)
+            sum += (A[n] < 0.0f) ? -A[n] : A[n];
+    } else {
+        for (n = 0; n < N; n++, p += IA)
+            sum += (*p < 0.0f) ? -*p : *p;
+    }
     *C = sum;
     if (accel_debug()) {
         static unsigned calls;
@@ -106,6 +120,17 @@ static void __cdecl sh_vDSP_vmsb(const float *A, vdsp_stride IA,
             *D = (*A - *B) * *C;
         break;
     default:    /* D = A*B - C, the documented vDSP_vmsb */
+        /* The unit-stride case, for the reason `svemg` gives above.  Every
+         * element here is computed on its own, so unlike a running sum this
+         * one is safe for the compiler to widen: the arithmetic per element
+         * is the same arithmetic, and the audio is bit-for-bit unchanged --
+         * asserted, not assumed, across every voice of all three
+         * generations. */
+        if (IA == 1 && IB == 1 && IC == 1 && ID == 1) {
+            for (n = 0; n < N; n++)
+                D[n] = A[n] * B[n] - C[n];
+            break;
+        }
         for (n = 0; n < N; n++, A += IA, B += IB, C += IC, D += ID)
             *D = *A * *B - *C;
         break;
@@ -281,13 +306,47 @@ typedef struct { float *realp; float *imagp; } split_complex;
 #define FFT_INVERSE (-1)
 #define ACCEL_PI 3.14159265358979323846
 
-/* Apple's FFTSetup is opaque; ours only has to be something `fft_zrip` can
- * read back and `destroy_fftsetup` can free. */
-typedef struct { unsigned log2n, n; } fft_setup;
+/* Apple's FFTSetup is opaque; ours holds what a setup is *for*.
+ *
+ * **This is what a setup object exists to do, and we were not using it.**  It
+ * is created once, with the size, and every transform after that is the same
+ * size -- so the angles and the working buffers belong here rather than being
+ * recomputed and reallocated by each call.  On 10.7 that is not a detail:
+ * the transform was 141 ms of a 210 ms Alex render, and about 1400 calls per
+ * post each did its own `sin`, `cos` and six `malloc`s.
+ *
+ * `tc`/`ts` are the butterfly angles laid out by stage: stage `len` starts at
+ * `len/2 - 1` and holds `len/2` of them, so the stages for a *smaller*
+ * transform are a prefix of this table.  That matters, because the forward
+ * branch runs an n/2-point transform and the inverse an n-point one out of
+ * the same setup.
+ *
+ * `rc`/`rs` are the half-bin twiddle the forward branch recombines with.
+ * Those depend on `n` itself rather than on the stage, so they are *not* a
+ * prefix, and the tables are only used when the call asks for exactly the
+ * size the setup was built for. */
+typedef struct {
+    unsigned log2n, n;
+    int     ready;                       /* the tables below are usable */
+    double *tc, *ts;                     /* n-1 each: butterfly angles */
+    double *rc, *rs;                     /* n/2 each: recombination */
+    double *re, *im, *ar, *ai;           /* n/2 each: scratch */
+    double *gr, *gi;                     /* n each: the inverse's scratch */
+} fft_setup;
+
+static void fft_setup_free(fft_setup *s)
+{
+    if (!s) return;
+    free(s->tc); free(s->ts); free(s->rc); free(s->rs);
+    free(s->re); free(s->im); free(s->ar); free(s->ai);
+    free(s->gr); free(s->gi);
+    free(s);
+}
 
 static void * __cdecl sh_create_fftsetup(vdsp_length log2n, int radix)
 {
     fft_setup *s;
+    unsigned n, h, len, k;
     if (radix != 0) {                    /* kFFTRadix2 is the only one used */
         fprintf(stderr, "tiger_host: create_fftsetup asked for radix %d, "
                         "which this does not implement\n", radix);
@@ -297,13 +356,43 @@ static void * __cdecl sh_create_fftsetup(vdsp_length log2n, int radix)
     s = (fft_setup *)calloc(1, sizeof(*s));
     if (!s) return NULL;
     s->log2n = (unsigned)log2n;
-    s->n = 1u << log2n;
+    s->n = n = 1u << log2n;
+    h = n / 2;
+    if (h == 0) return s;                /* nothing to precompute */
+    s->tc = (double *)malloc(sizeof(double) * n);
+    s->ts = (double *)malloc(sizeof(double) * n);
+    s->rc = (double *)malloc(sizeof(double) * h);
+    s->rs = (double *)malloc(sizeof(double) * h);
+    s->re = (double *)malloc(sizeof(double) * h);
+    s->im = (double *)malloc(sizeof(double) * h);
+    s->ar = (double *)malloc(sizeof(double) * h);
+    s->ai = (double *)malloc(sizeof(double) * h);
+    s->gr = (double *)malloc(sizeof(double) * n);
+    s->gi = (double *)malloc(sizeof(double) * n);
+    if (!s->tc || !s->ts || !s->rc || !s->rs || !s->re || !s->im ||
+        !s->ar || !s->ai || !s->gr || !s->gi)
+        return s;                        /* ready stays 0: the slow path */
+    /* **The same expressions the loops used to evaluate**, so the doubles are
+     * the same doubles and the audio cannot move.  Anything cleverer -- one
+     * table for the largest stage, indexed by a stride -- is mathematically
+     * equal and *not* bit-equal, because the division rounds differently. */
+    for (len = 2; len <= n; len <<= 1)
+        for (k = 0; k < len / 2u; k++) {
+            double ang = 2.0 * ACCEL_PI * k / (double)len;
+            s->tc[len / 2u - 1 + k] = cos(ang);
+            s->ts[len / 2u - 1 + k] = sin(ang);
+        }
+    for (k = 0; k < h; k++) {
+        s->rc[k] = cos(-2.0 * ACCEL_PI * k / (double)n);
+        s->rs[k] = sin(-2.0 * ACCEL_PI * k / (double)n);
+    }
+    s->ready = 1;
     return s;
 }
 
 static void __cdecl sh_destroy_fftsetup(void *setup)
 {
-    free(setup);
+    fft_setup_free((fft_setup *)setup);
 }
 
 /* An in-place complex FFT of `m` points, iterative radix-2.
@@ -311,9 +400,11 @@ static void __cdecl sh_destroy_fftsetup(void *setup)
  * `sign` is -1 for the forward transform, matching e^(-2*pi*i*kn/N), which is
  * what both vDSP and numpy mean by forward.  No scaling is applied; the
  * callers below do whatever their convention wants. */
-static void fft_complex(double *re, double *im, unsigned m, int sign)
+static void fft_complex(double *re, double *im, unsigned m, int sign,
+                        const double *tc, const double *ts)
 {
     unsigned i, j, len, half, k;
+    double flip = (sign < 0) ? -1.0 : 1.0;
     for (i = 1, j = 0; i < m; i++) {         /* bit reversal */
         unsigned bit = m >> 1;
         for (; j & bit; bit >>= 1) j ^= bit;
@@ -323,13 +414,37 @@ static void fft_complex(double *re, double *im, unsigned m, int sign)
             t = im[i]; im[i] = im[j]; im[j] = t;
         }
     }
+    /* **The twiddle factors are hoisted out of the block loop, and that is
+     * most of this engine's speed on 10.7.**
+     *
+     * `ang`, `c` and `s` depend on `k` and on `len`, and on nothing else --
+     * yet they were computed inside the `i` loop, so a 512-point transform
+     * paid 2304 sine-cosine pairs where 511 would do.
+     *
+     * It costs what it costs because 10.7 correlates its WSOLA in the
+     * frequency domain; 10.5 does the same work in the time domain and never
+     * calls this at all.  One ordinary post is about 1400 transforms, which
+     * was three and a half million transcendental calls, measured at **141 ms
+     * of a 210 ms Alex render -- two thirds of the whole thing.**
+     *
+     * Swapping the two loops leaves every butterfly with exactly the same
+     * inputs, computed by the same expression, and each one touches its own
+     * pair of slots so they cannot interfere.  **The audio is bit-for-bit
+     * what it was**, and that is asserted rather than hoped: every voice on
+     * all three generations hashes identically across this change. */
     for (len = 2; len <= m; len <<= 1) {
         half = len >> 1;
-        for (i = 0; i < m; i += len) {
-            for (k = 0; k < half; k++) {
+        for (k = 0; k < half; k++) {
+            double c, s;
+            if (tc) {                    /* precomputed in the setup */
+                c = tc[half - 1 + k];
+                s = ts[half - 1 + k] * flip;
+            } else {
                 double ang = 2.0 * ACCEL_PI * k / (double)len;
-                double c = cos(ang);
-                double s = sin(ang) * (sign < 0 ? -1.0 : 1.0);
+                c = cos(ang);
+                s = sin(ang) * flip;
+            }
+            for (i = 0; i < m; i += len) {
                 unsigned a = i + k, b = a + half;
                 double ur = re[a], ui = im[a];
                 double vr = re[b] * c - im[b] * s;
@@ -354,13 +469,15 @@ static void fft_complex(double *re, double *im, unsigned m, int sign)
  * because the value goes to `vDSP_maxvi` and a uniform scale cannot move an
  * argmax -- but it is what any other caller would expect.
  */
-static void __cdecl sh_fft_zrip(void *setup, split_complex *io,
+static void __cdecl sh_fft_zrip_inner(void *setup, split_complex *io,
                                 vdsp_stride stride, vdsp_length log2n,
                                 int direction)
 {
     fft_setup *s = (fft_setup *)setup;
     unsigned n = 1u << log2n, h = n / 2, k;
     double *re, *im, *ar, *ai;
+    const double *tc, *ts;
+    int fast;
 
     if (!io || !io->realp || !io->imagp || h == 0) return;
     if (s && s->n < n) {
@@ -368,6 +485,15 @@ static void __cdecl sh_fft_zrip(void *setup, split_complex *io,
                         "built for 2^%u\n", (unsigned)log2n, s->log2n);
         return;
     }
+    /* The scratch and the stage angles serve any size up to the setup's own,
+     * because the stages of a smaller transform are a prefix of the larger
+     * one's.  The recombination angles are not a prefix -- they divide by `n`
+     * -- so those are used only at the exact size, and a mismatch quietly
+     * falls back to computing them.  Nothing here changes a value; it only
+     * changes how often one is computed. */
+    fast = (s && s->ready && n <= s->n);
+    tc = fast ? s->tc : NULL;
+    ts = fast ? s->ts : NULL;
     /* What the engine actually asks for, under TIGER_ACCEL_DEBUG.  The input
      * energy is the useful column: a correlation of an all-zero window
      * returns a flat spectrum whose peak index is meaningless, so silence
@@ -384,13 +510,19 @@ static void __cdecl sh_fft_zrip(void *setup, split_complex *io,
             printf("  [vDSP] fft_zrip #%u n=%u stride=%ld dir=%d "
                    "input energy=%.6g\n", calls, n, (long)stride, direction, e);
     }
-    re = (double *)malloc(sizeof(double) * h);
-    im = (double *)malloc(sizeof(double) * h);
-    ar = (double *)malloc(sizeof(double) * h);
-    ai = (double *)malloc(sizeof(double) * h);
-    if (!re || !im || !ar || !ai) {
-        free(re); free(im); free(ar); free(ai);
-        return;
+    /* The setup's own buffers when it has them, which is the whole point of
+     * a setup object: six allocations per call, about 1400 calls a post. */
+    if (fast) {
+        re = s->re; im = s->im; ar = s->ar; ai = s->ai;
+    } else {
+        re = (double *)malloc(sizeof(double) * h);
+        im = (double *)malloc(sizeof(double) * h);
+        ar = (double *)malloc(sizeof(double) * h);
+        ai = (double *)malloc(sizeof(double) * h);
+        if (!re || !im || !ar || !ai) {
+            free(re); free(im); free(ar); free(ai);
+            return;
+        }
     }
     for (k = 0; k < h; k++) {
         re[k] = io->realp[k * stride];
@@ -398,7 +530,7 @@ static void __cdecl sh_fft_zrip(void *setup, split_complex *io,
     }
 
     if (direction == FFT_FORWARD) {
-        fft_complex(re, im, h, -1);
+        fft_complex(re, im, h, -1, tc, ts);
         /* The N/2-point spectrum of (even + i*odd) carries both halves; the
          * even part is the hermitian-symmetric piece and the odd part the
          * antisymmetric one, recombined with a half-bin twiddle. */
@@ -410,8 +542,11 @@ static void __cdecl sh_fft_zrip(void *setup, split_complex *io,
             double ei = 0.5 * (im[k] - im[m]);
             double orr = 0.5 * (im[k] + im[m]);
             double oi = -0.5 * (re[k] - re[m]);
-            double c = cos(-2.0 * ACCEL_PI * k / (double)n);
-            double sn = sin(-2.0 * ACCEL_PI * k / (double)n);
+            int exact = fast && s->n == n;
+            double c  = exact ? s->rc[k]
+                              : cos(-2.0 * ACCEL_PI * k / (double)n);
+            double sn = exact ? s->rs[k]
+                              : sin(-2.0 * ACCEL_PI * k / (double)n);
             ar[k] = er + (orr * c - oi * sn);
             ai[k] = ei + (orr * sn + oi * c);
         }
@@ -438,24 +573,37 @@ static void __cdecl sh_fft_zrip(void *setup, split_complex *io,
          * inverse, and a division by 2N is the identity. Since the forward
          * pass already carries vDSP's factor of two, leaving the inverse
          * unscaled is exactly what makes that true. */
-        double *gr = (double *)malloc(sizeof(double) * n);
-        double *gi = (double *)malloc(sizeof(double) * n);
-        if (!gr || !gi) { free(gr); free(gi);
-                          free(re); free(im); free(ar); free(ai); return; }
+        double *gr = fast ? s->gr : (double *)malloc(sizeof(double) * n);
+        double *gi = fast ? s->gi : (double *)malloc(sizeof(double) * n);
+        if (!gr || !gi) {
+            if (!fast) { free(gr); free(gi);
+                         free(re); free(im); free(ar); free(ai); }
+            return;
+        }
         gr[0] = re[0]; gi[0] = 0.0;              /* DC, real */
         gr[h] = im[0]; gi[h] = 0.0;              /* Nyquist, unpacked */
         for (k = 1; k < h; k++) {
             gr[k] = re[k];      gi[k] = im[k];
             gr[n - k] = re[k];  gi[n - k] = -im[k];   /* conjugate half */
         }
-        fft_complex(gr, gi, n, +1);
+        fft_complex(gr, gi, n, +1, tc, ts);
         for (k = 0; k < h; k++) {
             io->realp[k * stride] = (float)gr[2 * k];
             io->imagp[k * stride] = (float)gr[2 * k + 1];
         }
-        free(gr); free(gi);
+        if (!fast) { free(gr); free(gi); }
     }
-    free(re); free(im); free(ar); free(ai);
+    if (!fast) { free(re); free(im); free(ar); free(ai); }
+}
+
+/* The same call, timed; see g_t_aac in tiger_host_shims.c. */
+static void __cdecl sh_fft_zrip(void *setup, split_complex *io,
+                                vdsp_stride stride, vdsp_length log2n,
+                                int direction)
+{
+    __int64 t0 = prof_now();
+    sh_fft_zrip_inner(setup, io, stride, log2n, direction);
+    g_t_fft += prof_now() - t0; g_n_fft++;
 }
 
 /* ctoz/ztoc: interleaved to split and back.  `ctoz` reads an ordinary array

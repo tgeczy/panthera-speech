@@ -15,11 +15,11 @@ seconds of wall clock, and at 0.9x the singing voices reach that inside one
 ordinary sentence, so seventeen voices in a row rendered nothing.  A speed
 floor is the test that names the cause rather than the symptom.
 
-The floor is deliberately far below what any generation actually achieves --
-77x to 88x measured on this machine -- because it has to survive a slower
-machine and a loaded one without ever crying wolf.  What it catches is a
-regression of two orders of magnitude, which is the only kind that has
-happened.
+The floor is deliberately far below what any generation actually achieves,
+because it has to survive a slower machine and a loaded one without ever
+crying wolf.  What it catches is a regression of an order of magnitude, which
+is the only kind that has happened -- twice now, and the second time nobody
+was looking for it either.
 """
 import time
 
@@ -27,16 +27,19 @@ import pytest
 
 #: Rendering must outrun speaking by at least this much.
 #:
-#: Real numbers on the machine this was written on, best of three, one
-#: sentence of Fred: Tiger 77x, Leopard 87x, **Lion 8x**. Lion is an order
-#: lower for a reason that is not the engine and not this bug -- 10.7 never
-#: calls `AUGraphStop`, measured 0 times in 96, so every utterance sits out
-#: the serve loop's quiet period after its audio is already complete. That is
-#: a fixed 300 ms, and `tiger_host_serve.c` says at length why it is still 300
-#: rather than the 150 that was tried. A fixed cost hurts a short utterance
-#: proportionally more, which is why the floor is set where a *long* sentence
-#: clears it easily.
-MIN_REALTIME = 3.0
+#: **Raised from 3 to 25 in 0.98.0, and the old number is worth keeping in
+#: view.** It was 3 because Lion measured 8x where Tiger measured 77x and
+#: Leopard 87x -- an order of magnitude slower, entirely from the fixed 300 ms
+#: every utterance spent waiting to find out it had finished. 10.7 turned out
+#: to signal the end after all, by arming a deferred audio-graph stop, and the
+#: transform underneath Alex turned out to be two thirds of what was left. See
+#: `tiger_host_serve.c` and `tiger_host_accel.c`.
+#:
+#: Now, best of three on one sentence: **Fred 101x, Alex 78x**. A floor of 25
+#: keeps three times the headroom on the worst of those, so a slower or busier
+#: machine cannot cry wolf -- while still catching a return to anything like
+#: the old number, which is the regression that has actually happened twice.
+MIN_REALTIME = 25.0
 
 TEXT = ("The US Chamber of Commerce warned Tuesday that higher tariffs would "
         "damage both economies and drive up costs for families.")
@@ -64,6 +67,8 @@ def test_rendering_outruns_speaking(driver, voice):
         "%s renders %.2f s of audio in %.2f s, only %.1fx real time. The "
         "engine's clock is not running fast -- check that every clock it reads "
         "is scaled by g_speed, not just UpTime." % (voice, seconds, best, ratio))
+    print("\n  %s: %.2f s of audio in %.0f ms, %.1fx real time"
+          % (voice, seconds, best * 1000, ratio))
 
 
 def test_a_long_singing_utterance_survives_the_serve_loop(driver):
@@ -91,3 +96,45 @@ def test_a_long_singing_utterance_survives_the_serve_loop(driver):
     driver._set_voice("Fred")
     after = driver._render("Testing.", wpm, "Fred")
     assert after, "the channel never spoke again after a long utterance"
+
+
+#: What one keystroke may cost, end to end, on 10.7.
+#:
+#: Arrowing through a timeline is nothing but short utterances, and a *fixed*
+#: cost is worst exactly there: the 300 ms quiet period this replaces was
+#: several times the whole render of a single letter. Generous against the
+#: 30-60 ms measured, and far below the 300+ that a return to the old
+#: behaviour would produce.
+MAX_SHORT_MS = 150.0
+
+
+def test_a_single_letter_does_not_pay_a_fixed_wait(driver):
+    """**10.7 says when it has finished, and this is what says we listen.**
+
+    It arms `_MTBEAudioUnitDeferredStopAudioGraph` -- a five-second one-shot
+    the host refuses, because letting it fire is what made Lion go deaf after
+    five seconds of silence. Arming it is the engine's end-of-utterance
+    signal, measured at within 25 ms of the last slice and exactly once per
+    utterance, including for an unbroken 370-character token.
+
+    Before that, an utterance ended when the audio had been quiet for 300 ms,
+    and there was no other way to know. This test fails by roughly a factor of
+    four if anything puts that back.
+    """
+    voice = driver._get_voice()
+    wpm = driver._wpm()
+    driver._render("o", wpm, voice)                 # warm
+    best = min(_time_one(driver, "o", wpm, voice) for _ in range(3))
+    print("\n  one letter on %s: %.0f ms" % (voice, best * 1000))
+    assert best * 1000 < MAX_SHORT_MS, (
+        "a single letter took %.0f ms to render on %s. A fixed wait has come "
+        "back -- see the deferred graph stop in tiger_host_serve.c."
+        % (best * 1000, voice))
+
+
+def _time_one(driver, text, wpm, voice):
+    started = time.time()
+    pcm = driver._render(text, wpm, voice)
+    elapsed = time.time() - started
+    assert pcm, "rendered nothing"
+    return elapsed

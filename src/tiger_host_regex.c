@@ -643,17 +643,27 @@ static re_slot *re_slot_for(const void *preg)
  * covers.
  *
  * These are the shapes that rewrite a written form into different words: KB
- * into kilobytes, III into three, SEPT into September.  The phone-number
- * rules are deliberately *not* here -- reading digits as digits is not an
- * abbreviation, and that is the one rule that already worked. */
+ * into kilobytes, SEPT into September.  The phone-number rules are
+ * deliberately *not* here -- reading digits as digits is not an abbreviation,
+ * and that is the one rule that already worked. */
 /* Taken from what the dictionary actually compiles, logged from a running
  * channel -- not from a description of it.  The rule that turns "5KB" into
  * kilobytes is the quantity-then-capitals pattern, *not* the bare unit one,
- * which is the kind of thing only the log tells you. */
+ * which is the kind of thing only the log tells you.
+ *
+ * **A seventh entry used to sit here, "IVXLCDM", commented "roman numerals",
+ * and it never matched a thing.**  Every pattern the dictionary compiles is
+ * in this list, logged on text stuffed with roman numerals, and none of them
+ * is about roman numerals -- II is read as "two" whatever this switch says,
+ * because it is a lexical entry inside MacinTalk rather than a rule out here.
+ * That is the same place DR lives, and it is repaired the same way, in the
+ * text: see `pantheraabbrev.py`.
+ *
+ * The mark was worse than useless, because it read as coverage.  Reported by
+ * Tomi, who turned the setting off and still heard "World War two". */
 static const char *k_abbrev_marks[] = {
     "(,[[:digit:]]{3})*",       /* a quantity followed by a unit: 5KB, 1,234MB */
     "(K|M|G|T|P)B",             /* a bare unit                                 */
-    "IVXLCDM",                  /* roman numerals                              */
     "JAN",                      /* the month alternation                       */
     "ISH",                      /* 20ish                                       */
     "&",                        /* AT&T                                        */

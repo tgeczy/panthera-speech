@@ -393,6 +393,9 @@ static int serve(image *mt, void *chan, const char *voicesdir)
          */
 
 
+        g_defer_arm = 0;
+        g_t_aac = g_t_fft = 0;
+        g_n_aac = g_n_fft = 0;
         g_pcm_n = 0; g_slices = 0; g_stopped = 0; g_empty_run = 0;
         g_dup_slices = 0; g_have_last = 0; g_p_drops = 0;
         g_epoch_base = 0; g_last_stime = 0.0; g_have_origin = 0;
@@ -498,6 +501,40 @@ static int serve(image *mt, void *chan, const char *voicesdir)
             unsigned last = 0, quiet = 0, ticks = 0;
             while (!g_stopped && quiet < 30 && ticks < 900) {
                 Sleep(10); ticks++;
+                /* **10.7 does signal the end of an utterance, and this is
+                 * it.**  It never calls `AUGraphStop` -- 0 times in 96 -- so
+                 * the quiet period below was the only thing that could end a
+                 * Lion response, at a fixed cost of 300 ms every time.  What
+                 * 10.7 does instead is *arm a deferred* graph stop: a GCD
+                 * one-shot five seconds out, which this host refuses because
+                 * letting it fire is what made Lion go deaf after five seconds
+                 * of silence.  The refusal is where the signal was.
+                 *
+                 * Measured, three shapes, `TIGER_TAIL_LOG` (since removed):
+                 *
+                 *   one sentence of Fred      last slice  33 ms, armed at  30
+                 *   three sentences of Alex   last slice 323 ms, armed at 320
+                 *   an unbroken 370-char token, Alex
+                 *                             last slice 1598 ms, armed at 1573
+                 *
+                 * Armed **exactly once** per utterance in every case, within
+                 * 25 ms of the last slice -- including Brandon's issue-#4 token,
+                 * which is the case that killed the last attempt at shortening
+                 * this (see below).  And the engine really is finished: over
+                 * those same 300 ms it made zero clock polls and armed zero
+                 * timers.
+                 *
+                 * Slices still in flight are not a risk here.  Scheduling
+                 * ending is not the same as the audio having been read, which
+                 * is exactly what the pacer drain below this loop exists for --
+                 * this changes *when* we stop waiting for the engine, not
+                 * whether we wait for the audio.
+                 *
+                 * Tiger and Leopard are untouched by construction: neither
+                 * arms this timer -- Leopard imports no libdispatch at all --
+                 * so `g_defer_arm` stays zero and they leave on `AUGraphStop`
+                 * as they always have. */
+                if (g_defer_arm && g_pcm_n) break;
                 /* **Ask, rather than infer from silence.**
                  *
                  * The quiet period below is a guess that costs 300 ms on
@@ -638,6 +675,10 @@ static int serve(image *mt, void *chan, const char *voicesdir)
                         sent = stream_chunk(sent, g_pcm_n - STREAM_LOOKBEHIND);
                 }
             }
+            if (g_float_stats)
+                fprintf(stderr, "  [au] the engine armed its deferred "
+                                "graph stop %u time(s); the wait ran %u "
+                                "tick(s)\n", g_defer_arm, ticks);
             /* The engine has stopped *scheduling*, which is not the same as
              * the audio having been read.
              *
@@ -727,6 +768,13 @@ static int serve(image *mt, void *chan, const char *voicesdir)
                             "%.1f ms\n",
                     g_au_start, g_au_stop, g_au_uninit, g_au_isinit,
                     g_slice_gap_max);
+        if (g_float_stats) {
+            LARGE_INTEGER f; QueryPerformanceFrequency(&f);
+            fprintf(stderr, "  [prof] aac %.1f ms in %u call(s), "
+                            "fft %.1f ms in %u\n",
+                    g_t_aac * 1000.0 / f.QuadPart, g_n_aac,
+                    g_t_fft * 1000.0 / f.QuadPart, g_n_fft);
+        }
         if (g_float_stats)
             fprintf(stderr, "  [clock] gettimeofday %u, UpTime %u\n",
                     g_c_gtod, g_c_uptime);
