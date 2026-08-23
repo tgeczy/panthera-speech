@@ -879,9 +879,24 @@ class PantheraDriver(SynthDriver):
             defaultVal=True,
         ),
     )
+    #: **This set is advisory, not a filter.**  NVDA does not strip commands a
+    #: driver leaves out of it -- they arrive at `speak()` regardless and are
+    #: dropped there, silently, by falling off the end of the loop.  So a
+    #: missing entry here is *two* faults that look like one: callers that do
+    #: check it (MathCAT does) decline to send the command, and callers that
+    #: do not send it and are ignored.
+    #:
+    #: `RateCommand` was missing until 0.98.1.  Reported by **Amir**, whose
+    #: Typing & Spelling Rate add-on wraps every typed character and every
+    #: spelt letter in `[RateCommand(offset=N), ..., RateCommand()]` and had no
+    #: effect on any Panthera voice at any setting.  NVDA itself never emits
+    #: one -- only SSML and add-ons do -- which is exactly why nothing here had
+    #: ever noticed.
     supportedCommands = {speech.commands.IndexCommand,
                          speech.commands.BreakCommand,
-                         speech.commands.PitchCommand}
+                         speech.commands.PitchCommand,
+                         speech.commands.RateCommand,
+                         speech.commands.VolumeCommand}
     supportedNotifications = {synthIndexReached, synthDoneSpeaking}
 
     @classmethod
@@ -1411,15 +1426,22 @@ class PantheraDriver(SynthDriver):
         t.daemon = True
         t.start()
 
-    def _wpm(self):
+    def _wpm(self, adj=0):
         """-> words per minute for the slider position.
 
         The engine has no ceiling worth speaking of -- asked for 1500 wpm it
         delivers 1598 and stays perfectly stable -- so rate boost simply
         raises the top of the slider rather than doing anything clever.
+
+        `adj` is what NVDA asked for on top of the user's setting, on its own
+        0-100 rate scale -- a `RateCommand`, which is how an add-on asks for
+        typing or spelling to be read at a different speed.  Clamped rather
+        than scaled, exactly like the pitch offset beside it, so an add-on
+        asking for +100 gets the top of the slider rather than an error.
         """
         top = RATE_MAX_BOOST if self._rateBoost else RATE_MAX
-        return RATE_MIN + int(self._rate * (top - RATE_MIN) / 100)
+        rate = min(100, max(0, self._rate + adj))
+        return RATE_MIN + int(rate * (top - RATE_MIN) / 100)
 
     def _pitchOffset(self, adj=0):
         """-> tenths of a semitone away from the voice's own pitch.
@@ -1433,7 +1455,7 @@ class PantheraDriver(SynthDriver):
         pitch = min(100, max(0, self._pitch + adj))
         return int((pitch - 50) * PITCH_SEMITONES * 10 / 50)
 
-    def _render(self, text, wpm, voice, pitch=0, sink=None):
+    def _render(self, text, wpm, voice, pitch=0, sink=None, volume=0):
         """-> PCM bytes, or None.  One request, one utterance.
 
         With a `sink`, the audio is asked for in chunks and each is handed over
@@ -1540,7 +1562,12 @@ class PantheraDriver(SynthDriver):
         # `volm 1.000` renders byte-identically to sending nothing, measured,
         # so the voices whose factor is 1.0 -- Bruce, Victoria, Agnes -- are
         # exactly as they were.
-        text = "[[volm %.3f]]%s" % (volume_volm(self._volume, voice, self.VOLUME_NORM), text)
+        #: `volume` is a VolumeCommand offset on NVDA's 0-100 scale, 0
+        #: meaning the user's own setting -- clamped, like the rate and pitch
+        #: offsets beside it.
+        level = min(100, max(0, self._volume + volume))
+        text = "[[volm %.3f]]%s" % (
+            volume_volm(level, voice, self.VOLUME_NORM), text)
         #: Ours, and only ours.  A cancel can retire this process and
         #: start its replacement while this call is still in the read
         #: below, and the failure that follows must not kill the host the
@@ -1704,6 +1731,8 @@ class PantheraDriver(SynthDriver):
             #: text that follows -- how "capital pitch change percentage"
             #: is expressed.  0 means the user's own setting.
             adj = 0
+            #: The same again, on the volume slider.
+            vol = 0
             run = []
             #: Indexes seen since the last flush.
             #:
@@ -1729,13 +1758,21 @@ class PantheraDriver(SynthDriver):
                 if kind == "index":
                     pending.append(value)
                     continue
-                self._flush(run, wpm, voice, adj, epoch, pending)
+                self._flush(run, wpm, voice, adj, epoch, pending, vol)
                 if kind == "break":
                     self._audioQueue.put(("audio", _silence(value), self._epoch))
                 elif kind == "pitch":
                     adj = value
+                elif kind == "volume":
+                    vol = value
+                elif kind == "rate":
+                    # After the flush above, never before it: the text already
+                    # collected was asked for at the old rate, and applying a
+                    # change backwards over it is how "the first word comes out
+                    # at the wrong speed" happens.
+                    wpm = self._wpm(value)
             if not self._stopped and self._epoch == epoch:
-                self._flush(run, wpm, voice, adj, epoch, pending)
+                self._flush(run, wpm, voice, adj, epoch, pending, vol)
             for index in pending:               # nothing left to speak
                 self._audioQueue.put(("index", index, None))
             del pending[:]
@@ -1790,9 +1827,12 @@ class PantheraDriver(SynthDriver):
         #: it.  Without this, arrowing through a list would be held too.
         if not any(kind == "index" for kind, _ in item):
             return item
-        #: A break or a pitch change divides the utterance where it stands, so
-        #: joining across one would promise a boundary that is not there.
-        if any(kind in ("break", "pitch") for kind, _ in item):
+        #: A break, a pitch change or a rate change divides the utterance where
+        #: it stands, so joining across one would promise a boundary that is
+        #: not there -- or, for a rate change, would speak the next utterance at
+        #: the speed this one asked for.
+        if any(kind in ("break", "pitch", "rate", "volume")
+               for kind, _ in item):
             return item
 
         items = self._reportIndexes(item)
@@ -1827,14 +1867,15 @@ class PantheraDriver(SynthDriver):
                 #: terminate().  Put it back for the loop that owns it.
                 self._queue.put(None)
                 break
-            if any(kind in ("break", "pitch") for kind, _ in nxt):
+            if any(kind in ("break", "pitch", "rate", "volume")
+                   for kind, _ in nxt):
                 items.extend(nxt)
                 break
             items.extend(self._reportIndexes(nxt))
             text = _joinFragments([v for k, v in items if k == "text"])
         return items
 
-    def _flush(self, run, wpm, voice, adj, epoch, pending=None):
+    def _flush(self, run, wpm, voice, adj, epoch, pending=None, vol=0):
         """Render the text collected so far as ONE utterance.
 
         **A speech sequence is not a list of utterances.**  NVDA hands over the
@@ -1923,7 +1964,7 @@ class PantheraDriver(SynthDriver):
             # long post must not cost the rest of it.
             heard = len(fed)
             pcm = self._render(piece, wpm, voice, self._pitchOffset(adj),
-                               sink=sink)
+                               sink=sink, volume=vol)
             if (pcm is None and len(fed) == heard and not self._stopped
                     and self._epoch == epoch):
                 # Nothing was said and nothing was heard, and this utterance is
@@ -1948,7 +1989,8 @@ class PantheraDriver(SynthDriver):
                 # to be thrown away, which would put back the wait the
                 # retirement exists to remove.
                 pcm = self._render(piece, wpm, voice,
-                                   self._pitchOffset(adj), sink=sink)
+                                   self._pitchOffset(adj), sink=sink,
+                                   volume=vol)
         # Timing, at DEBUG, because "it lags on long text" is the report this
         # add-on gets most and it was never possible to check from a log.  Both
         # numbers, per utterance: a first sound that arrives late is a
@@ -2131,6 +2173,19 @@ class PantheraDriver(SynthDriver):
                 # Dropped until now, so "capital pitch change percentage"
                 # did nothing whatever it was set to.
                 items.append(("pitch", item.offset))
+            elif isinstance(item, speech.commands.VolumeCommand):
+                # The third of the same shape.  Nothing has asked for this one
+                # yet, but the sibling ROM driver has accepted it since its own
+                # sequence work and this one had quietly fallen behind -- which
+                # is the drift that left the rate command missing at all.
+                items.append(("volume", item.offset))
+            elif isinstance(item, speech.commands.RateCommand):
+                # The same shape as the pitch command, on the rate slider,
+                # and dropped here for the same reason for longer.  NVDA
+                # never sends one itself, so only an add-on or SSML ever
+                # asks -- which is why this was reported from outside
+                # rather than found from inside.
+                items.append(("rate", item.offset))
         self._queue.put(items)
 
     def cancel(self):

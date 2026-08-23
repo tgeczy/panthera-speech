@@ -346,9 +346,20 @@ class SynthDriver(SynthDriver):
             defaultVal="short",
         ),
     )
+    #: **Advisory, not a filter.**  NVDA does not strip a command a driver
+    #: leaves out of this set -- it arrives at `speak()` anyway and is dropped
+    #: there in silence, while callers that *do* consult the set (MathCAT is
+    #: one) decline to send it at all.  Two quiet failures from one omission.
+    #:
+    #: `RateCommand` and `VolumeCommand` were missing until 0.98.1, reported by
+    #: Amir against the Leopard and Lion generations; this one had the same
+    #: gap.  NVDA never emits either itself -- only SSML and add-ons do -- so
+    #: no amount of ordinary use would have found it.
     supportedCommands = {speech.commands.IndexCommand,
                          speech.commands.BreakCommand,
-                         speech.commands.PitchCommand}
+                         speech.commands.PitchCommand,
+                         speech.commands.RateCommand,
+                         speech.commands.VolumeCommand}
     supportedNotifications = {synthIndexReached, synthDoneSpeaking}
 
     @classmethod
@@ -630,15 +641,20 @@ class SynthDriver(SynthDriver):
         t.daemon = True
         t.start()
 
-    def _wpm(self):
+    def _wpm(self, adj=0):
         """-> words per minute for the slider position.
 
         The engine has no ceiling worth speaking of -- asked for 1500 wpm it
         delivers 1598 and stays perfectly stable -- so rate boost simply
         raises the top of the slider rather than doing anything clever.
+
+        `adj` is a `RateCommand` offset on NVDA's own 0-100 scale, which is how
+        an add-on asks for typing or spelling to be read at a different speed.
+        Clamped rather than scaled, like the pitch offset beside it.
         """
         top = RATE_MAX_BOOST if self._rateBoost else RATE_MAX
-        return RATE_MIN + int(self._rate * (top - RATE_MIN) / 100)
+        rate = min(100, max(0, self._rate + adj))
+        return RATE_MIN + int(rate * (top - RATE_MIN) / 100)
 
     def _pitchOffset(self, adj=0):
         """-> tenths of a semitone away from the voice's own pitch.
@@ -652,7 +668,7 @@ class SynthDriver(SynthDriver):
         pitch = min(100, max(0, self._pitch + adj))
         return int((pitch - 50) * PITCH_SEMITONES * 10 / 50)
 
-    def _render(self, text, wpm, voice, pitch=0, sink=None):
+    def _render(self, text, wpm, voice, pitch=0, sink=None, volume=0):
         """-> PCM bytes, or None.  One request, one utterance.
 
         With a `sink`, the audio is asked for in chunks and each is handed over
@@ -709,8 +725,13 @@ class SynthDriver(SynthDriver):
         elif self._inflectionSent:
             text = "[[pmod 100]]%s" % text
             self._inflectionSent = False
-        if self._volume < 100:
-            text = "[[volm %.3f]]%s" % (self._volume / 100.0, text)
+        #: `volume` is a VolumeCommand offset on NVDA's 0-100 scale, 0
+        #: meaning the user's own setting.  At the default it is 0 and `level`
+        #: is `self._volume`, so nothing about an ordinary utterance changes --
+        #: which is what keeps Tiger's renders byte-identical.
+        level = min(100, max(0, self._volume + volume))
+        if level < 100:
+            text = "[[volm %.3f]]%s" % (level / 100.0, text)
             self._volumeSent = True
         elif self._volumeSent:
             text = "[[volm 1.000]]%s" % text
@@ -812,6 +833,8 @@ class SynthDriver(SynthDriver):
             #: that follows -- how "capital pitch change percentage" is
             #: expressed.  0 means the user's own setting.
             adj = 0
+            #: The same again, on the volume slider.
+            vol = 0
             run = []
             #: Indexes seen since the last flush, reported once the audio
             #: around them has been handed to the player.
@@ -839,19 +862,25 @@ class SynthDriver(SynthDriver):
                 if kind == "index":
                     pending.append(value)
                     continue
-                self._flush(run, wpm, voice, adj, pending)
+                self._flush(run, wpm, voice, adj, pending, vol)
                 if kind == "break":
                     self._audioQueue.put(("audio", _silence(value), self._cancels))
                 elif kind == "pitch":
                     adj = value
+                elif kind == "volume":
+                    vol = value
+                elif kind == "rate":
+                    # After the flush, never before it: the text already
+                    # collected was asked for at the old rate.
+                    wpm = self._wpm(value)
             if not self._stopped:
-                self._flush(run, wpm, voice, adj, pending)
+                self._flush(run, wpm, voice, adj, pending, vol)
             for index in pending:               # nothing left to speak
                 self._audioQueue.put(("index", index, None))
             del pending[:]
             self._audioQueue.put(("done", None, None))
 
-    def _flush(self, run, wpm, voice, adj=0, pending=None):
+    def _flush(self, run, wpm, voice, adj=0, pending=None, vol=0):
         """Render the text collected so far as ONE utterance.
 
         **A speech sequence is not a list of utterances.**  NVDA hands over the
@@ -913,13 +942,14 @@ class SynthDriver(SynthDriver):
             self._audioQueue.put(("audio", chunk, mark))
             return True
 
-        pcm = self._render(text, wpm, voice, self._pitchOffset(adj), sink=sink)
+        pcm = self._render(text, wpm, voice, self._pitchOffset(adj),
+                           sink=sink, volume=vol)
         if pcm is None and not fed and not self._streaming:
             # That failure was the host refusing to stream, and it has just
             # been turned off.  Say this utterance the old way rather than
             # losing it -- it could be the one telling the user what happened.
             pcm = self._render(text, wpm, voice, self._pitchOffset(adj),
-                               sink=sink)
+                               sink=sink, volume=vol)
         # Timing, at DEBUG, because "it lags on long text" is the report this
         # driver keeps getting and it was never possible to check from a log.
         # Both numbers, per utterance: a first sound that arrives late is a
@@ -1077,6 +1107,10 @@ class SynthDriver(SynthDriver):
                 # until now, which meant the one place a pause was *wanted*
                 # was the one place it did not happen.
                 items.append(("break", item.time))
+            elif isinstance(item, speech.commands.RateCommand):
+                items.append(("rate", item.offset))
+            elif isinstance(item, speech.commands.VolumeCommand):
+                items.append(("volume", item.offset))
             elif isinstance(item, speech.commands.PitchCommand):
                 # How NVDA marks a capital letter: an offset on its own 0-100
                 # pitch scale, 0 meaning the user's setting again.  Dropped

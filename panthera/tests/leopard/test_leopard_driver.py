@@ -514,9 +514,15 @@ class _renderCounter(object):
         original = self.driver._render
         self._original = original
 
-        def spy(text, wpm, voice, pitch=0, sink=None):
+        #: `**kw` rather than a copy of the signature -- which is what this
+        #: was, and what broke the moment `_render` grew a `volume` argument.
+        #: The spy raised `TypeError` on the worker thread, so the sequence
+        #: simply never finished and three tests failed saying exactly that
+        #: and nothing more useful.  A spy has no business knowing the whole
+        #: signature.
+        def spy(text, wpm, voice, pitch=0, **kw):
             self.texts.append(text)
-            return original(text, wpm, voice, pitch, sink=sink)
+            return original(text, wpm, voice, pitch, **kw)
 
         self.driver._render = spy
         return self
@@ -655,9 +661,9 @@ def test_capital_pitch_change_reaches_the_engine(driver, monkeypatch):
     seen = []
     original = driver._render
 
-    def spy(text, wpm, voice, pitch=0, sink=None):
+    def spy(text, wpm, voice, pitch=0, **kw):
         seen.append(pitch)
-        return original(text, wpm, voice, pitch, sink=sink)
+        return original(text, wpm, voice, pitch, **kw)
 
     _warm(driver)
     monkeypatch.setattr(driver, "_render", spy)

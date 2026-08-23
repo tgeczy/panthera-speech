@@ -172,7 +172,31 @@ def _install_fake_nvda():
         def __init__(self, offset=0, multiplier=1):
             self.offset = offset
             self.isDefault = offset == 0 and multiplier == 1
+    class RateCommand(object):
+        """The same shape as the pitch one, because NVDA's really is.
+
+        Both derive from `BaseProsodyCommand`, and `offset` is the amount to
+        add to the user's own setting on NVDA's 0-100 scale, 0 meaning "back
+        to what the user chose".  An add-on wraps the text it wants spoken
+        differently in a pair of them.
+        """
+        def __init__(self, offset=0, multiplier=1):
+            self.offset = offset
+            self.isDefault = offset == 0 and multiplier == 1
+    class VolumeCommand(object):
+        """A *sibling* of the rate command, not a subclass of it.
+
+        In NVDA both derive from `BaseProsodyCommand` and neither is the
+        other.  Making one a subclass here would have made `speak()`'s
+        `isinstance` chain pass by accident -- and pass in an order the real
+        classes cannot guarantee.
+        """
+        def __init__(self, offset=0, multiplier=1):
+            self.offset = offset
+            self.isDefault = offset == 0 and multiplier == 1
     commands.PitchCommand = PitchCommand
+    commands.RateCommand = RateCommand
+    commands.VolumeCommand = VolumeCommand
     commands.IndexCommand = IndexCommand
     commands.BreakCommand = BreakCommand
     speech.commands = commands
