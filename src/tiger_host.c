@@ -303,6 +303,7 @@ int main(int argc, char **argv)
     /* Unbuffered stderr: this program's other job is to crash informatively,
      * and buffered output is discarded when it does. */
     setvbuf(stderr, NULL, _IONBF, 0);
+    if (getenv("TIGER_CF_LOG")) g_cflog = 1;
     { const char *e = getenv("TIGER_SPEED");
       if (e && atof(e) > 0.0) g_speed = atof(e);
       g_pace = 100.0 / g_speed;              /* pacer follows the clock */

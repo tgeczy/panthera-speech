@@ -454,6 +454,7 @@ into a library of its own. Without either, nothing loads.
 | `TIGER_GCD_LOG=1` | every GCD handler by name, and each stage of a request |
 | `TIGER_PARAMS=Name=Value;...` | set the engine's own tuning parameters |
 | `TIGER_PREF_LOG=1` | every tuning parameter and dictionary rule asked for |
+| `TIGER_CF_LOG=1` | **every accessor the engine reads a CFString through**, with the string and its length. 10.7 is the only generation whose text arrives this way, so it is where to look when 10.7 alone mishandles something. It settled the accent bug in one run -- `GetCharacters`, called once, and nothing else -- and in another it *cleared* the host of the tune bug: `loc=0 len=37 of 37`, the whole string, correctly |
 | `TIGER_STATUS=1` | ask the channel whether it is still speaking |
 | `TIGER_SPEED=<n>` | the clock scale; 128 is the default |
 | `TIGER_DEFERRED_STOP=1` | put the §4 wedge back, to watch it happen |

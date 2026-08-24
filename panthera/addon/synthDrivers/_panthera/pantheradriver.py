@@ -290,6 +290,15 @@ COMMAND_RE = re.compile(r"\[\[[^\]]{0,64}\]\]")
 #: group -- without one it deletes every command it splits on.
 COMMAND_SPLIT_RE = re.compile(r"(\[\[[^\]]{0,64}\]\])")
 
+#: `[[inpt PHON]]`, `[[inpt TUNE]]` and the `[[inpt TEXT]]` that closes them.
+#:
+#: These switch the front end into a different *input mode*, where the text
+#: that follows is phonemes or notes rather than words.  Every other embedded
+#: command sets a parameter and leaves the text alone, which is why this one
+#: needs its own pattern: it is the only family whose failure changes what the
+#: rest of the utterance means.
+INPUT_MODE_RE = re.compile(r"\[\[\s*inpt\s+[A-Za-z]{0,16}\s*\]\]", re.I)
+
 #: Characters MacRoman has no room for, mapped to something it can say.
 #: Everything typographic that matters -- em dash, en dash, curly quotes,
 #: ellipsis -- MacRoman already has, so it is not listed here.
@@ -805,6 +814,15 @@ class PantheraDriver(SynthDriver):
     #: the recordings behind them are not the same recordings: Lion's Alex is
     #: a 422 MB bank where Leopard's is 701 MB.
     VOLUME_NORM = None
+
+    #: Whether `[[inpt PHON]]` and `[[inpt TUNE]]` do what they say on this
+    #: generation.  `True` everywhere it has been measured except 10.7; see
+    #: `INPUT_MODE_RE` and panthera-speech#6.
+    #:
+    #: A three-state attribute on purpose -- `None` would be "nobody has
+    #: checked", and a generation added later should have to answer the
+    #: question rather than inherit somebody else's answer.
+    INPUT_MODES_WORK = True
 
     supportedSettings = (
         SynthDriver.VoiceSetting(),
@@ -1530,6 +1548,23 @@ class PantheraDriver(SynthDriver):
             # produce silence instead of speaking it.  The host separately
             # guarantees no command can outlive its utterance.
             text = COMMAND_RE.sub("", text)
+        elif self.INPUT_MODES_WORK is False:
+            #: **The user asked for embedded commands and gets all of them
+            #: except the ones this generation cannot honour.**
+            #:
+            #: 10.7 ignores the `{D …; P …}` annotations that make `inpt TUNE`
+            #: worth having, and a malformed phoneme after `inpt PHON` faults
+            #: inside Apple's own `SLLexerImpl::Error` and takes the host with
+            #: it.  See panthera-speech#6.
+            #:
+            #: Removing just this family rather than the whole checkbox is the
+            #: point: `[[slnc]]`, `[[rate]]`, `[[volm]]` and `[[char]]` are all
+            #: measured working on 10.7, and somebody who turned commands on
+            #: probably wanted those.  What is left when the mode switch is
+            #: stripped is the phoneme or note source read as ordinary text --
+            #: which sounds wrong, and is *meant* to: it says the mode did not
+            #: engage, where silence would have said nothing at all.
+            text = INPUT_MODE_RE.sub("", text)
         if self._numberStyle != "off":
             #: Only between the commands, never inside one.  With embedded
             #: commands accepted, "[[rate 200]]" is still in the text at this

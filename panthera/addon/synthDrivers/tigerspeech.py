@@ -323,6 +323,16 @@ class SynthDriver(SynthDriver):
     name = "tigerspeech"
     description = _("Tiger speech (MacinTalk 3.3)")
 
+    #: `[[inpt PHON]]` and `[[inpt TUNE]]` do what they say on 3.3 -- the
+    #: singing the manifest advertises *is* this, and it is measured working.
+    #: Only 10.7 has to answer no; see `lionspeech` and panthera-speech#6.
+    #:
+    #: Declared even though this driver has its own body and inherits no
+    #: default, because the test asks every generation the question -- and an
+    #: attribute that happens to exist on three drivers out of four is how the
+    #: fourth silently opts out of being asked.
+    INPUT_MODES_WORK = True
+
     supportedSettings = (
         SynthDriver.VoiceSetting(),
         SynthDriver.RateSetting(),

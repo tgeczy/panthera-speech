@@ -191,15 +191,24 @@ static unsigned short cf_uni(const cfobj *o, unsigned char c)
     return CF_MACROMAN[c - 0x80];
 }
 
+/* TEMPORARY: which accessors does the engine read an utterance through, and
+ * does it see all of it?  Removed once the tune question is answered. */
+static int g_cflog;
+#define CFLOG(who, s) do { if (g_cflog) { const char *_p = cf_cstr(s); \
+    printf("  [cflog] %-22s len=%d \"%.90s\"\n", who, \
+           s ? (int)((const cfstring *)(s))->len : -1, _p ? _p : "(null)"); } \
+    } while (0)
+
 static const char * __cdecl sh_CFStringGetCStringPtr(const void *s, unsigned e)
 {
     const char *p = cf_cstr(s);
     (void)e;
+    CFLOG("GetCStringPtr", s);
     if (!p) printf("  [cf] GetCStringPtr(%p) -> NULL\n", s);
     return p;
 }
 static int __cdecl sh_CFStringGetLength(const void *s)
-{ return s ? (int)((const cfstring *)s)->len : 0; }
+{ CFLOG("GetLength", s); return s ? (int)((const cfstring *)s)->len : 0; }
 static int __cdecl sh_CFStringGetMaximumSizeForEncoding(int len, unsigned e)
 { (void)e; return len * 4 + 1; }
 static int __cdecl sh_CFStringGetCString(const void *s, char *buf, int sz,
@@ -235,6 +244,8 @@ static void __cdecl sh_CFStringGetCharacters(const void *s, int loc, int len,
 {
     const char *p = cf_cstr(s);
     int i, n;
+    if (g_cflog) printf("  [cflog] GetCharacters loc=%d len=%d of %d\n",
+                        loc, len, p ? (int)strlen(p) : -1);
     if (!buf || len <= 0) return;
     if (!p) { memset(buf, 0, (size_t)len * 2); return; }
     n = (int)strlen(p);
