@@ -163,6 +163,12 @@ static int get_param(const speech_api *a, void *chan, int which, unsigned *out)
  * holds it as an opaque CFStringRef and reaches back through the shims, which
  * is the same arrangement the voice loader has used since Tiger -- see
  * tiger_host_cf.c for why the string field has to come first in the object.
+ *
+ * **`cf_text`, not `cf_new`, and that is the whole of the accent fix.** Both
+ * make the same object out of the same bytes; only this one records that the
+ * bytes are MacRoman rather than a Windows path, which is what lets the
+ * widening to UniChar be right. Every generation before 10.7 takes the buffer
+ * path above and never comes near it.
  */
 static int speak_text(const speech_api *a, void *chan,
                       const char *text, size_t len)
@@ -175,7 +181,7 @@ static int speak_text(const speech_api *a, void *chan,
          * utterance and this host renders one and exits, or serves and
          * reuses. Releasing it here would be a use-after-free with a very
          * long fuse. */
-        cfobj *s = cf_new(text);
+        cfobj *s = cf_text(text);
         return call_aligned3((void *)a->cfstring, chan, s, (void *)0);
     }
 }

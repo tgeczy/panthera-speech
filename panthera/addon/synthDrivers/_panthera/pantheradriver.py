@@ -83,6 +83,7 @@ import subprocess
 import threading
 import time
 import queue
+import unicodedata
 
 import nvwave
 import speech.commands
@@ -306,18 +307,61 @@ _FOLD = {
     #: quotes are left alone: those really are quotation marks.
     0x2018: u"'", 0x2019: u"'",
     0x2044: u"/",                                             # fraction slash
+
+    #: **Hungarian's two long vowels, which no generation has ever spoken.**
+    #: MacRoman has every accent Western European typography needed in 1984
+    #: and the double acute is not among them, so `ő` and `ű` fell through to
+    #: `_unmappable` and came out as a gap -- in Tiger, Leopard, Snow Leopard
+    #: and Lion alike. Reported as "most of them are spoken", which is exactly
+    #: what six-of-eight sounds like.
+    #:
+    #: Folded to the diaeresis rather than to bare `o` and `u`, which is what
+    #: stripping the accent generically would give. In Hungarian these are the
+    #: long counterparts of `ö` and `ü` -- same vowel, held longer -- so the
+    #: diaeresis is the nearest thing MacRoman has, and it is near.
+    0x0151: u"ö", 0x0150: u"Ö",                     # ő Ő
+    0x0171: u"ü", 0x0170: u"Ü",                     # ű Ű
+
+    #: **A stroke is not a combining mark**, so these four survive the
+    #: decomposition in `_unmappable` and would still arrive as gaps: `Ł` is
+    #: one indivisible character to Unicode rather than `L` plus a mark, so
+    #: there is nothing to strip. Listed here because "Łódź" reading as "ódź"
+    #: is the same complaint in Polish, and it is two lines to not have it.
+    0x0141: u"L", 0x0142: u"l",                     # Ł ł
+    0x0110: u"D", 0x0111: u"d",                     # Đ đ
 }
 
 
 def _unmappable(err):
-    """Anything MacRoman cannot spell becomes a space.
+    """Anything MacRoman cannot spell loses its accent, or becomes a space.
 
-    The alternative, `errors="replace"`, produces "?", and the engine reads a
-    question mark as a question -- it lifts the intonation of the whole
-    sentence.  A gap is closer to the truth than a wrong inflection, and it
-    leaves a real "?" typed by the user meaning what it says.
+    **Strip the diacritic before giving up.**  MacRoman covers Western Europe
+    as of 1984 and no further, so every Polish, Czech, Turkish and Romanian
+    letter it never heard of used to arrive as a gap: `Łódź` was read as
+    "ódź" with a hole where the L should be.  Decomposing and keeping the base
+    letter gives "Lodz" -- wrong in the way a English-speaking reader is
+    wrong, rather than absent.
+
+    Characters with no decomposition at all still become a space, and the
+    alternative to a space is worse than it looks: `errors="replace"` produces
+    "?", which the engine reads as a *question* and lifts the intonation of
+    the whole sentence for.  A gap is closer to the truth than a wrong
+    inflection, and it leaves a real "?" the user typed meaning what it says.
+
+    The four letters worth doing better than this for are in `_FOLD` above,
+    which runs first: stripping would turn Hungarian `ő` into `o` where `ö` is
+    the same vowel.
     """
-    return (u" " * (err.end - err.start), err.end)
+    out = []
+    for ch in err.object[err.start:err.end]:
+        bare = u"".join(c for c in unicodedata.normalize("NFD", ch)
+                        if not unicodedata.combining(c))
+        try:
+            bare.encode("mac_roman")
+        except UnicodeEncodeError:
+            bare = u""
+        out.append(bare or u" ")
+    return (u"".join(out), err.end)
 
 
 codecs.register_error("panthera_fold", _unmappable)

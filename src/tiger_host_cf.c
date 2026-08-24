@@ -67,8 +67,23 @@ typedef struct { void *isa; unsigned flags; const char *cstr; unsigned len; }
  * never comes near this.  Nor was it a `meow` fault, though it looked like
  * one: Fred, Kathy and Bruce are cut identically, and that is what said the
  * cause was above the voice rather than inside it. */
+/* `macroman` says the bytes are an **utterance**, and it exists because the
+ * two kinds of string in here are in two different encodings.
+ *
+ * Text arrives already encoded by the driver with Python's `mac_roman` codec.
+ * Everything else -- file paths, table names, preference keys -- is bytes in
+ * whatever Windows handed us, which above 0x7F is Latin-1 and includes the
+ * accented characters in somebody's user folder name.  Widening both the same
+ * way has to be wrong for one of them, so the object remembers which it is
+ * rather than a shim guessing from the bytes.
+ *
+ * Before this, both widened by zero-extension.  Paths were right; **every
+ * accented character in a Lion utterance became a C1 control and vanished** --
+ * `á` is MacRoman 0x87, which zero-extends to U+0087.  Tiger, Leopard and
+ * Snow Leopard never had it: they hand the engine the raw bytes through
+ * `SESpeakBuffer` and its own front end decodes MacRoman itself. */
 typedef struct { cfstring str; unsigned magic; long rc; char buf[CFPATH];
-                 int kind; double num;
+                 int kind; double num; int macroman;
                  unsigned char *bytes; unsigned nbytes; char *big; }
         cfobj;
 
@@ -113,6 +128,18 @@ static cfobj *cf_make(const char *path, long rc)
 static cfobj *cf_new(const char *path)    { return cf_make(path, 1); }
 static cfobj *cf_pinned(const char *path) { return cf_make(path, CF_PINNED); }
 
+/* An utterance, rather than a path.  The only caller is `speak_text`.
+ *
+ * A separate constructor rather than a flag argument on `cf_new`, because
+ * every one of the twenty-odd other call sites would then have to answer a
+ * question none of them has any business being asked. */
+static cfobj *cf_text(const char *s)
+{
+    cfobj *o = cf_make(s, 1);
+    if (o) o->macroman = 1;
+    return o;
+}
+
 static int cf_ours(const void *o)
 {
     return o && ((const cfstring *)o)->isa == &g_cfstring_class &&
@@ -122,6 +149,46 @@ static int cf_ours(const void *o)
 static const char *cf_cstr(const void *s)
 {
     return s ? ((const cfstring *)s)->cstr : NULL;
+}
+
+/* MacRoman 0x80-0xFF as Unicode, for the one caller that needs it.
+ *
+ * **Generated from Python's own `mac_roman` codec**, not typed out: the driver
+ * encodes with that exact codec, so anything hand-entered here would be a
+ * second opinion about the same table, and the entries that differ would be
+ * the accented ones nobody types in a test.
+ *
+ * Below 0x80 MacRoman is ASCII, so this starts at 0x80 and everything under it
+ * still widens by zero-extension -- which is why no ASCII render can move.
+ */
+static const unsigned short CF_MACROMAN[128] = {
+    0x00C4, 0x00C5, 0x00C7, 0x00C9, 0x00D1, 0x00D6, 0x00DC, 0x00E1,
+    0x00E0, 0x00E2, 0x00E4, 0x00E3, 0x00E5, 0x00E7, 0x00E9, 0x00E8,
+    0x00EA, 0x00EB, 0x00ED, 0x00EC, 0x00EE, 0x00EF, 0x00F1, 0x00F3,
+    0x00F2, 0x00F4, 0x00F6, 0x00F5, 0x00FA, 0x00F9, 0x00FB, 0x00FC,
+    0x2020, 0x00B0, 0x00A2, 0x00A3, 0x00A7, 0x2022, 0x00B6, 0x00DF,
+    0x00AE, 0x00A9, 0x2122, 0x00B4, 0x00A8, 0x2260, 0x00C6, 0x00D8,
+    0x221E, 0x00B1, 0x2264, 0x2265, 0x00A5, 0x00B5, 0x2202, 0x2211,
+    0x220F, 0x03C0, 0x222B, 0x00AA, 0x00BA, 0x03A9, 0x00E6, 0x00F8,
+    0x00BF, 0x00A1, 0x00AC, 0x221A, 0x0192, 0x2248, 0x2206, 0x00AB,
+    0x00BB, 0x2026, 0x00A0, 0x00C0, 0x00C3, 0x00D5, 0x0152, 0x0153,
+    0x2013, 0x2014, 0x201C, 0x201D, 0x2018, 0x2019, 0x00F7, 0x25CA,
+    0x00FF, 0x0178, 0x2044, 0x20AC, 0x2039, 0x203A, 0xFB01, 0xFB02,
+    0x2021, 0x00B7, 0x201A, 0x201E, 0x2030, 0x00C2, 0x00CA, 0x00C1,
+    0x00CB, 0x00C8, 0x00CD, 0x00CE, 0x00CF, 0x00CC, 0x00D3, 0x00D4,
+    0xF8FF, 0x00D2, 0x00DA, 0x00DB, 0x00D9, 0x0131, 0x02C6, 0x02DC,
+    0x00AF, 0x02D8, 0x02D9, 0x02DA, 0x00B8, 0x02DD, 0x02DB, 0x02C7
+};
+
+/* -> the UniChar for one byte of `s`.
+ *
+ * The choice is the object's, not this function's: **text is MacRoman and
+ * everything else is not.**  See `cf_text` for why that distinction has to be
+ * carried rather than guessed. */
+static unsigned short cf_uni(const cfobj *o, unsigned char c)
+{
+    if (c < 0x80 || !o || !o->macroman) return (unsigned short)c;
+    return CF_MACROMAN[c - 0x80];
 }
 
 static const char * __cdecl sh_CFStringGetCStringPtr(const void *s, unsigned e)
@@ -151,11 +218,17 @@ static int __cdecl sh_CFStringGetCString(const void *s, char *buf, int sz,
  * `SLPostLexerImpl::HasApostrophe` before dying on a read of address 4, which
  * names neither the string nor the shim that never filled it.
  *
- * `CFRange` is two words passed by value, so it arrives as two arguments. The
- * widening is byte to UniChar because everything this host puts in a CFString
- * is text the driver already encoded to a single-byte Mac encoding -- see
- * `engine-text-encoding`: above 0x7F this is Latin-1 rather than MacRoman, and
- * that is a difference worth measuring before trusting it on accented input.
+ * `CFRange` is two words passed by value, so it arrives as two arguments.
+ *
+ * **This is the only place a Lion utterance is ever read**, which was measured
+ * rather than assumed: logging every string accessor through one accented
+ * render shows this one, called once, and none of the others.  So it is also
+ * the only place the MacRoman question had to be answered -- see `cf_uni`, and
+ * the comment on `cfobj` for what answering it wrong cost.
+ *
+ * Length needs no adjustment for that: MacRoman is single-byte and every byte
+ * is exactly one UniChar, so the byte count `GetLength` returns is the
+ * character count too.
  */
 static void __cdecl sh_CFStringGetCharacters(const void *s, int loc, int len,
                                              unsigned short *buf)
@@ -167,7 +240,8 @@ static void __cdecl sh_CFStringGetCharacters(const void *s, int loc, int len,
     n = (int)strlen(p);
     for (i = 0; i < len; i++) {
         int k = loc + i;
-        buf[i] = (k >= 0 && k < n) ? (unsigned short)(unsigned char)p[k] : 0;
+        buf[i] = (k >= 0 && k < n)
+            ? cf_uni((const cfobj *)s, (unsigned char)p[k]) : 0;
     }
 }
 
@@ -396,7 +470,9 @@ static unsigned short __cdecl sh_CFStringGetCharacterAtIndex(const void *s,
 {
     const char *p = cf_cstr(s);
     if (!p || i < 0 || i >= (int)strlen(p)) return 0;
-    return (unsigned short)(unsigned char)p[i];
+    /* Nothing measured reads an utterance this way -- only `GetCharacters`
+     * does -- but the two must not be able to disagree about one string. */
+    return cf_uni((const cfobj *)s, (unsigned char)p[i]);
 }
 
 static void * __cdecl sh_CFDataCreateWithBytesNoCopy(void *alloc,
@@ -474,10 +550,21 @@ static int __cdecl sh_CFStringCompare(const void *a, const void *b,
  * Copied rather than retained: these objects are refcounted by hand and the
  * engine releases what it copies, so handing back the same pointer would put
  * the caller's release on an object the caller does not own. */
+/* **The encoding is part of what is being copied.**
+ *
+ * `SESpeakCFString` copies its argument before doing anything with it, so this
+ * is on the utterance path, and a copy that forgot the tag would leave the
+ * engine reading the one string that matters as though it were a file path --
+ * which is the bug this whole tag exists to fix, reintroduced one function
+ * later. */
 static void * __cdecl sh_CFStringCreateCopy(void *alloc, const void *s)
 {
+    cfobj *o;
     (void)alloc;
-    return s ? (void *)cf_new(cf_cstr(s)) : NULL;
+    if (!s) return NULL;
+    o = cf_new(cf_cstr(s));
+    if (o && cf_ours(s)) o->macroman = ((const cfobj *)s)->macroman;
+    return o;
 }
 
 /* Lion's dictionary does not name its tables.  It builds the names:
@@ -1126,6 +1213,52 @@ static int cf_check(void)
             fails++;
         }
         if (r) free(r);
+    }
+
+    /* An utterance is MacRoman and a path is not, and the only difference
+     * between the two objects is which constructor made them.
+     *
+     * The three characters checked are the ones the bug was reported on:
+     * Hungarian `a` and `o` acute and `u` diaeresis.  Each is a byte that
+     * zero-extends into the C1 control block, which is why they vanished
+     * rather than coming out as some other letter -- a wrong letter would
+     * have been noticed years earlier. */
+    {
+        static const char ACC[] = { (char)0x87, (char)0x97, (char)0x9F, 'a',
+                                    '\0' };
+        static const unsigned short WANT[] = { 0x00E1, 0x00F3, 0x00FC, 'a' };
+        unsigned short got[4];
+        cfobj *t = cf_text(ACC), *p = cf_new(ACC), *c;
+        int i;
+        sh_CFStringGetCharacters(t, 0, 4, got);
+        fprintf(stdout, "[cf-check] text U+%04X U+%04X U+%04X U+%04X\n",
+                got[0], got[1], got[2], got[3]);
+        for (i = 0; i < 4; i++)
+            if (got[i] != WANT[i]) {
+                fprintf(stdout, "FAIL  MacRoman %02X widened to U+%04X, "
+                                "wanted U+%04X\n",
+                        (unsigned char)ACC[i], got[i], WANT[i]);
+                fails++;
+            }
+        sh_CFStringGetCharacters(p, 0, 4, got);
+        if (got[0] != 0x0087) {
+            fprintf(stdout, "FAIL  a path was decoded as MacRoman; the user "
+                            "folder of anyone with an accent just moved\n");
+            fails++;
+        }
+        /* SESpeakCFString copies before reading, so the copy has to remember
+         * what it is a copy of. */
+        c = (cfobj *)sh_CFStringCreateCopy(NULL, t);
+        sh_CFStringGetCharacters(c, 0, 1, got);
+        if (got[0] != 0x00E1) {
+            fprintf(stdout, "FAIL  copying an utterance lost its encoding\n");
+            fails++;
+        }
+        if (sh_CFStringGetCharacterAtIndex(t, 0) != 0x00E1) {
+            fprintf(stdout, "FAIL  the two character accessors disagree\n");
+            fails++;
+        }
+        free(t); free(p); free(c);
     }
 
     {
