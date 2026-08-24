@@ -148,8 +148,8 @@ def test_concatenative_voices_still_come_first(voicesdir):
 def test_a_lower_case_folder_sorts_where_a_reader_would_look_for_it(voicesdir):
     """Case-insensitively, because the names are now the user's to choose.
 
-    Apple's are all capitalised, so this never came up before; a hand-named
-    `alex-sequoia` under a case-sensitive sort lands after `Zarvox`, which is
+    Apple's are all capitalised, so this never came up before: under a
+    case-sensitive sort every lower-case folder lands after `Zarvox`, which is
     nowhere anyone would look for it.
     """
     for bundle in ("Zarvox", "banana", "Apple"):
