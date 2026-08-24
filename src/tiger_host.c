@@ -211,6 +211,7 @@ static unsigned bswap(unsigned v)
 #include "tiger_host_regex.c"
 #include "tiger_host_shimtab.c"
 #include "tiger_host_fault.c"
+#include "tiger_host_sllog.c"
 #include "tiger_host_macho.c"
 #include "tiger_host_dyldinfo.c"
 #include "tiger_host_speech.c"

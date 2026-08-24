@@ -46,6 +46,14 @@ typedef struct { void *isa; unsigned flags; const char *cstr; unsigned len; }
  * opening a path, so it needs a CFData to read them into.  `bytes` is heap,
  * not `buf`: these are whole dictionary files. */
 #define CF_DATA    3
+/* The tune hand-off travels as CF containers: `SLHomographCopyTune` builds a
+ * CFArray of CFDictionaries and the engine reads it back key by key.  Both
+ * kinds reuse `bytes`/`nbytes`: an array holds `nbytes` pointers, a
+ * dictionary `nbytes` key/value pairs.  Children are retained on insert and
+ * released when the container is finally freed -- the graveyard's rules,
+ * unchanged. */
+#define CF_DICT    4
+#define CF_ARRAY   5
 
 /* `big` holds a string too long for `buf`, and it exists because of a bug that
  * reached users.
@@ -307,7 +315,20 @@ static void   __cdecl sh_CFRelease(void *o)
          * safe to release as the object itself -- and it has to be, because a
          * paragraph's worth of text per utterance is not a leak anybody would
          * notice until they read a book. */
-        if (old) free(((cfobj *)old)->big);
+        if (old) {
+            cfobj *co = (cfobj *)old;
+            /* A container retained its children when they were inserted;
+             * eviction is where that reference is finally given back.  The
+             * children then ride the same graveyard themselves. */
+            if (co->kind == CF_DICT || co->kind == CF_ARRAY) {
+                unsigned k, n = co->nbytes * (co->kind == CF_DICT ? 2u : 1u);
+                void **slots = (void **)co->bytes;
+                for (k = 0; k < n; k++)
+                    sh_CFRelease(slots[k]);
+                free(co->bytes);
+            }
+            free(co->big);
+        }
         free(old);
     }
 }
@@ -502,6 +523,162 @@ static void * __cdecl sh_CFDataCreateWithBytesNoCopy(void *alloc,
     return o;
 }
 
+/* The engine's half of the tune hand-off.  SpeechDictionary builds the
+ * melody and `MTFEMelody::AddNotes(const __CFData *)` receives it, and the
+ * engine builds that CFData with `_CFDataCreate` -- which the dictionary
+ * never uses, so the import sat unimplemented while every measured run died
+ * before reaching it (panthera-speech#6, lead 2).  Real CFDataCreate always
+ * copies, which is what the NoCopy shim above already does. */
+static void * __cdecl sh_CFDataCreate(void *alloc, const unsigned char *b,
+                                      int n)
+{
+    return sh_CFDataCreateWithBytesNoCopy(alloc, b, n, NULL);
+}
+
+/* ---- containers, which are the melody (panthera-speech#6) -------------- */
+/*
+ * `SLHomographCopyTune` answers the engine with a CFArray of CFDictionaries
+ * -- one per phoneme, duration and pitch targets inside -- and the engine
+ * walks it back through GetCount/GetValueAtIndex/GetValue.  Both construction
+ * functions were thunked, a thunk returns 0, and 0 flowed out of CopyTune as
+ * "this homograph has no tune": the whole of the dictionary's tune pipeline
+ * worked and the answer was discarded at the last call.  Nothing logged it,
+ * because serve mode turns g_verbose off during utterances -- the one window
+ * in which CopyTune ever runs.
+ *
+ * Children are retained on insert and released when the container is evicted
+ * from the graveyard; foreign keys (the dictionary's own kCFTune* constants)
+ * pass through both untouched, exactly as CFRetain/CFRelease already treat
+ * them.
+ */
+static cfobj *cf_container(int kind, unsigned count)
+{
+    cfobj *o = cf_new("");
+    if (!o) return NULL;
+    o->kind = kind;
+    if (count) {
+        o->bytes = (unsigned char *)calloc(
+            count * (kind == CF_DICT ? 2u : 1u), sizeof(void *));
+        if (!o->bytes) { free(o); return NULL; }
+    }
+    o->nbytes = 0;                       /* filled as slots are written */
+    return o;
+}
+
+static void * __cdecl sh_CFDictionaryCreate(void *alloc, const void **keys,
+                                            const void **values, int count,
+                                            const void *kcb, const void *vcb)
+{
+    cfobj *o;
+    int i;
+    (void)alloc; (void)kcb; (void)vcb;
+    if (count < 0) return NULL;
+    o = cf_container(CF_DICT, (unsigned)count);
+    if (!o) return NULL;
+    for (i = 0; i < count; i++) {
+        void **slots = (void **)o->bytes;
+        slots[i * 2]     = sh_CFRetain((void *)keys[i]);
+        slots[i * 2 + 1] = sh_CFRetain((void *)values[i]);
+        o->nbytes++;
+    }
+    return o;
+}
+
+static void * __cdecl sh_CFDictionaryCreateCopy(void *alloc, const void *dict)
+{
+    const cfobj *d = (const cfobj *)dict;
+    cfobj *o;
+    unsigned i;
+    (void)alloc;
+    if (!cf_ours(dict) || d->kind != CF_DICT) return NULL;
+    o = cf_container(CF_DICT, d->nbytes);
+    if (!o) return NULL;
+    for (i = 0; i < d->nbytes * 2; i++)
+        ((void **)o->bytes)[i] = sh_CFRetain(((void **)d->bytes)[i]);
+    o->nbytes = d->nbytes;
+    return o;
+}
+
+static void * __cdecl sh_CFArrayCreate(void *alloc, const void **values,
+                                       int count, const void *cb)
+{
+    cfobj *o;
+    int i;
+    (void)alloc; (void)cb;
+    if (count < 0) return NULL;
+    o = cf_container(CF_ARRAY, (unsigned)count);
+    if (!o) return NULL;
+    for (i = 0; i < count; i++) {
+        ((void **)o->bytes)[i] = sh_CFRetain((void *)values[i]);
+        o->nbytes++;
+    }
+    return o;
+}
+
+static void * __cdecl sh_CFArrayCreateMutable(void *alloc, int capacity,
+                                              const void *cb)
+{
+    (void)capacity;                      /* a hint, and ours grows anyway */
+    return sh_CFArrayCreate(alloc, NULL, 0, cb);
+}
+
+static void __cdecl sh_CFArrayAppendValue(void *arr, const void *value)
+{
+    cfobj *a = (cfobj *)arr;
+    void **grown;
+    if (!cf_ours(arr) || a->kind != CF_ARRAY) return;
+    grown = (void **)realloc(a->bytes, (a->nbytes + 1) * sizeof(void *));
+    if (!grown) return;
+    a->bytes = (unsigned char *)grown;
+    grown[a->nbytes++] = sh_CFRetain((void *)value);
+}
+
+static int __cdecl sh_CFArrayGetCount(const void *arr)
+{
+    const cfobj *a = (const cfobj *)arr;
+    return (cf_ours(arr) && a->kind == CF_ARRAY) ? (int)a->nbytes : 0;
+}
+
+static const void * __cdecl sh_CFArrayGetValueAtIndex(const void *arr, int i)
+{
+    const cfobj *a = (const cfobj *)arr;
+    if (!cf_ours(arr) || a->kind != CF_ARRAY) return NULL;
+    if (i < 0 || (unsigned)i >= a->nbytes) return NULL;
+    return ((void **)a->bytes)[i];
+}
+
+/* Pointer equality first: the engine looks melody entries up with the very
+ * kCFTune* constants the dictionary keyed them by, both bound to the same
+ * objects.  The text comparison is for any pair that arrives as two copies
+ * of one string. */
+static int cf_key_equal(const void *a, const void *b)
+{
+    const char *pa, *pb;
+    if (a == b) return 1;
+    pa = cf_cstr(a); pb = cf_cstr(b);
+    return pa && pb && !strcmp(pa, pb);
+}
+
+static const void *cf_dict_lookup(const void *dict, const void *key)
+{
+    const cfobj *d = (const cfobj *)dict;
+    unsigned i;
+    if (!cf_ours(dict) || d->kind != CF_DICT) return NULL;
+    for (i = 0; i < d->nbytes; i++)
+        if (cf_key_equal(((void **)d->bytes)[i * 2], key))
+            return ((void **)d->bytes)[i * 2 + 1];
+    return NULL;
+}
+
+static int __cdecl sh_CFDictionaryGetValueIfPresent(const void *dict,
+                                                    const void *key,
+                                                    const void **value)
+{
+    const void *v = cf_dict_lookup(dict, key);
+    if (value) *value = v;
+    return v != NULL;
+}
+
 /* Lion's lexer takes a locale.
  *
  * `SLLexer::Create(SLTextSource*, SLDictLookup*, SLPronouncer*,
@@ -637,12 +814,13 @@ static void * __cdecl sh_CFStringCreateWithFormat(void *alloc, void *opts,
     return cf_new(out);
 }
 
-/* An empty override dictionary is a truthful answer -- there is no override --
- * and it is what lets GetParam fall through to its own default. */
+/* For a dictionary this host built -- a melody entry -- a real lookup.  For
+ * anything else the old contract stands: an empty override dictionary is a
+ * truthful answer -- there is no override -- and it is what lets GetParam
+ * fall through to its own default. */
 static void * __cdecl sh_CFDictionaryGetValue(void *dict, void *key)
 {
-    (void)dict; (void)key;
-    return NULL;
+    return (void *)cf_dict_lookup(dict, key);
 }
 
 static void * __cdecl sh_CFURLCopyFileSystemPath(void *url, int style)
@@ -696,6 +874,7 @@ static void * __cdecl sh_CFURLCopyPath(void *url)
 #define CF_TYPEID_NUMBER      22        /* the real CoreFoundation values, so */
 #define CF_TYPEID_BOOLEAN     21        /* a stray comparison cannot collide  */
 #define CF_TYPEID_DICTIONARY  18
+#define CF_TYPEID_ARRAY       19
 #define CF_MAX_PARAMS         64
 
 typedef struct { char key[64]; cfobj *val; } cfparam;
@@ -862,9 +1041,13 @@ static unsigned long __cdecl sh_CFGetTypeID(const void *o)
     switch (((const cfobj *)o)->kind) {
     case CF_NUMBER:  return CF_TYPEID_NUMBER;
     case CF_BOOLEAN: return CF_TYPEID_BOOLEAN;
+    case CF_DICT:    return CF_TYPEID_DICTIONARY;
+    case CF_ARRAY:   return CF_TYPEID_ARRAY;
     default:         return 0;
     }
 }
+static unsigned long __cdecl sh_CFArrayGetTypeID(void)
+{ return CF_TYPEID_ARRAY; }
 static unsigned long __cdecl sh_CFNumberGetTypeID(void)
 { return CF_TYPEID_NUMBER; }
 static unsigned long __cdecl sh_CFBooleanGetTypeID(void)

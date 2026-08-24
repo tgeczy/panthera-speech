@@ -99,6 +99,23 @@ static const shim g_shims[] = {
                               (void *)sh_CFStringGetCharacterAtIndex },
     { "_CFDataCreateWithBytesNoCopy",
                               (void *)sh_CFDataCreateWithBytesNoCopy },
+    /* The engine's side of the tune hand-off builds its CFData with the
+     * copying constructor; see sh_CFDataCreate and panthera-speech#6. */
+    { "_CFDataCreate",          (void *)sh_CFDataCreate          },
+    /* The melody itself: `SLHomographCopyTune` answers with a CFArray of
+     * CFDictionaries, and both constructors were thunks whose 0 flowed out
+     * of CopyTune as "no tune".  See the container block in tiger_host_cf.c
+     * and panthera-speech#6. */
+    { "_CFDictionaryCreate",    (void *)sh_CFDictionaryCreate    },
+    { "_CFDictionaryCreateCopy", (void *)sh_CFDictionaryCreateCopy },
+    { "_CFDictionaryGetValueIfPresent",
+                                (void *)sh_CFDictionaryGetValueIfPresent },
+    { "_CFArrayCreate",         (void *)sh_CFArrayCreate         },
+    { "_CFArrayCreateMutable",  (void *)sh_CFArrayCreateMutable  },
+    { "_CFArrayAppendValue",    (void *)sh_CFArrayAppendValue    },
+    { "_CFArrayGetCount",       (void *)sh_CFArrayGetCount       },
+    { "_CFArrayGetValueAtIndex", (void *)sh_CFArrayGetValueAtIndex },
+    { "_CFArrayGetTypeID",      (void *)sh_CFArrayGetTypeID      },
     /* Lion runs its render work through GCD and blocks where Leopard
      * used Multiprocessing Services.  A stubbed dispatch_sync returns
      * having done nothing, so the engine finished a render that never

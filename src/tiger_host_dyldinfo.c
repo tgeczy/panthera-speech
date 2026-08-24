@@ -347,7 +347,13 @@ static void do_bind(image *im, const fixup *f, void *ctx)
     if (!target) target = lookup_in(im, f->sym);
     if (!target) {
         target = lookup_loaded(im, f->sym);
-        if (target) b->fromdep++;
+        if (target) {
+            b->fromdep++;
+            /* The engine-to-dictionary direction, and only it: the
+             * dictionary defines these, so its own binds never come this
+             * way.  See tiger_host_sllog.c and TIGER_SL_LOG. */
+            target = sl_interpose(f->sym, target);
+        }
     }
     if (!target) {
         /* A weak import is allowed to be absent; that is what the flag means,
