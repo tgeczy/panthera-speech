@@ -27,6 +27,7 @@ import pytest
 GENERATIONS = [
     ("tigerspeech", "pantheratiger"),
     ("leopardspeech", "pantheraleopard"),
+    ("snowleopardspeech", "pantherasnowleopard"),
     ("lionspeech", "pantheralion"),
 ]
 
@@ -63,18 +64,24 @@ def test_nothing_installed_offers_only_the_placeholder(usable):
     assert offered(_drivers()) == {"pantheraspeech"}
 
 
-@pytest.mark.parametrize("present", ["tigerspeech", "leopardspeech",
-                                     "lionspeech"])
+@pytest.mark.parametrize("present", [g[0] for g in GENERATIONS])
 def test_one_generation_installed_offers_only_that_one(usable, present):
     """No placeholder beside a working synthesizer, and no dead siblings."""
     usable(**{present: True})
     assert offered(_drivers()) == {present}
 
 
-def test_all_installed_offers_all_three(usable):
-    usable(tigerspeech=True, leopardspeech=True, lionspeech=True)
-    assert offered(_drivers()) == {"tigerspeech", "leopardspeech",
-                                   "lionspeech"}
+def test_all_installed_offers_every_generation_and_no_placeholder(usable):
+    """Driven from the table rather than a list of names.
+
+    The version of this that named its three drivers passed unchanged when a
+    fourth was added, because it was still asking about three.  A test that
+    cannot notice a new generation is not testing the invariant its own
+    docstring claims.
+    """
+    names = {g[0] for g in GENERATIONS}
+    usable(**{name: True for name in names})
+    assert offered(_drivers()) == names
 
 
 def test_the_placeholder_never_loads(usable):

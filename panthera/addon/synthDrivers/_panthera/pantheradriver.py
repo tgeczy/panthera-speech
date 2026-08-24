@@ -273,7 +273,11 @@ def volume_volm(volume, voice, norms):
     without clipping. That is the trade the slider's last tenth exists to
     offer, and it is why the default sits at 90 rather than at the top.
     """
-    norm = norms.get(voice, VOLUME_NORM_DEFAULT)
+    #: `None` rather than a table is the class default, and it has to mean
+    #: "no normalisation" rather than an exception.  A generation whose table
+    #: has not been measured yet is exactly the state the tool that measures
+    #: it runs in -- so without this, building a table needs a table.
+    norm = (norms or {}).get(voice, VOLUME_NORM_DEFAULT)
     return min(VOLUME_MAX_VOLM,
                norm * max(0, volume) / float(VOLUME_CLEAN))
 
@@ -668,10 +672,12 @@ _MISSING = (
     "own %(disc)s, and put the extracted Speech folder and "
     "SpeechDictionary.framework into:\n\n"
     "%(folder)s\n\n"
-    "The %(extractor)s tool in the project repository will do that for you "
-    "from an installer image, and there is a README in that folder with the "
-    "details. NVDA's log has the full list of what was found and what was "
-    "missing.\n\n"
+    "The quickest way is NVDA's Tools menu: \"Mac OS X speech data...\", "
+    "which reads a disc image straight into that folder and needs nothing "
+    "else installed. The %(extractor)s tool in the project repository does "
+    "the same job from a command line, and there is a README in that folder "
+    "with the details. NVDA's log has the full list of what was found and "
+    "what was missing.\n\n"
     "Open that folder now?"
 )
 

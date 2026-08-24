@@ -137,9 +137,7 @@ GENERATIONS = (
                "classic",
                runtime=(("usr/lib/libstdc++.6.0.9.dylib",
                          ("libstdc++.6.0.9.dylib", "libstdc++.6.dylib")),),
-               why_not="This add-on has no Snow Leopard synthesizer yet, so "
-                       "there would be nothing to read the folder. The engine "
-                       "is on the disc and support is planned."),
+               driver="snowleopardspeech"),
     Generation("lion", "Mac OS X 10.7 Lion", ("10.7",), "lion",
                driver="lionspeech"),
 )

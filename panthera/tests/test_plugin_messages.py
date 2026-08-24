@@ -187,7 +187,9 @@ def test_the_button_opens_the_folder_that_holds_both(plugin):
 def test_every_generation_is_declared(plugin):
     """The table is what a generation is added to; an empty one is silence."""
     keys = [g["key"] for g in plugin.GENERATIONS]
-    assert keys == ["tiger", "leopard", "lion"]
+    assert keys == ["tiger", "leopard", "snowleopard", "lion"]
+    # Chronological, because the dialog lists them in this order and a
+    # user looking for 10.6 looks between 10.5 and 10.7.
     for gen in plugin.GENERATIONS:
         assert set(gen) == {"key", "tree", "label", "source", "readme",
                             "oldAddon"}

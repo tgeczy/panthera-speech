@@ -50,7 +50,11 @@ import pantheradriver                                          # noqa: E402
 
 #: Which generations have a table to build. Tiger is not one: its engine takes
 #: no `volm` and its driver has no volume slider to feed.
-GENERATIONS = ("leopard", "lion")
+#:
+#: The name is also the driver module's, minus "speech", which is what lets
+#: this be a lookup rather than a table -- and is the reason a fourth
+#: generation cost one word here.
+GENERATIONS = ("leopard", "snowleopard", "lion")
 
 CEIL = 32767
 

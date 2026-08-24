@@ -99,6 +99,7 @@ class FakeWavePlayer(object):
 #: what a user with both engines extracted has.
 TREES = (("TIGER_TREE", "tigerspeech-data.txt"),
          ("LEOPARD_TREE", "leopardspeech-data.txt"),
+         ("SNOWLEOPARD_TREE", "snowleopardspeech-data.txt"),
          ("LION_TREE", "lionspeech-data.txt"))
 
 

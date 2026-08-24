@@ -51,6 +51,7 @@ from synthDriverHandler import SynthDriver                     # noqa: E402
 # `leopardspeech` add-on may still be running beside this one.
 import pantheraleopard                                         # noqa: E402
 import pantheralion                                            # noqa: E402
+import pantherasnowleopard                                     # noqa: E402
 import pantheratiger                                           # noqa: E402
 
 #: Where the global plugin leaves the callable that opens the speech data
@@ -58,7 +59,8 @@ import pantheratiger                                           # noqa: E402
 #: plugin is a bet on load order, and this one has somewhere to fall back to.
 _OPENER = "_macosxSpeechDataOpener"
 
-_GENERATIONS = (pantheratiger, pantheraleopard, pantheralion)
+_GENERATIONS = (pantheratiger, pantheraleopard, pantherasnowleopard,
+                pantheralion)
 
 
 def _anythingUsable():

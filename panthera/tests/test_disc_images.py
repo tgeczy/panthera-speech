@@ -44,6 +44,41 @@ def test_a_leopard_dvd_is_recognised_as_leopard():
     assert disc.version.startswith("10.5")
 
 
+def test_a_snow_leopard_dvd_is_recognised_and_usable():
+    """**Not a formality: this row had never run.**
+
+    The 10.6 entry sat in `GENERATIONS` for weeks with `why_not` set, so
+    `identify()` returned before touching the disc and nothing had ever
+    checked that a real 10.6 DVD is shaped the way the "classic" layout says.
+    It is -- live engine, live frameworks, voices in the two packages -- and
+    the extracted tree is byte-identical to one made by hand.
+    """
+    disc = pantheradiscs.identify(_image("10.6"))
+    assert disc.usable, disc.problem
+    assert disc.generation.key == "snowleopard"
+    assert disc.generation.driver == "snowleopardspeech"
+    assert disc.version.startswith("10.6")
+
+
+def test_snow_leopard_carries_the_runtime_its_engine_needs():
+    """And the extractor refuses the disc rather than write a tree that mutes.
+
+    The name is the trap: Lion ships a `libstdc++.6.0.9.dylib` too, and it is
+    a different library -- 10.7 moved the C++ ABI into `libc++abi` and its
+    copy only re-exports it.  Nothing downstream can tell them apart, so what
+    protects a user is taking this one off this disc.
+    """
+    disc = pantheradiscs.identify(_image("10.6"))
+    volume = disc.volume()
+    ((path, names),) = disc.generation.runtime
+    assert "6.0.9" in path
+    entry = volume.entry(path)
+    assert entry is not None, "%s is not on this image" % path
+    assert entry[3] > 2 * 1024 * 1024, (
+        "%d bytes -- Snow Leopard's runtime is the larger of the two, about "
+        "2.4 MB against Lion's 1.6" % entry[3])
+
+
 def test_a_lion_installer_is_recognised_as_lion():
     disc = pantheradiscs.identify(_image("lion", "10.7"))
     assert disc.usable, disc.problem

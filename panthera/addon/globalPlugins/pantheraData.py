@@ -51,6 +51,7 @@ if _ENGINE_DIR not in sys.path:
 # add-on ever used is what keeps this one out of that fight.
 import pantheralion                                           # noqa: E402
 import pantheraleopard                                        # noqa: E402
+import pantherasnowleopard                                    # noqa: E402
 import pantheratiger                                          # noqa: E402
 
 #: **One dialog covering every Macintosh speech add-on, not one each and not
@@ -245,7 +246,12 @@ contains:
 
 Dropping the extracted folder in whole, one level down, works too.
 
-The easiest way to produce it is the extractor in the project repository:
+The easiest way to get it is NVDA's Tools menu: "Mac OS X speech data...",
+then point it at your own install disc image. It reads the image directly and
+writes into this folder. Nothing is downloaded and no other software is needed.
+
+On a command line instead, the extractor in the project repository does the
+same job:
 
     py -3 tools\\extract_tiger.py "Mac OS X 10.4 Tiger.iso"
 
@@ -284,7 +290,12 @@ contains:
 
 Dropping the extracted folder in whole, one level down, works too.
 
-The easiest way to produce it is the extractor in the project repository:
+The easiest way to get it is NVDA's Tools menu: "Mac OS X speech data...",
+then point it at your own install disc image. It reads the image directly and
+writes into this folder. Nothing is downloaded and no other software is needed.
+
+On a command line instead, the extractor in the project repository does the
+same job:
 
     py -3 tools\\extract_leopard.py "Mac OS X 10.5 Leopard.iso"
 
@@ -328,7 +339,12 @@ contains:
 
 Dropping the extracted folder in whole, one level down, works too.
 
-The easiest way to produce it is the extractor in the project repository:
+The easiest way to get it is NVDA's Tools menu: "Mac OS X speech data...",
+then point it at your own install disc image. It reads the image directly and
+writes into this folder. Nothing is downloaded and no other software is needed.
+
+On a command line instead, the extractor in the project repository does the
+same job:
 
     py -3 tools\\extract_lion.py "InstallESD.dmg"
 
@@ -362,6 +378,47 @@ you and would like the reminder back.
 """
 
 
+_SNOWLEOPARD_README = """Snow Leopard speech needs Apple's speech engine, which
+this add-on does not ship.
+
+The easiest way to get it is NVDA's Tools menu: "Mac OS X speech data...", then
+point it at your own 10.6 install disc image. It reads the image directly and
+writes into this folder. Nothing is downloaded and no other software is needed.
+
+By hand, put the contents of a Mac OS X 10.6 (Snow Leopard) install here, so
+that this folder contains:
+
+    Speech\Synthesizers\MacinTalk.SpeechSynthesizer\
+    Speech\Voices\<name>.SpeechVoice\
+    SpeechDictionary.framework\Versions\A\
+
+Dropping the extracted folder in whole, one level down, works too.
+
+Snow Leopard's engine also needs Apple's C++ runtime, libstdc++.6.0.9.dylib,
+which is on the same disc under usr/lib. Without it nothing loads at all -- not
+one voice.
+
+Take that file from the 10.6 disc and no other. Lion ships a file of the same
+name and it is a different library: 10.7 moved the C++ ABI out into
+libc++abi.dylib and its libstdc++ only re-exports it, so Lion's copy here would
+load and then behave inexplicably. Snow Leopard's is the larger of the two.
+
+There is a command-line extractor in the project repository as well, for anyone
+who would rather not use the dialog:
+
+    py -3 snowleopard/tools/extract_snowleopard.py "Mac OS X 10.6.iso"
+
+It needs Python 3.8 or newer installed (tested on 3.13) and a clone of the
+repository, because it uses the same disc reader the add-on does.
+
+If you would rather keep the engine on another drive, put its full path into a
+file called snowleopardspeech-data.txt in the configuration folder instead.
+
+Delete the file called "do-not-ask" here if you told NVDA to stop reminding
+you and would like the reminder back.
+"""
+
+
 #: One entry per generation this add-on carries.
 #:
 #: `oldAddon` is the add-on that used to carry it on its own. It is not
@@ -384,6 +441,17 @@ GENERATIONS = (
         "source": "your own Mac OS X 10.5 install disc",
         "readme": _LEOPARD_README,
         "oldAddon": "leopardspeech",
+    },
+    {
+        "key": "snowleopard",
+        "tree": pantherasnowleopard,
+        "label": "Snow Leopard speech -- Mac OS X 10.6, Alex and "
+                 "twenty-three more",
+        "source": "your own Mac OS X 10.6 install disc",
+        "readme": _SNOWLEOPARD_README,
+        # No add-on ever carried Snow Leopard on its own; like Lion, it
+        # arrived after the merge.  See `_old_addons`.
+        "oldAddon": None,
     },
     {
         "key": "lion",
