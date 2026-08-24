@@ -66,6 +66,47 @@ def test_no_accented_letter_is_silently_dropped(driver, letter):
         "it), so 10.7 is dropping it" % (ord(letter), got, bare))
 
 
+#: What each of these became on Lion before 1.0.1, when a MacRoman byte was
+#: widened to UniChar by zero-extension.  The accented letters landed in the C1
+#: control block and vanished; **the typographic symbols landed on accented
+#: capitals and were read out as words**, which is the same bug wearing a
+#: completely different symptom -- and why it was reported twice, months apart,
+#: as two unrelated faults.
+SYMBOLS = [
+    (u"—", 0xD1, u"Ñ"),      # em dash      -> N with tilde
+    (u"–", 0xD0, u"Ð"),      # en dash      -> Eth
+    (u"“", 0xD2, u"Ò"),      # left quote   -> O with grave
+    (u"”", 0xD3, u"Ó"),      # right quote  -> O with acute
+    (u"…", 0xC9, u"É"),      # ellipsis     -> E with acute
+    (u"•", 0xA5, u"¥"),      # bullet       -> yen sign
+]
+
+
+@pytest.mark.parametrize("symbol,byte,was", SYMBOLS)
+def test_a_typographic_symbol_is_not_read_as_a_letter(driver, symbol, byte,
+                                                      was, monkeypatch):
+    """**The half of the encoding bug that was audible rather than silent.**
+
+    Reported from outside as *"some text with an em dash in it and it said n
+    tilde"* -- which is exactly what MacRoman 0xD1 zero-extends to.  The
+    accented-letter half of the same bug produced silence and got reported
+    separately; this half produced a wrong word and got reported as its own
+    thing.
+
+    Checked by rendering the symbol against the letter it used to be mistaken
+    for: if they still sound the same, the widening is still wrong.
+    """
+    driver._set_voice("Fred")
+    wpm = driver._wpm()
+    as_symbol = _frames(driver._render(u"one %s two" % symbol, wpm, "Fred"))
+    as_letter = _frames(driver._render(u"one %s two" % was, wpm, "Fred"))
+    assert as_symbol and as_letter
+    assert as_symbol != as_letter, (
+        "U+%04X (MacRoman 0x%02X) renders identically to U+%04X, so it is "
+        "still being widened as Latin-1 and Lion is reading a letter where "
+        "there is a dash" % (ord(symbol), byte, ord(was)))
+
+
 def test_a_lone_accented_character_is_spoken_as_a_name(driver):
     """**Not a bug, and worth pinning so nobody "fixes" it.**
 
