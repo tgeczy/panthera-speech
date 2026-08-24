@@ -394,6 +394,7 @@ static int serve(image *mt, void *chan, const char *voicesdir)
 
 
         g_defer_arm = 0;
+        g_src_made = g_src_reused = 0;
         g_t_aac = g_t_fft = 0;
         g_n_aac = g_n_fft = 0;
         g_pcm_n = 0; g_slices = 0; g_stopped = 0; g_empty_run = 0;
@@ -770,6 +771,8 @@ static int serve(image *mt, void *chan, const char *voicesdir)
                     g_slice_gap_max);
         if (g_float_stats) {
             LARGE_INTEGER f; QueryPerformanceFrequency(&f);
+            fprintf(stderr, "  [gcd] %u source(s) made, %u of them reused "
+                            "slots\n", g_src_made, g_src_reused);
             fprintf(stderr, "  [prof] aac %.1f ms in %u call(s), "
                             "fft %.1f ms in %u\n",
                     g_t_aac * 1000.0 / f.QuadPart, g_n_aac,

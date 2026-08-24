@@ -137,9 +137,52 @@ typedef struct {
     volatile long running;
     unsigned  fired;
     int       reaps_graph;              /* the deferred audio-graph stop */
+    /* Cancelled, and reusable once its thread has actually gone.
+     *
+     * **10.6 creates a source per utterance and cancels it again** -- sixteen
+     * of them for one sentence -- where 10.7 keeps a couple for the life of
+     * the session.  Without reclaiming, the pool below is spent by the first
+     * thing said, and every source after that is a bare handle that no timer
+     * and no handler can attach to: the second voice returns one frame and the
+     * channel answers -231 for ever after. */
+    volatile long retired;
+    /* When it was cancelled, so the oldest can be reused first.
+     *
+     * **Cancelling is not quite the end of a source**: the engine still holds
+     * the pointer, and a late `set_context` or `set_event_handler_f` on it
+     * lands on whoever has the slot now.  That is a race rather than a
+     * certainty, and it presented as one -- a 24-voice sweep finishing 2, 7
+     * or 24 voices depending on the run, and finishing every time once
+     * logging slowed it down.
+     *
+     * Waiting for `dispatch_release` would be the principled answer and does
+     * not work: **this engine never releases them**, so nothing is ever
+     * reclaimed and the pool is spent by the first utterance -- measured, 1
+     * voice of 24, five runs out of five.
+     *
+     * So reuse the *oldest* retired slot instead of the first one found.  A
+     * stale write then has to survive a full lap of the table to land on a
+     * live source, which at sixty-four slots and seventeen sources per
+     * utterance is several utterances of grace. */
+    unsigned  retired_at;
 } dsource;
 
-static dsource g_sources[16];
+/* **10.6 creates a source per utterance and cancels it again** -- seventeen
+ * for one short sentence -- where 10.7 keeps a couple for the whole session.
+ * The slots are reclaimed on cancel, so this is headroom rather than a
+ * budget; it was 16, which one Snow Leopard utterance spent by itself. */
+/* **Measured, not chosen: one long 10.6 utterance makes about 95 of these**,
+ * one per unit of work, each cancelled again immediately.  Nearly all of them
+ * reuse a retired slot, so what this number has to cover is how many are alive
+ * at once rather than the total -- but 64 was under even that, and the failure
+ * is an utterance with no worker: silence, and a channel left mid-speech
+ * answering -231 to everything after it. */
+static dsource g_sources[256];
+static unsigned g_retire_seq;
+/* Sources created and reused this utterance, under TIGER_FLOAT_STATS.
+ * 10.6 makes one per unit of work and cancels it again, so this is the
+ * number that decides how big the table has to be. */
+static unsigned g_src_made, g_src_reused;
 static int g_nsources;
 static int g_dispatch_handles[64];
 static int g_ndispatch;
@@ -235,11 +278,55 @@ static DWORD WINAPI source_thread(LPVOID param)
 static void * __cdecl sh_dispatch_source_create(void *type, unsigned long handle,
                                                 unsigned long mask, void *queue)
 {
-    dsource *s;
+    dsource *s = NULL;
+    int i, cap = (int)(sizeof(g_sources) / sizeof(g_sources[0]));
+    int spin;
     (void)type; (void)handle; (void)mask; (void)queue;
-    if (g_nsources >= (int)(sizeof(g_sources) / sizeof(g_sources[0])))
+    /* A retired slot first, and only one whose thread has really finished --
+     * reusing one still inside its handler would hand the engine a source
+     * that is about to be overwritten underneath it.
+     *
+     * **Waiting beats refusing.**  A cancelled source's thread leaves as soon
+     * as it is signalled, but "as soon as" is a scheduler's opinion, and 10.6
+     * cancels and creates in the same breath.  Half a second of patience
+     * costs nothing on a table that is never full in practice, where refusing
+     * costs the whole utterance. */
+    for (spin = 0; spin < 50 && !s; spin++) {
+        dsource *oldest = NULL;
+        int winding = 0;
+        for (i = 0; i < g_nsources; i++) {
+            dsource *c = &g_sources[i];
+            if (!c->retired) continue;
+            if (c->thread && WaitForSingleObject(c->thread, 0) != WAIT_OBJECT_0)
+                { winding = 1; continue; }     /* still winding down */
+            if (!oldest || c->retired_at < oldest->retired_at) oldest = c;
+        }
+        if (oldest) {
+            if (oldest->thread) { CloseHandle(oldest->thread);
+                                  oldest->thread = NULL; }
+            if (oldest->rearm)  { CloseHandle(oldest->rearm);
+                                  oldest->rearm = NULL; }
+            s = oldest;
+            g_src_reused++;
+            break;
+        }
+        if (g_nsources < cap) { s = &g_sources[g_nsources++]; break; }
+        /* **Only wait for something that is actually coming.**  Waiting when
+         * nothing is retired is waiting for a slot that will never appear --
+         * half a second per source, on an engine that asks for a lot of them.
+         * That is a slower failure, not a better one. */
+        if (!winding) break;
+        Sleep(10);
+    }
+    if (!s) {
+        /* Out loud.  Silently handing back a handle that is not a source is
+         * how this failed for 10.6 in the first place, and it looks like a
+         * dead engine rather than a full table. */
+        fprintf(stderr, "tiger_host: all %d dispatch sources are in use; this "
+                        "utterance has no worker and will be silent\n", cap);
         return dispatch_handle();
-    s = &g_sources[g_nsources++];
+    }
+    g_src_made++;
     memset(s, 0, sizeof(*s));
     s->magic = DSRC_MAGIC;
     if (g_verbose) printf("  [gcd] source %p created\n", (void *)s);
@@ -460,7 +547,15 @@ static void __cdecl sh_dispatch_suspend(void *o)
 static void __cdecl sh_dispatch_source_cancel(void *o)
 {
     dsource *s = as_source(o);
-    if (s) s->running = 0;
+    if (!s) return;
+    s->running = 0;
+    s->armed = 0;
+    /* Wake it so it can leave rather than sitting out its delay: the slot is
+     * only reusable once the thread has gone, and 10.6 wants it back within
+     * the same utterance. */
+    if (s->rearm) SetEvent(s->rearm);
+    s->retired_at = ++g_retire_seq;
+    s->retired = 1;
 }
 
 /* Nanoseconds since the process started, which is all either of these is used
