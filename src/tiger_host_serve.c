@@ -258,13 +258,20 @@ static void put_frames(unsigned from, unsigned to)
  * response, so a chunk is never written empty. */
 static unsigned stream_chunk(unsigned sent, unsigned upto)
 {
-    unsigned n;
-    if (upto <= sent) return sent;
-    n = upto - sent;
-    fwrite(&n, 4, 1, stdout);
-    put_frames(sent, upto);
-    fflush(stdout);
-    return upto;
+    /* Keep each protocol chunk short enough that an in-process consumer can
+     * observe its cancellation flag promptly.  SAPI checks between chunks;
+     * without this cap Alex can hand it seconds of audio in one block and the
+     * Stop button cannot be acted on until that whole block has crossed the
+     * pipe.  1024 frames is about 46 ms at 22050 Hz. */
+    while (sent < upto) {
+        unsigned n = upto - sent;
+        if (n > 1024u) n = 1024u;
+        fwrite(&n, 4, 1, stdout);
+        put_frames(sent, sent + n);
+        fflush(stdout);
+        sent += n;
+    }
+    return sent;
 }
 
 static int serve(image *mt, void *chan, const char *voicesdir)
