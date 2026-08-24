@@ -132,6 +132,29 @@ def test_speech_that_carries_on_after_a_cancel_keeps_its_host(driver):
         % (started, _pid(driver)))
 
 
+def test_the_handoff_answer_is_per_generation():
+    """`HANDOFF_GRACE` is measured policy, not a shared constant.
+
+    Lion and Snow Leopard hold a cancelled render's worker for hundreds of
+    milliseconds after the audio is done with it, and a replacement host
+    there is cheap -- so they answer with a number.  Leopard ends a
+    cancelled render in tens of milliseconds and pays a 701 MB voice reload
+    for a replacement, so the same number re-creates Timothy's glitch here.
+    Each generation answers for itself, and the shared body answers never,
+    so a generation added later cannot inherit a retirement policy nobody
+    measured on it.
+    """
+    import leopardspeech
+    import lionspeech
+    import snowleopardspeech
+    base = leopardspeech.pantheradriver.PantheraDriver
+
+    assert base.HANDOFF_GRACE is None
+    assert leopardspeech.SynthDriver.HANDOFF_GRACE is None
+    assert lionspeech.SynthDriver.HANDOFF_GRACE == 0.06
+    assert snowleopardspeech.SynthDriver.HANDOFF_GRACE == 0.06
+
+
 def test_a_host_that_stops_answering_is_still_retired(driver, monkeypatch):
     """The kill has to remain available, because a wedged host is real.
 

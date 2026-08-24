@@ -1364,7 +1364,17 @@ class PantheraDriver(SynthDriver):
     #: 43 ms once the worker became free.  A short handoff grace preserves the
     #: cheap, normal cancellations while bounding that wait.  Host replacement
     #: is already off NVDA's main thread and prewarmed by `_retire()`.
-    HANDOFF_GRACE = 0.06
+    #:
+    #: **Per generation, and `None` means never.**  The trade only pays where
+    #: a replacement host is cheaper than the wait.  On Leopard the wait is
+    #: short -- the cancel event ends a render in tens of milliseconds -- and
+    #: the replacement is a 701 MB voice reload, which is the asymmetry the
+    #: recovery deadline above already spells out, and the fault
+    #: `test_speech_that_carries_on_after_a_cancel_keeps_its_host` exists to
+    #: keep out.  A generation that wants the handoff answers with a number;
+    #: the base answers never, so a generation added later cannot inherit a
+    #: retirement policy nobody measured on it.
+    HANDOFF_GRACE = None
 
     def _abandonHost(self):
         """Take the host away from an utterance nobody is going to hear --
@@ -1429,7 +1439,8 @@ class PantheraDriver(SynthDriver):
                     return                      # that response is over
                 if not self._rendering:
                     return                      # it let go and nothing followed
-                replacementWaiting = not self._queue.empty()
+                replacementWaiting = (self.HANDOFF_GRACE is not None
+                                      and not self._queue.empty())
                 if replacementWaiting:
                     # Start the process we may need while the old response is
                     # already spending its grace period.  `_ensureStandby`
@@ -1437,8 +1448,19 @@ class PantheraDriver(SynthDriver):
                     # initialising beside this timer.  If the response ends
                     # cleanly the spare stays idle for the next handoff.
                     self._ensureStandby()
-                if (time.time() - started >= self.HANDOFF_GRACE
-                        and replacementWaiting):
+                    # Popen takes real time, and the cancelled response can
+                    # end -- and the queued replacement begin rendering --
+                    # while it runs.  Acting on the checks from before the
+                    # spawn would retire the host mid-way through speech
+                    # somebody wants, so make them again, the same three the
+                    # recovery deadline below makes before it acts.
+                    if self._stopped or self._renderSeq != seq:
+                        return
+                    if not self._rendering:
+                        return
+                    replacementWaiting = not self._queue.empty()
+                if (replacementWaiting
+                        and time.time() - started >= self.HANDOFF_GRACE):
                     # The worker cannot take the queued utterance until this
                     # cancelled response ends.  Retire now; the longer deadline
                     # below is only for recovery when no speech is waiting.
