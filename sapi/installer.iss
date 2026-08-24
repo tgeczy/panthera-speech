@@ -52,6 +52,7 @@ Source: "{#StageDir}\x86\panthera_sapi.dll"; DestDir: "{app}\x86"
 Source: "{#StageDir}\x86\panthera_host.exe"; DestDir: "{app}\x86"
 Source: "{#StageDir}\x64\panthera_sapi.dll"; DestDir: "{app}\x64"; Check: Is64BitInstallMode
 Source: "{#StageDir}\x64\panthera_host.exe"; DestDir: "{app}\x64"; Check: Is64BitInstallMode
+Source: "{#StageDir}\panthera_settings.exe"; DestDir: "{app}"
 Source: "{#StageDir}\settings.ps1"; DestDir: "{app}"
 Source: "{#StageDir}\settings.cmd"; DestDir: "{app}"
 Source: "{#StageDir}\extract.py"; DestDir: "{app}"
@@ -59,7 +60,9 @@ Source: "{#StageDir}\pantheradiscs.py"; DestDir: "{app}"
 Source: "{#StageDir}\pantherahfs.py"; DestDir: "{app}"
 
 [Icons]
-Name: "{autoprograms}\Panthera SAPI settings"; Filename: "{app}\settings.cmd"; WorkingDir: "{app}"
+; The launcher rather than the batch file: a GUI-subsystem program creates no
+; console, so nothing flashes or steals focus before the dialog appears.
+Name: "{autoprograms}\Panthera SAPI settings"; Filename: "{app}\panthera_settings.exe"; WorkingDir: "{app}"
 
 [Registry]
 ; The remembered data-folder choice.  Written by the settings tool, removed
@@ -72,7 +75,7 @@ Root: HKCU; Subkey: "Software\Panthera SAPI"; Flags: uninsdeletekey dontcreateke
 ; resolved data root (chosen folder, then NVDA's shared macintalk, then the
 ; standalone default).  Registering with no data present is a clean no-op.
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -STA -File ""{app}\settings.ps1"" -RegisterVoices -GenerationList Tiger,Leopard,Snowleopard,Lion"; StatusMsg: "Registering voices from your speech data..."; Flags: runhidden
-Filename: "{app}\settings.cmd"; Description: "Open Panthera SAPI settings"; Flags: postinstall nowait skipifsilent shellexec
+Filename: "{app}\panthera_settings.exe"; Description: "Open Panthera SAPI settings"; Flags: postinstall nowait skipifsilent
 
 [UninstallRun]
 ; Tokens first; when the last Panthera token goes, the settings tool also
