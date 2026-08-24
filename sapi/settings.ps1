@@ -9,19 +9,30 @@ $data = Join-Path $env:APPDATA 'Panthera SAPI'
 $clsid = '{C1F7FC55-3512-4F5D-A6EB-F53220BE4693}'
 $Generations = @($GenerationList -split ',' | Where-Object { $_ })
 
+# One row per generation, in one place, so a generation cannot be present in
+# the extractor and missing from the list next to it.  Folder is what
+# extract.py writes: the generation key, title-cased -- which is why Snow
+# Leopard's folder is 'Snowleopard'.
+$GenerationTable = @(
+    [pscustomobject]@{ Folder='Tiger';       Label='Tiger';        Item='Tiger - Mac OS X 10.4' }
+    [pscustomobject]@{ Folder='Leopard';     Label='Leopard';      Item='Leopard - Mac OS X 10.5' }
+    [pscustomobject]@{ Folder='Snowleopard'; Label='Snow Leopard'; Item='Snow Leopard - Mac OS X 10.6' }
+    [pscustomobject]@{ Folder='Lion';        Label='Lion';         Item='Lion - Mac OS X 10.7' }
+)
+
 New-Item -ItemType Directory -Force $data | Out-Null
-foreach ($generationFolder in 'Tiger','Leopard','Lion') {
+foreach ($generationFolder in $GenerationTable.Folder) {
     New-Item -ItemType Directory -Force (Join-Path $data $generationFolder) | Out-Null
 }
 
 function Get-Voices {
     $rows = @()
-    foreach ($generation in @(@('Tiger','Tiger'),@('Leopard','Leopard'),@('Lion','Lion'))) {
-        $folder = Join-Path $data "$($generation[0])\Speech\Voices"
+    foreach ($generation in $GenerationTable) {
+        $folder = Join-Path $data "$($generation.Folder)\Speech\Voices"
         if (Test-Path -LiteralPath $folder) {
             Get-ChildItem -LiteralPath $folder -Directory -Filter '*.SpeechVoice' | Sort-Object Name | ForEach-Object {
                 $voiceName = $_.Name.Substring(0, $_.Name.Length - '.SpeechVoice'.Length)
-                $rows += [pscustomobject]@{ Generation=$generation[0]; Label=$generation[1]; Voice=$voiceName }
+                $rows += [pscustomobject]@{ Generation=$generation.Folder; Label=$generation.Label; Voice=$voiceName }
             }
         }
     }
@@ -109,10 +120,10 @@ $status.Location = New-Object Drawing.Point(12,316); $status.Size = New-Object D
 
 function Refresh-Voices {
     $list.Items.Clear(); $voices = @(Get-Voices)
-    foreach ($generation in @(@('Tiger','Tiger - Mac OS X 10.4'),@('Leopard','Leopard - Mac OS X 10.5'),@('Lion','Lion - Mac OS X 10.7'))) {
-        $count = @($voices | Where-Object Generation -eq $generation[0]).Count
+    foreach ($generation in $GenerationTable) {
+        $count = @($voices | Where-Object Generation -eq $generation.Folder).Count
         $state = if ($count) { "$count voices" } else { 'not installed' }
-        [void]$list.Items.Add(('{0} - {1}' -f $generation[1],$state),$false)
+        [void]$list.Items.Add(('{0} - {1}' -f $generation.Item,$state),$false)
     }
     if ($list.Items.Count) { $list.SelectedIndex = 0 }
     $status.Text = '{0} voice(s) found in {1}' -f $voices.Count,$data
@@ -140,14 +151,14 @@ $extract.Add_Click({
     }
 })
 $register.Add_Click({
-    $selected=@(); for($i=0;$i -lt 3;$i++){if($list.GetItemChecked($i)){$selected+=@('Tiger','Leopard','Lion')[$i]}}
+    $selected=@(); for($i=0;$i -lt $GenerationTable.Count;$i++){if($list.GetItemChecked($i)){$selected+=$GenerationTable[$i].Folder}}
     if(!$selected.Count){[Windows.Forms.MessageBox]::Show($form,'Check at least one engine.','Panthera SAPI');return}
     $arguments='-NoProfile -ExecutionPolicy Bypass -STA -File "{0}" -RegisterVoices -GenerationList {1}' -f $settingsScript,($selected -join ',')
     $process=Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList $arguments
     if ($process.ExitCode) { [Windows.Forms.MessageBox]::Show($form,'Registration failed.','Panthera SAPI','OK','Error') } else { [Windows.Forms.MessageBox]::Show($form,'Panthera voices were registered for 32-bit and 64-bit SAPI.','Panthera SAPI') }
 })
 $unregister.Add_Click({
-    $selected=@(); for($i=0;$i -lt 3;$i++){if($list.GetItemChecked($i)){$selected+=@('Tiger','Leopard','Lion')[$i]}}
+    $selected=@(); for($i=0;$i -lt $GenerationTable.Count;$i++){if($list.GetItemChecked($i)){$selected+=$GenerationTable[$i].Folder}}
     if(!$selected.Count){[Windows.Forms.MessageBox]::Show($form,'Check at least one engine.','Panthera SAPI');return}
     $arguments='-NoProfile -ExecutionPolicy Bypass -STA -File "{0}" -UnregisterVoices -GenerationList {1}' -f $settingsScript,($selected -join ',')
     $process=Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList $arguments

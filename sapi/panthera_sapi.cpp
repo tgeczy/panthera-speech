@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include <cmath>
+#include <cwctype>
 
 static HMODULE g_module;
 static long g_objects;
@@ -58,7 +59,22 @@ public:
     STDMETHODIMP Speak(DWORD,REFGUID,const WAVEFORMATEX*,const SPVTEXTFRAG *frags,ISpTTSEngineSite *site){
         if(!token||!site)return E_UNEXPECTED;
         std::wstring text;
-        for(auto f=frags;f;f=f->pNext) if(f->pTextStart&&f->ulTextLen) text.append(f->pTextStart,f->ulTextLen);
+        for(auto f=frags;f;f=f->pNext){
+            /* JAWS sends each word as its own SPVA_Speak fragment with an
+             * SPVA_Bookmark between every pair, and a bookmark fragment's
+             * text is its name.  Appending blindly reads the names aloud;
+             * appending without a separator runs the words together.  Only
+             * text meant to be heard goes in, with a space restored at the
+             * seam when neither side brought one. */
+            switch(f->State.eAction){
+            case SPVA_Speak: case SPVA_SpellOut: case SPVA_Pronounce: break;
+            default: continue;
+            }
+            if(!f->pTextStart||!f->ulTextLen)continue;
+            if(!text.empty()&&!iswspace(text.back())&&!iswspace(f->pTextStart[0]))
+                text.push_back(L' ');
+            text.append(f->pTextStart,f->ulTextLen);
+        }
         if(text.empty())return S_OK;
         std::wstring root=token_string(token,L"DataPath"), gen=token_string(token,L"Generation"), voice=token_string(token,L"VoiceName");
         std::wstring tree=root+L"\\"+gen, mt=tree+L"\\Speech\\Synthesizers\\MacinTalk.SpeechSynthesizer\\Contents\\MacOS\\MacinTalk";
