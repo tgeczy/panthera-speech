@@ -134,7 +134,15 @@ $list.CheckOnClick = $true
 $list.Location = New-Object Drawing.Point(12,38); $list.Size = New-Object Drawing.Size(680,270)
 $status = New-Object Windows.Forms.Label
 $status.Name = 'speechDataStatus'; $status.AccessibleName = 'Speech data status'
-$status.Location = New-Object Drawing.Point(12,316); $status.Size = New-Object Drawing.Size(680,38)
+$status.Location = New-Object Drawing.Point(12,316); $status.Size = New-Object Drawing.Size(680,20)
+# A real ProgressBar rather than text alone, because screen readers announce
+# progress bar changes on their own -- NVDA's background beeps included --
+# and a long extraction with a silent, frozen window is indistinguishable
+# from a hang, which is exactly how it was reported.
+$progress = New-Object Windows.Forms.ProgressBar
+$progress.Name = 'extractionProgress'; $progress.AccessibleName = 'Extraction progress'
+$progress.Location = New-Object Drawing.Point(12,338); $progress.Size = New-Object Drawing.Size(680,16)
+$progress.Minimum = 0; $progress.Maximum = 100; $progress.Visible = $false
 
 function Refresh-Voices {
     $list.Items.Clear(); $voices = @(Get-Voices)
@@ -146,6 +154,86 @@ function Refresh-Voices {
     if ($list.Items.Count) { $list.SelectedIndex = 0 }
     $status.Text = '{0} voice(s) found in {1}' -f $voices.Count,$data
 }
+
+# --- extraction, off the UI thread --------------------------------------
+# The extractor prints "NN% message" lines as it works; running it inline
+# froze the window for the whole image and read as a hang.  It runs as a
+# child process now, with a timer reading its output to drive the progress
+# bar and the status label, and the window stays alive throughout.
+$script:extractProc = $null
+$script:extractLog = $null
+$script:extractImage = $null
+$extractTimer = New-Object Windows.Forms.Timer
+$extractTimer.Interval = 250
+
+function Read-ExtractTail {
+    try {
+        $fs = [System.IO.File]::Open($script:extractLog, 'Open', 'Read', 'ReadWrite')
+        try { $text = (New-Object System.IO.StreamReader($fs)).ReadToEnd() }
+        finally { $fs.Dispose() }
+        $lines = @($text -split "`r?`n" | Where-Object { $_ })
+        if ($lines.Count) { $lines[-1] } else { $null }
+    } catch { $null }
+}
+
+function Set-Busy([bool]$busy) {
+    foreach ($control in @($extract,$register,$unregister,$chooseRoot)) { $control.Enabled = -not $busy }
+    $progress.Visible = $busy
+    if (-not $busy) { $progress.Value = 0 }
+}
+
+function Start-Extraction([string]$image, [bool]$replace) {
+    $script:extractImage = $image
+    $script:extractLog = [System.IO.Path]::GetTempFileName()
+    New-Item -ItemType Directory -Force $data | Out-Null
+    # -u for unbuffered stdout, so a progress line exists the moment the
+    # extractor prints it rather than when a block fills.
+    $argstr = '-u "{0}" "{1}" "{2}"' -f (Join-Path $stage 'extract.py'), $image, $data
+    if ($replace) { $argstr += ' --replace' }
+    try {
+        $script:extractProc = Start-Process python -ArgumentList $argstr -RedirectStandardOutput $script:extractLog -WindowStyle Hidden -PassThru
+        # Touching Handle while the process lives is what lets ExitCode be
+        # read after it dies; without this every extraction reports failure.
+        $null = $script:extractProc.Handle
+    } catch {
+        [Windows.Forms.MessageBox]::Show($form,'Python was not found. Extraction needs Python on PATH.','Panthera SAPI','OK','Error') | Out-Null
+        return
+    }
+    Set-Busy $true
+    $status.Text = 'Extracting speech data...'
+    $extractTimer.Start()
+}
+
+$extractTimer.Add_Tick({
+    $line = Read-ExtractTail
+    if ($line -match '^(\d+)% (.*)$') {
+        $progress.Value = [Math]::Min(100, [int]$matches[1])
+        $status.Text = 'Extracting: {0}% - {1}' -f $progress.Value, $matches[2]
+    }
+    if ($script:extractProc -and $script:extractProc.HasExited) {
+        $extractTimer.Stop()
+        $code = $script:extractProc.ExitCode
+        $script:extractProc = $null
+        Set-Busy $false
+        if ($code -eq 0) {
+            $status.Text = 'Extraction finished.'
+            Refresh-Voices
+            [Windows.Forms.MessageBox]::Show($form,'Extraction finished.','Panthera SAPI') | Out-Null
+        } elseif ($code -eq 3) {
+            # The extractor refused an occupied folder; replacing is a
+            # decision, and it is the person's.
+            $target = (Read-ExtractTail) -replace '^EXISTS ',''
+            $status.Text = 'That speech data is already installed.'
+            $answer = [Windows.Forms.MessageBox]::Show($form,
+                ("This image's speech data is already installed at:`n{0}`n`nReplace it? The existing folder will be removed first." -f $target),
+                'Panthera SAPI','YesNo','Question')
+            if ($answer -eq 'Yes') { Start-Extraction $script:extractImage $true }
+        } else {
+            $status.Text = 'Extraction failed.'
+            [Windows.Forms.MessageBox]::Show($form,'Extraction failed.','Panthera SAPI','OK','Error') | Out-Null
+        }
+    }
+})
 
 $selectAll = New-Object Windows.Forms.Button; $selectAll.Text = '&Select all'; $selectAll.Location = New-Object Drawing.Point(12,360); $selectAll.AutoSize=$true
 $deselectAll = New-Object Windows.Forms.Button; $deselectAll.Text = '&Deselect all'; $deselectAll.Location = New-Object Drawing.Point(110,360); $deselectAll.AutoSize=$true
@@ -195,11 +283,7 @@ $open.Add_Click({ New-Item -ItemType Directory -Force $data | Out-Null; Start-Pr
 $extract.Add_Click({
     $picker = New-Object Windows.Forms.OpenFileDialog; $picker.Title='Choose a Mac OS X install disc image'; $picker.Filter='Disc images|*.iso;*.dmg;*.cdr|All files|*.*'
     if ($picker.ShowDialog($form) -eq 'OK') {
-        $status.Text='Extracting speech data. Please wait.'; $form.Refresh()
-        New-Item -ItemType Directory -Force $data | Out-Null
-        & python (Join-Path $stage 'extract.py') $picker.FileName $data
-        if ($LASTEXITCODE) { [Windows.Forms.MessageBox]::Show($form,'Extraction failed.','Panthera SAPI','OK','Error') } else { [Windows.Forms.MessageBox]::Show($form,'Extraction finished.','Panthera SAPI') }
-        Refresh-Voices
+        Start-Extraction $picker.FileName $false
     }
 })
 $register.Add_Click({
@@ -218,5 +302,10 @@ $unregister.Add_Click({
 })
 $close.Add_Click({$form.Close()})
 $form.AcceptButton=$register; $form.CancelButton=$close
-$form.Controls.AddRange(@($label,$list,$status,$selectAll,$deselectAll,$chooseRoot,$open,$extract,$register,$unregister,$close))
+$form.Controls.AddRange(@($label,$list,$status,$progress,$selectAll,$deselectAll,$chooseRoot,$open,$extract,$register,$unregister,$close))
+$form.Add_FormClosing({
+    if ($script:extractProc -and -not $script:extractProc.HasExited) {
+        try { $script:extractProc.Kill() } catch {}
+    }
+})
 Refresh-Voices; $form.Add_Shown({$list.Focus()}); [void]$form.ShowDialog()
