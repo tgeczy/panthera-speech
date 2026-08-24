@@ -171,6 +171,23 @@ $chooseRoot.Add_Click({
         New-Item -Path $dataPrefKey -Force | Out-Null
         Set-ItemProperty -Path $dataPrefKey -Name DataPath -Value $script:data
         Refresh-Voices
+        if (Test-AnyPantheraTokens) {
+            # Every registered voice token carries the old DataPath, so a
+            # deliberate folder change would leave them all pointing at the
+            # folder that was just left behind.  Follow the data: re-register
+            # every lineage against the new root.  All four are passed on
+            # purpose -- Add-VoiceTokens removes each selected generation's
+            # old tokens before adding what it finds, so a lineage with no
+            # data here comes off the list instead of lingering mute.
+            # Guarded on tokens existing at all, so browsing folders never
+            # costs anyone an elevation prompt they did not earn.
+            $all = @($GenerationTable.Folder) -join ','
+            $arguments='-NoProfile -ExecutionPolicy Bypass -STA -File "{0}" -RegisterVoices -GenerationList {1} -DataRoot "{2}"' -f $settingsScript,$all,$script:data
+            $process=Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList $arguments
+            if ($process.ExitCode) { [Windows.Forms.MessageBox]::Show($form,'The folder was remembered, but re-registering the voices from it failed. Use Register to try again.','Panthera SAPI','OK','Error') }
+            else { [Windows.Forms.MessageBox]::Show($form,'Voices are now registered from the new folder.','Panthera SAPI') }
+            Refresh-Voices
+        }
     }
 })
 
