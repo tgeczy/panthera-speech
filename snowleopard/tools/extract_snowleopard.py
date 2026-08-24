@@ -80,6 +80,26 @@ import pantherasnowleopard                                    # noqa: E402
 GENERATION = "snowleopard"
 
 
+def default_out():
+    """The shared folder every Macintosh engine writes into.
+
+    **Not `pantherasnowleopard.config_dir()`, and that is the whole comment.**
+    `config_base()` reads `globalVars.appArgs.configPath`, which is the only
+    correct source *inside NVDA* -- it accounts for a portable copy and for
+    `-c` on the command line.  Outside NVDA there is no `globalVars`, so it
+    falls back to `~/.nvda`, which is a real directory that nothing reads.
+
+    A command-line tool is outside NVDA by definition, so asking the module
+    that knows best gets the one answer that is always wrong here.  It wrote
+    446 MB into `C:\\Users\\<you>\\.nvda` once before this existed.  The
+    sibling extractors compute it from `%APPDATA%` for the same reason.
+    """
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        return os.path.join(appdata, "nvda", "macintalk", GENERATION)
+    return os.path.join(os.getcwd(), "macintalk", GENERATION)
+
+
 def _bar(percent, message, _state={"last": None}):
     """One line, rewritten -- and only when it has something new to say."""
     line = "%3d%%  %s" % (percent, message)
@@ -94,15 +114,15 @@ def main(argv=None):
     ap = argparse.ArgumentParser(
         description="Extract Mac OS X 10.6 speech data from an install image.")
     ap.add_argument("image", help="a Snow Leopard install .iso, .dmg or .cdr")
-    ap.add_argument("--out", default=None,
-                    help="where to write it (default: NVDA's "
-                         "macintalk\\snowleopard folder)")
+    ap.add_argument("--out", default=default_out(),
+                    help="where to write it (default: "
+                         "%%APPDATA%%\\nvda\\macintalk\\snowleopard)")
     ap.add_argument("--no-voices", action="store_true",
                     help="engine and dictionary only, no voice banks")
     ap.add_argument("--quiet", action="store_true", help="no progress")
     args = ap.parse_args(argv)
 
-    out = args.out or pantherasnowleopard.config_dir()
+    out = args.out
 
     disc = pantheradiscs.identify(args.image)
     if not disc.usable:
