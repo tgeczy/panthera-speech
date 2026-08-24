@@ -92,6 +92,13 @@ class SynthDriver(pantheradriver.PantheraDriver):
     EXTRACTOR = "extract_snowleopard.py"
     VOLUME_NORM = VOLUME_NORM
 
+    #: Retire a cancelled render early when newer speech is queued.  Measured
+    #: on this generation: cancelled responses held the worker 345 to 947 ms
+    #: while the queued utterance would render in tens once free -- the
+    #: dispatch-source teardown, not the driver.  Leopard answers `None`; see
+    #: both comments in `pantheradriver`.
+    HANDOFF_GRACE = 0.06
+
     @classmethod
     def check(cls):
         """**Listed only when there is an engine to run**, like its siblings.

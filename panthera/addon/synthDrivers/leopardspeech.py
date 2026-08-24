@@ -62,6 +62,13 @@ class SynthDriver(pantheradriver.PantheraDriver):
     EXTRACTOR = "extract_leopard.py"
     VOLUME_NORM = pantheradriver.VOLUME_NORM_LEOPARD
 
+    #: Never retire a cancelled render early to reach queued speech.  On this
+    #: generation the cancel event ends a render in tens of milliseconds and a
+    #: replacement means reloading Alex's 701 MB bank, so the handoff trade
+    #: that pays on Lion and Snow Leopard only re-creates Timothy's glitch
+    #: here: the executable running again on an ordinary keystroke.
+    HANDOFF_GRACE = None
+
     @classmethod
     def check(cls):
         """**Listed only when there is an engine to run.**

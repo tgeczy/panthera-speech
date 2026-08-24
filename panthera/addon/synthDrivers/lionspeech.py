@@ -107,6 +107,13 @@ class SynthDriver(pantheradriver.PantheraDriver):
     EXTRACTOR = "extract_lion.py"
     VOLUME_NORM = VOLUME_NORM
 
+    #: Retire a cancelled render early when newer speech is queued.  Measured
+    #: here as on Snow Leopard: 345 to 947 ms holds against tens once the
+    #: worker is free -- 10.7 never stops its audio graph, so a cancelled
+    #: render sits out its quiet window with the worker held.  Leopard
+    #: answers `None`; see both comments in `pantheradriver`.
+    HANDOFF_GRACE = 0.06
+
     @classmethod
     def check(cls):
         """**Listed only when there is an engine to run** -- unlike its siblings.
