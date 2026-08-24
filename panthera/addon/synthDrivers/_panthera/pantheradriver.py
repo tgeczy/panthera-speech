@@ -1047,6 +1047,17 @@ class PantheraDriver(SynthDriver):
                 break
 
         self._proc = None
+        #: An idle host started while a cancelled render is being given its
+        #: handoff grace.  If that render does have to be retired, the worker
+        #: can move straight onto this process instead of putting a complete
+        #: engine start between the keypress and the replacement speech.
+        #:
+        #: It deliberately has not loaded a voice yet.  Loading Alex merely to
+        #: keep him in reserve would touch tens of megabytes of his sample
+        #: bank; starting the engine and mapping its dictionaries is the cheap
+        #: part we can safely overlap.  One standby is kept after a clean
+        #: cancellation so later handoffs do not pay even that much again.
+        self._standby = None
         #: Set when an engine setting changes; acted on in _host(), between
         #: utterances, rather than by killing a host that may be mid-stream.
         self._restartWanted = False
@@ -1179,84 +1190,120 @@ class PantheraDriver(SynthDriver):
         raise last
 
     # -- the host ----------------------------------------------------------
+    def _startHost(self, standby=False):
+        """Start one engine process and return it without choosing it.
+
+        Callers hold ``_procLock`` while choosing whether the result is the
+        active or standby host.  Keeping process construction separate from
+        that choice is what lets cancellation overlap a replacement start
+        with the grace already being given to the old response.
+        """
+        if self._stopped:
+            # `terminate()` raises this flag before taking `_procLock`.
+            # Without the check, a retirement already in flight could leave a
+            # process running with nothing to serve.
+            raise RuntimeError("%s is shutting down" % self.name)
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        # Follow NVDA's own log level. Someone who has turned debug logging on
+        # has asked for detail, and the host is the only view of the engine.
+        env = dict(os.environ)
+        try:
+            import logging
+            if log.isEnabledFor(logging.DEBUG):
+                env["TIGER_HOST_VERBOSE"] = "1"
+            else:
+                env.pop("TIGER_HOST_VERBOSE", None)
+        except Exception:
+            env.pop("TIGER_HOST_VERBOSE", None)
+        if self._cancelEvent:
+            env["TIGER_CANCEL_EVENT"] = self._cancelEventName
+        params = self._phrasingParam()
+        if params:
+            env["TIGER_PARAMS"] = params
+        else:
+            env.pop("TIGER_PARAMS", None)
+        if self._expandAbbreviations:
+            env.pop("TIGER_NO_ABBREV", None)
+        else:
+            env["TIGER_NO_ABBREV"] = "1"
+        proc = subprocess.Popen(
+            [self.TREE.HOST_EXE, "--serve", self._mt, self._sd,
+             self._voicesdir],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, startupinfo=si, env=env)
+        self._watchStderr(proc)
+        log.debug("%s: " % self.name + "%shost %d started; abbreviations %s, "
+                  "phrasing %r"
+                  % ("standby " if standby else "", proc.pid,
+                     "on" if self._expandAbbreviations else "OFF",
+                     self._phrasing))
+        return proc
+
+    @staticmethod
+    def _stopHost(proc, graceful=False):
+        """Best-effort stop for an active or unused standby process."""
+        if proc is None:
+            return
+        try:
+            if graceful:
+                proc.stdin.close()
+                proc.wait(timeout=1)
+            else:
+                proc.kill()
+                proc.wait(timeout=5)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
     def _host(self):
-        """The resident engine process, started on demand and restarted if it
-        dies.  Startup costs about 20 ms including the 2.1 MB dictionary, so a
-        restart after a crash is not something the user would notice."""
+        """Return the resident engine, promoting a standby when possible."""
         with self._procLock:
-            if self._restartWanted and self._proc is not None:
-                # A setting changed.  Retire the old process here, between
-                # utterances, where closing its pipe cannot be mistaken for a
-                # protocol failure -- see _restartHost().
-                self._restartWanted = False
+            if self._restartWanted:
+                # Both processes inherited the old environment.  Discard them
+                # here, between utterances, then start exactly one with the
+                # newly requested phrasing/abbreviation settings.
                 old, self._proc = self._proc, None
-                try:
-                    old.stdin.close()
-                    old.wait(timeout=1)
-                except Exception:
-                    try:
-                        old.kill()
-                    except Exception:
-                        pass
-            self._restartWanted = False
+                spare, self._standby = self._standby, None
+                self._restartWanted = False
+                self._stopHost(old, graceful=True)
+                self._stopHost(spare, graceful=True)
             if self._proc is not None and self._proc.poll() is None:
                 return self._proc
-            if self._stopped:
-                # `terminate()` raises this flag and then takes this same
-                # lock to kill the host.  Without the check, a retirement
-                # already in flight could start a replacement after that
-                # and leave a host running with nothing to serve.
-                raise RuntimeError("%s is shutting down" % self.name)
-            si = subprocess.STARTUPINFO()
-            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            # Follow NVDA's own log level. Someone who has turned debug
-            # logging on has asked for detail, and a synthesizer that stays
-            # quiet then is no easier to diagnose than one with no logging at
-            # all -- the host's commentary is the only view of what the engine
-            # is doing. At any other level it says nothing, because it is
-            # several hundred lines per utterance.
-            env = dict(os.environ)
-            try:
-                import logging
-                if log.isEnabledFor(logging.DEBUG):
-                    env["TIGER_HOST_VERBOSE"] = "1"
-                else:
-                    env.pop("TIGER_HOST_VERBOSE", None)
-            except Exception:
-                env.pop("TIGER_HOST_VERBOSE", None)
-            if self._cancelEvent:
-                env["TIGER_CANCEL_EVENT"] = self._cancelEventName
-            # The engine asks how strong a phrase boundary has to be before it
-            # is worth a silence, and answering 0 stops it breaking clauses
-            # nobody wrote.  Unanswered, it uses its own default, which is
-            # what every version before this one did.
-            params = self._phrasingParam()
-            if params:
-                env["TIGER_PARAMS"] = params
-            else:
-                env.pop("TIGER_PARAMS", None)
-            if self._expandAbbreviations:
-                env.pop("TIGER_NO_ABBREV", None)
-            else:
-                env["TIGER_NO_ABBREV"] = "1"
-            self._proc = subprocess.Popen(
-                [self.TREE.HOST_EXE, "--serve", self._mt, self._sd,
-                 self._voicesdir],
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, startupinfo=si, env=env)
-            self._watchStderr(self._proc)
-            # Which host served which utterance is the one link this chain has
-            # never been able to show.  Everything else about the abbreviation
-            # setting checks out in the log -- the setter fires on the right
-            # driver, the host restarts, and it prints the right flag -- so
-            # what is left is an utterance being served by a process other
-            # than the one whose startup was logged beside it.
-            log.debug("%s: " % self.name + "host %d started; abbreviations %s, "
-                      "phrasing %r"
-                      % (self._proc.pid,
-                         "on" if self._expandAbbreviations else "OFF",
-                         self._phrasing))
+            self._proc = None
+            if (self._standby is not None
+                    and self._standby.poll() is None):
+                self._proc, self._standby = self._standby, None
+                log.debug("%s: " % self.name + "promoted standby host %d"
+                          % self._proc.pid)
+                return self._proc
+            self._standby = None
+            self._proc = self._startHost()
             return self._proc
+
+    def _ensureStandby(self):
+        """Start one idle replacement, off NVDA's main thread.
+
+        The host blocks on stdin once initialisation is complete, so sharing
+        the auto-reset cancellation event is safe: only the active host has a
+        render in flight and waits on that event.
+        """
+        with self._procLock:
+            if self._stopped or self._restartWanted:
+                return
+            if self._proc is None or self._proc.poll() is not None:
+                return
+            if (self._standby is not None
+                    and self._standby.poll() is None):
+                return
+            self._standby = None
+            try:
+                self._standby = self._startHost(standby=True)
+            except Exception as e:
+                log.debugWarning("%s: could not start standby host: %s"
+                                 % (self.name, e))
 
     #: How long a cancelled response is given to end on its own before the
     #: host is killed instead.
@@ -1303,6 +1350,32 @@ class PantheraDriver(SynthDriver):
     #: able to afford it.
     ABANDON_GRACE = 1.5
 
+    #: How long a cancelled render may keep the worker when newer speech is
+    #: already waiting behind it.
+    #:
+    #: This is a different question from the recovery deadline above.  With
+    #: nothing waiting, letting an ordinary render finish avoids throwing away
+    #: a warm host and reloading a voice bank for no audible benefit.  Once a
+    #: replacement utterance is queued, however, every extra millisecond is
+    #: silence the user hears after moving to the next item.
+    #:
+    #: Lion and Snow Leopard logs measured cancelled responses holding that
+    #: newer speech for 345 to 947 ms even though its audio rendered in 22 to
+    #: 43 ms once the worker became free.  A short handoff grace preserves the
+    #: cheap, normal cancellations while bounding that wait.  Host replacement
+    #: is already off NVDA's main thread and prewarmed by `_retire()`.
+    #:
+    #: **Per generation, and `None` means never.**  The trade only pays where
+    #: a replacement host is cheaper than the wait.  On Leopard the wait is
+    #: short -- the cancel event ends a render in tens of milliseconds -- and
+    #: the replacement is a 701 MB voice reload, which is the asymmetry the
+    #: recovery deadline above already spells out, and the fault
+    #: `test_speech_that_carries_on_after_a_cancel_keeps_its_host` exists to
+    #: keep out.  A generation that wants the handoff answers with a number;
+    #: the base answers never, so a generation added later cannot inherit a
+    #: retirement policy nobody measured on it.
+    HANDOFF_GRACE = None
+
     def _abandonHost(self):
         """Take the host away from an utterance nobody is going to hear --
         but only if it does not let go by itself.
@@ -1317,9 +1390,10 @@ class PantheraDriver(SynthDriver):
         the wait ends on its own.
 
         Killing the process ends that read in 1.3 ms, measured.  What has
-        changed is that it is almost never needed: see `ABANDON_GRACE`.  So
-        wait that long first, and kill only a host that is still holding the
-        worker afterwards.
+        changed is that it is almost never needed: see `HANDOFF_GRACE` and
+        `ABANDON_GRACE`.  Give an ordinary response time to stop cleanly, retire
+        it promptly when newer speech is waiting, and reserve the longer
+        recovery deadline for a host that is stuck with nothing queued.
 
         Off this thread, always.  `cancel()` runs on NVDA's main thread, and
         while killing a process is not the pipe -- rule 5 stands -- it does
@@ -1337,7 +1411,7 @@ class PantheraDriver(SynthDriver):
             self._retiring = False
 
     def _retireIfStuck(self, seq):
-        """Give the response its grace period, then kill what is left.
+        """Give the response its handoff or recovery grace, then retire it.
 
         `seq` pins this to the render it was started for, and **the sequence
         number rather than the epoch is what makes it safe.**
@@ -1358,12 +1432,47 @@ class PantheraDriver(SynthDriver):
         flag happened to look when it was read.
         """
         try:
-            deadline = time.time() + self.ABANDON_GRACE
+            started = time.time()
+            deadline = started + self.ABANDON_GRACE
             while time.time() < deadline:
                 if self._stopped or self._renderSeq != seq:
                     return                      # that response is over
                 if not self._rendering:
                     return                      # it let go and nothing followed
+                replacementWaiting = (self.HANDOFF_GRACE is not None
+                                      and not self._queue.empty())
+                if replacementWaiting:
+                    # Start the process we may need while the old response is
+                    # already spending its grace period.  `_ensureStandby`
+                    # returns immediately after Popen; the engine continues
+                    # initialising beside this timer.  If the response ends
+                    # cleanly the spare stays idle for the next handoff.
+                    self._ensureStandby()
+                    # Popen takes real time, and the cancelled response can
+                    # end -- and the queued replacement begin rendering --
+                    # while it runs.  Acting on the checks from before the
+                    # spawn would retire the host mid-way through speech
+                    # somebody wants, so make them again, the same three the
+                    # recovery deadline below makes before it acts.
+                    if self._stopped or self._renderSeq != seq:
+                        return
+                    if not self._rendering:
+                        return
+                    replacementWaiting = not self._queue.empty()
+                if (replacementWaiting
+                        and time.time() - started >= self.HANDOFF_GRACE):
+                    # The worker cannot take the queued utterance until this
+                    # cancelled response ends.  Retire now; the longer deadline
+                    # below is only for recovery when no speech is waiting.
+                    if log.isEnabledFor(log.DEBUG):
+                        log.debug(
+                            "%s: render %d still holds the worker %.0f ms "
+                            "after a cancel while newer speech waits; "
+                            "retiring the host"
+                            % (self.name, seq,
+                               (time.time() - started) * 1000.0))
+                    self._retire()
+                    return
                 time.sleep(0.01)
             if self._stopped or self._renderSeq != seq or not self._rendering:
                 return
@@ -1376,34 +1485,40 @@ class PantheraDriver(SynthDriver):
             self._retiring = False
 
     def _retire(self):
-        """Kill the host, then have its replacement warm before it is wanted.
+        """Replace the host, using an already-started standby when available.
 
-        The prewarm is why this is a thread rather than two lines in
-        `cancel()`: start-up is about 40 ms, and running it here overlaps it
-        with whatever the driver does between one utterance and the next,
-        instead of charging it to the utterance itself.
+        The swap happens before the old process is killed.  Its blocked reader
+        then wakes, sees that its process is no longer current, and retries the
+        still-wanted text on the replacement without waiting for another
+        engine process to be created.
         """
         try:
+            replacement = None
+            discard = None
             with self._procLock:
                 proc, self._proc = self._proc, None
-            if proc is not None:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-                try:
-                    proc.wait(timeout=5)
-                except Exception:
-                    pass
-                # The pipes are left to the worker and the garbage collector.
-                # Closing them here would be closing handles another thread is
-                # blocked reading, and the kill has already given that read its
-                # end of file.
+                if (not self._stopped and not self._restartWanted
+                        and self._standby is not None
+                        and self._standby.poll() is None):
+                    replacement, self._standby = self._standby, None
+                    self._proc = replacement
+                elif self._standby is not None:
+                    discard, self._standby = self._standby, None
+            self._stopHost(proc)
+            self._stopHost(discard)
             if not self._stopped:
-                try:
-                    self._host()
-                except Exception:
-                    pass
+                if replacement is not None:
+                    log.debug("%s: " % self.name + "promoted standby host %d"
+                              % replacement.pid)
+                    # Replenish the reserve now.  This retirement thread is
+                    # already off NVDA's main thread, and by the next rapid
+                    # navigation key the new spare will normally be ready.
+                    self._ensureStandby()
+                else:
+                    try:
+                        self._host()
+                    except Exception:
+                        pass
         finally:
             self._retiring = False
 
@@ -2353,16 +2468,10 @@ class PantheraDriver(SynthDriver):
         self._queue.put(None)
         self._audioQueue.put(None)
         with self._procLock:
-            if self._proc is not None:
-                try:
-                    self._proc.stdin.close()
-                    self._proc.wait(timeout=2)
-                except Exception:
-                    try:
-                        self._proc.kill()
-                    except Exception:
-                        pass
-                self._proc = None
+            proc, self._proc = self._proc, None
+            standby, self._standby = self._standby, None
+        self._stopHost(proc, graceful=True)
+        self._stopHost(standby, graceful=True)
         try:
             self._player.close()
         except Exception:
