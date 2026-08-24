@@ -18,4 +18,11 @@ no NVDA at all. Inside the root sit the generation folders (`tiger`,
 out exactly as the NVDA add-on lays them out. The tool never creates folders
 inside NVDA's tree; extraction is the only thing that writes.
 
+The settings program also carries the two NVDA driver settings SAPI users
+need most: **Accept embedded speech commands in text** (off by default -- the
+engine really parses `[[...]]`, and a wiki page's `[[Main Page]]` is eaten
+rather than mispronounced) and **Pauses** (the phrase-break threshold, from
+fewest to the engine's own default). Both apply to every SAPI application at
+once, from the next utterance spoken.
+
 This is development work: do not distribute it with extracted Apple data.

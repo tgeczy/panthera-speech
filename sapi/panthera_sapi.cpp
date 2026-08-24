@@ -36,6 +36,43 @@ static std::wstring token_string(ISpObjectToken *t, const wchar_t *name) {
     return r;
 }
 
+/* The two user settings the NVDA driver has and SAPI users were living
+ * without, kept in HKCU by the settings program and read per utterance --
+ * each Speak launches a fresh host, so a change takes effect on the very
+ * next thing spoken. */
+static DWORD setting_dword(const wchar_t *name, DWORD def) {
+    HKEY k; DWORD v=def, n=sizeof v, t;
+    if(!RegOpenKeyExW(HKEY_CURRENT_USER,L"Software\\Panthera SAPI",0,KEY_READ,&k)){
+        if(RegQueryValueExW(k,name,0,&t,(BYTE*)&v,&n)||t!=REG_DWORD)v=def;
+        RegCloseKey(k);
+    }
+    return v;
+}
+static std::wstring setting_string(const wchar_t *name, const wchar_t *def) {
+    HKEY k; wchar_t buf[64]; DWORD n=sizeof buf-sizeof(wchar_t), t; std::wstring r=def;
+    if(!RegOpenKeyExW(HKEY_CURRENT_USER,L"Software\\Panthera SAPI",0,KEY_READ,&k)){
+        if(!RegQueryValueExW(k,name,0,&t,(BYTE*)buf,&n)&&t==REG_SZ){
+            buf[n/sizeof(wchar_t)]=0; r=buf;
+        }
+        RegCloseKey(k);
+    }
+    return r;
+}
+
+/* The engine really parses [[...]] in any text it is handed, and a wiki
+ * page's [[Main Page]] does not merely change how things sound -- measured,
+ * the engine eats the bracketed words entirely.  Same bounds as the NVDA
+ * driver's COMMAND_RE: a close within 64 characters, and an unclosed "[["
+ * stays literal rather than swallowing the paragraph. */
+static void strip_commands(std::wstring &t) {
+    size_t i=0;
+    while((i=t.find(L"[[",i))!=std::wstring::npos){
+        size_t close=t.find(L"]]",i+2);
+        if(close==std::wstring::npos||close-(i+2)>64){i+=2;continue;}
+        t.erase(i,close+2-i);
+    }
+}
+
 class Engine : public ISpTTSEngine, public ISpObjectWithToken {
     LONG refs; ISpObjectToken *token;
 public:
@@ -76,6 +113,24 @@ public:
             text.append(f->pTextStart,f->ulTextLen);
         }
         if(text.empty())return S_OK;
+        if(!setting_dword(L"AcceptCommands",0))
+            strip_commands(text);
+        if(text.empty())return S_OK;
+        /* Phrasing rides the same TIGER_PARAMS the NVDA host reads.  The
+         * child inherits the environment; process-global, so two truly
+         * simultaneous Speak calls in one application could momentarily see
+         * each other's value -- the same value, unless the user changes the
+         * setting mid-word. */
+        {
+            std::wstring ph=setting_string(L"Phrasing",L"fewest");
+            const wchar_t *thr = ph==L"fewest"?L"-8":ph==L"fewer"?L"-4":
+                                 ph==L"more"?L"0":ph==L"most"?L"5":NULL;
+            if(thr)
+                SetEnvironmentVariableW(L"TIGER_PARAMS",
+                    (std::wstring(L"Boundaries.SilThreshold=")+thr).c_str());
+            else
+                SetEnvironmentVariableW(L"TIGER_PARAMS",NULL);
+        }
         std::wstring root=token_string(token,L"DataPath"), gen=token_string(token,L"Generation"), voice=token_string(token,L"VoiceName");
         std::wstring tree=root+L"\\"+gen, mt=tree+L"\\Speech\\Synthesizers\\MacinTalk.SpeechSynthesizer\\Contents\\MacOS\\MacinTalk";
         std::wstring sd=tree+L"\\SpeechDictionary.framework\\Versions\\A\\SpeechDictionary", vd=tree+L"\\Speech\\Voices";

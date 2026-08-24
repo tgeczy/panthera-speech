@@ -131,18 +131,47 @@ $list = New-Object Windows.Forms.CheckedListBox
 $list.Name = 'speechEngineList'; $list.AccessibleName = 'Mac OS X speech engines'
 $list.AccessibleDescription = 'Tiger, Leopard, and Lion speech data installation status'
 $list.CheckOnClick = $true
-$list.Location = New-Object Drawing.Point(12,38); $list.Size = New-Object Drawing.Size(680,270)
+$list.Location = New-Object Drawing.Point(12,38); $list.Size = New-Object Drawing.Size(680,240)
 $status = New-Object Windows.Forms.Label
 $status.Name = 'speechDataStatus'; $status.AccessibleName = 'Speech data status'
-$status.Location = New-Object Drawing.Point(12,316); $status.Size = New-Object Drawing.Size(680,20)
+$status.Location = New-Object Drawing.Point(12,286); $status.Size = New-Object Drawing.Size(680,20)
 # A real ProgressBar rather than text alone, because screen readers announce
 # progress bar changes on their own -- NVDA's background beeps included --
 # and a long extraction with a silent, frozen window is indistinguishable
 # from a hang, which is exactly how it was reported.
 $progress = New-Object Windows.Forms.ProgressBar
 $progress.Name = 'extractionProgress'; $progress.AccessibleName = 'Extraction progress'
-$progress.Location = New-Object Drawing.Point(12,338); $progress.Size = New-Object Drawing.Size(680,16)
+$progress.Location = New-Object Drawing.Point(12,308); $progress.Size = New-Object Drawing.Size(680,16)
 $progress.Minimum = 0; $progress.Maximum = 100; $progress.Visible = $false
+
+# The two NVDA driver settings SAPI users were living without.  Read by the
+# engine DLL from HKCU on every utterance -- each Speak is a fresh host, so a
+# change takes effect on the next thing spoken, in every SAPI application at
+# once.  Commands default OFF for the same reason NVDA's checkbox does: the
+# engine really parses [[...]], and measured, [[Main Page]] in a wiki article
+# is not mispronounced but *eaten*.
+$acceptCommands = New-Object Windows.Forms.CheckBox
+$acceptCommands.Text = 'Accept e&mbedded speech commands in text'
+$acceptCommands.AccessibleName = 'Accept embedded speech commands in text'
+$acceptCommands.Location = New-Object Drawing.Point(12,330); $acceptCommands.AutoSize = $true
+$pausesLabel = New-Object Windows.Forms.Label
+$pausesLabel.Text = '&Pauses:'; $pausesLabel.AutoSize = $true
+$pausesLabel.Location = New-Object Drawing.Point(420,334)
+$pauses = New-Object Windows.Forms.ComboBox
+$pauses.DropDownStyle = 'DropDownList'; $pauses.AccessibleName = 'Pauses'
+$pauses.Location = New-Object Drawing.Point(482,330); $pauses.Size = New-Object Drawing.Size(210,24)
+$pausesValues = @('fewest','fewer','more','most','leopard')
+foreach ($item in 'Fewest pauses','Fewer pauses','More pauses','Most pauses','Engine default') { [void]$pauses.Items.Add($item) }
+
+function Save-Setting([string]$name, $value) {
+    New-Item -Path $dataPrefKey -Force | Out-Null
+    Set-ItemProperty -Path $dataPrefKey -Name $name -Value $value
+}
+try { $acceptCommands.Checked = [bool](Get-ItemProperty -Path $dataPrefKey -Name AcceptCommands -ErrorAction Stop).AcceptCommands } catch { $acceptCommands.Checked = $false }
+try { $savedPhrasing = (Get-ItemProperty -Path $dataPrefKey -Name Phrasing -ErrorAction Stop).Phrasing } catch { $savedPhrasing = 'fewest' }
+$pauses.SelectedIndex = [Math]::Max(0, $pausesValues.IndexOf($savedPhrasing))
+$acceptCommands.Add_CheckedChanged({ Save-Setting 'AcceptCommands' ([int]$acceptCommands.Checked) })
+$pauses.Add_SelectedIndexChanged({ if ($pauses.SelectedIndex -ge 0) { Save-Setting 'Phrasing' $pausesValues[$pauses.SelectedIndex] } })
 
 function Refresh-Voices {
     $list.Items.Clear(); $voices = @(Get-Voices)
@@ -302,7 +331,7 @@ $unregister.Add_Click({
 })
 $close.Add_Click({$form.Close()})
 $form.AcceptButton=$register; $form.CancelButton=$close
-$form.Controls.AddRange(@($label,$list,$status,$progress,$selectAll,$deselectAll,$chooseRoot,$open,$extract,$register,$unregister,$close))
+$form.Controls.AddRange(@($label,$list,$status,$progress,$acceptCommands,$pausesLabel,$pauses,$selectAll,$deselectAll,$chooseRoot,$open,$extract,$register,$unregister,$close))
 $form.Add_FormClosing({
     if ($script:extractProc -and -not $script:extractProc.HasExited) {
         try { $script:extractProc.Kill() } catch {}
