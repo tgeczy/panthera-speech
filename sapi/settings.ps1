@@ -1,13 +1,31 @@
-param([switch]$RegisterVoices,[switch]$UnregisterVoices,[string]$GenerationList)
+param([switch]$RegisterVoices,[switch]$UnregisterVoices,[string]$GenerationList,[string]$DataRoot)
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 $stage = Split-Path -Parent $MyInvocation.MyCommand.Path
 $settingsScript = $PSCommandPath
-$data = Join-Path $env:APPDATA 'Panthera SAPI'
 $clsid = '{C1F7FC55-3512-4F5D-A6EB-F53220BE4693}'
 $Generations = @($GenerationList -split ',' | Where-Object { $_ })
+
+# Where the MacinTalk data lives.  Three answers, in order: the folder the
+# user chose (remembered in HKCU, and passed explicitly through the elevated
+# re-invocation, whose HKCU may not be this user's); NVDA's own shared
+# macintalk folder, so an NVDA user registers SAPI voices from the data they
+# already extracted rather than extracting everything twice; and a standalone
+# default for a machine with no NVDA at all.
+$dataPrefKey = 'HKCU:\Software\Panthera SAPI'
+function Resolve-DataRoot {
+    if ($DataRoot) { return $DataRoot }
+    try {
+        $saved = (Get-ItemProperty -Path $dataPrefKey -Name DataPath -ErrorAction Stop).DataPath
+        if ($saved -and (Test-Path -LiteralPath $saved)) { return $saved }
+    } catch {}
+    $nvda = Join-Path $env:APPDATA 'nvda\macintalk'
+    if (Test-Path -LiteralPath $nvda) { return $nvda }
+    Join-Path $env:APPDATA 'macintalk-data'
+}
+$data = Resolve-DataRoot
 
 # One row per generation, in one place, so a generation cannot be present in
 # the extractor and missing from the list next to it.  Folder is what
@@ -20,10 +38,10 @@ $GenerationTable = @(
     [pscustomobject]@{ Folder='Lion';        Label='Lion';         Item='Lion - Mac OS X 10.7' }
 )
 
-New-Item -ItemType Directory -Force $data | Out-Null
-foreach ($generationFolder in $GenerationTable.Folder) {
-    New-Item -ItemType Directory -Force (Join-Path $data $generationFolder) | Out-Null
-}
+# No folders are created here on purpose: the resolved root may be NVDA's
+# own macintalk tree, and this tool is a reader of that arrangement, not a
+# decorator of it.  The root is created where something is actually written
+# -- extraction -- and nowhere else.
 
 function Get-Voices {
     $rows = @()
@@ -131,6 +149,7 @@ function Refresh-Voices {
 
 $selectAll = New-Object Windows.Forms.Button; $selectAll.Text = '&Select all'; $selectAll.Location = New-Object Drawing.Point(12,360); $selectAll.AutoSize=$true
 $deselectAll = New-Object Windows.Forms.Button; $deselectAll.Text = '&Deselect all'; $deselectAll.Location = New-Object Drawing.Point(110,360); $deselectAll.AutoSize=$true
+$chooseRoot = New-Object Windows.Forms.Button; $chooseRoot.Text = 'Data &location...'; $chooseRoot.Location = New-Object Drawing.Point(220,360); $chooseRoot.AutoSize=$true
 $open = New-Object Windows.Forms.Button; $open.Text = '&Open data folder'; $open.Location = New-Object Drawing.Point(12,405); $open.AutoSize=$true
 $extract = New-Object Windows.Forms.Button; $extract.Text = '&Extract from ISO...'; $extract.Location = New-Object Drawing.Point(145,405); $extract.AutoSize=$true
 $register = New-Object Windows.Forms.Button; $register.Text = '&Register'; $register.Location = New-Object Drawing.Point(290,405); $register.AutoSize=$true
@@ -140,11 +159,27 @@ $close = New-Object Windows.Forms.Button; $close.Text = '&Close'; $close.Locatio
 $selectAll.Add_Click({ for($i=0;$i -lt $list.Items.Count;$i++){$list.SetItemChecked($i,$true)} })
 $deselectAll.Add_Click({ for($i=0;$i -lt $list.Items.Count;$i++){$list.SetItemChecked($i,$false)} })
 
+$chooseRoot.Add_Click({
+    $browser = New-Object Windows.Forms.FolderBrowserDialog
+    $browser.Description = 'Choose the folder that holds the MacinTalk speech data (the generation folders live inside it).'
+    if (Test-Path -LiteralPath $data) { $browser.SelectedPath = $data }
+    if ($browser.ShowDialog($form) -eq 'OK') {
+        $script:data = $browser.SelectedPath
+        # Remembered per user, so the choice survives the next launch; the
+        # elevated register call gets it as an argument instead, because the
+        # elevated HKCU may belong to a different account.
+        New-Item -Path $dataPrefKey -Force | Out-Null
+        Set-ItemProperty -Path $dataPrefKey -Name DataPath -Value $script:data
+        Refresh-Voices
+    }
+})
+
 $open.Add_Click({ New-Item -ItemType Directory -Force $data | Out-Null; Start-Process explorer.exe -ArgumentList ('"{0}"' -f $data) })
 $extract.Add_Click({
     $picker = New-Object Windows.Forms.OpenFileDialog; $picker.Title='Choose a Mac OS X install disc image'; $picker.Filter='Disc images|*.iso;*.dmg;*.cdr|All files|*.*'
     if ($picker.ShowDialog($form) -eq 'OK') {
         $status.Text='Extracting speech data. Please wait.'; $form.Refresh()
+        New-Item -ItemType Directory -Force $data | Out-Null
         & python (Join-Path $stage 'extract.py') $picker.FileName $data
         if ($LASTEXITCODE) { [Windows.Forms.MessageBox]::Show($form,'Extraction failed.','Panthera SAPI','OK','Error') } else { [Windows.Forms.MessageBox]::Show($form,'Extraction finished.','Panthera SAPI') }
         Refresh-Voices
@@ -153,18 +188,18 @@ $extract.Add_Click({
 $register.Add_Click({
     $selected=@(); for($i=0;$i -lt $GenerationTable.Count;$i++){if($list.GetItemChecked($i)){$selected+=$GenerationTable[$i].Folder}}
     if(!$selected.Count){[Windows.Forms.MessageBox]::Show($form,'Check at least one engine.','Panthera SAPI');return}
-    $arguments='-NoProfile -ExecutionPolicy Bypass -STA -File "{0}" -RegisterVoices -GenerationList {1}' -f $settingsScript,($selected -join ',')
+    $arguments='-NoProfile -ExecutionPolicy Bypass -STA -File "{0}" -RegisterVoices -GenerationList {1} -DataRoot "{2}"' -f $settingsScript,($selected -join ','),$data
     $process=Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList $arguments
     if ($process.ExitCode) { [Windows.Forms.MessageBox]::Show($form,'Registration failed.','Panthera SAPI','OK','Error') } else { [Windows.Forms.MessageBox]::Show($form,'Panthera voices were registered for 32-bit and 64-bit SAPI.','Panthera SAPI') }
 })
 $unregister.Add_Click({
     $selected=@(); for($i=0;$i -lt $GenerationTable.Count;$i++){if($list.GetItemChecked($i)){$selected+=$GenerationTable[$i].Folder}}
     if(!$selected.Count){[Windows.Forms.MessageBox]::Show($form,'Check at least one engine.','Panthera SAPI');return}
-    $arguments='-NoProfile -ExecutionPolicy Bypass -STA -File "{0}" -UnregisterVoices -GenerationList {1}' -f $settingsScript,($selected -join ',')
+    $arguments='-NoProfile -ExecutionPolicy Bypass -STA -File "{0}" -UnregisterVoices -GenerationList {1} -DataRoot "{2}"' -f $settingsScript,($selected -join ','),$data
     $process=Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList $arguments
     if ($process.ExitCode) { [Windows.Forms.MessageBox]::Show($form,'Unregistration failed.','Panthera SAPI','OK','Error') } else { [Windows.Forms.MessageBox]::Show($form,'Panthera voices were unregistered.','Panthera SAPI') }
 })
 $close.Add_Click({$form.Close()})
 $form.AcceptButton=$register; $form.CancelButton=$close
-$form.Controls.AddRange(@($label,$list,$status,$selectAll,$deselectAll,$open,$extract,$register,$unregister,$close))
+$form.Controls.AddRange(@($label,$list,$status,$selectAll,$deselectAll,$chooseRoot,$open,$extract,$register,$unregister,$close))
 Refresh-Voices; $form.Add_Shown({$list.Focus()}); [void]$form.ShowDialog()
