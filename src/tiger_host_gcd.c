@@ -58,11 +58,137 @@ static void block_invoke(void *block)
 }
 
 /* `Block_copy` moves a stack block to the heap so it can outlive its scope.
- * Returning the same pointer is correct for every use here, because nothing
- * in this file defers a block past the call that supplied it -- and it stops
- * being correct the moment `dispatch_async` really is asynchronous. */
-static void * __cdecl sh_Block_copy(void *block)   { return block; }
-static void   __cdecl sh_Block_release(void *block) { (void)block; }
+ *
+ * It used to return the same pointer, with a comment saying that was correct
+ * because nothing here deferred a block past the call that supplied it.  The
+ * comment was right about this file and wrong about who else calls: the
+ * dictionary's `SLLexerImpl::SetErrorHandler` copies the engine's error
+ * block and fires it **minutes later**, from `Error()`, long after the stack
+ * frame that built the block has died.  The invoke slot in the dead frame
+ * usually still read as code, so the call landed -- and the block body then
+ * loaded a captured object pointer out of recycled stack and wrote through
+ * it, which is the c0000005 at 0000aa64 that killed the host on every
+ * malformed phoneme (panthera-speech#6's companion crash).
+ *
+ * So this is the Blocks ABI done honestly: a stack block is copied to the
+ * heap, its copy helper runs, releases balance, and `_Block_object_assign` /
+ * `_Block_object_dispose` -- which the engine's helpers call, and which were
+ * thunks returning nothing -- move captured blocks and __block variables
+ * along with it.  Plain object captures are assigned without retain: there
+ * is no Objective-C runtime here to retain with, and the engine's captures
+ * are C++ pointers whose lifetimes its own code manages. */
+struct blk_descriptor {
+    unsigned long reserved, size;
+    void (__cdecl *copy)(void *, const void *);
+    void (__cdecl *dispose)(const void *);
+};
+struct blk_layout {
+    void *isa;
+    volatile long flags;
+    int reserved;
+    void *invoke;
+    struct blk_descriptor *descriptor;
+};
+struct blk_byref {
+    void *isa;
+    struct blk_byref *forwarding;
+    volatile long flags;
+    unsigned size;
+    void (__cdecl *keep)(struct blk_byref *, struct blk_byref *);
+    void (__cdecl *destroy)(struct blk_byref *);
+};
+
+#define BLK_REFCOUNT_MASK    0xffff
+#define BLK_NEEDS_FREE       (1 << 24)
+#define BLK_HAS_COPY_DISPOSE (1 << 25)
+#define BLK_IS_GLOBAL        (1 << 28)
+
+#define BLK_FIELD_IS_BLOCK   7
+#define BLK_FIELD_IS_BYREF   8
+
+static void * __cdecl sh_Block_copy(void *block)
+{
+    struct blk_layout *src = (struct blk_layout *)block, *dst;
+    if (!src) return NULL;
+    if (src->flags & BLK_IS_GLOBAL) return src;
+    if (src->flags & BLK_NEEDS_FREE) {           /* already ours, on the heap */
+        InterlockedIncrement(&src->flags);
+        return src;
+    }
+    dst = (struct blk_layout *)malloc(src->descriptor->size);
+    if (!dst) return NULL;
+    memcpy(dst, src, src->descriptor->size);
+    dst->flags = (src->flags & ~BLK_REFCOUNT_MASK) | BLK_NEEDS_FREE | 1;
+    if (src->flags & BLK_HAS_COPY_DISPOSE)
+        src->descriptor->copy(dst, src);
+    return dst;
+}
+
+static void __cdecl sh_Block_release(void *block)
+{
+    struct blk_layout *blk = (struct blk_layout *)block;
+    if (!blk || (blk->flags & BLK_IS_GLOBAL) || !(blk->flags & BLK_NEEDS_FREE))
+        return;                     /* global, stack, or not ours to free */
+    if (InterlockedDecrement(&blk->flags) & BLK_REFCOUNT_MASK)
+        return;
+    if (blk->flags & BLK_HAS_COPY_DISPOSE)
+        blk->descriptor->dispose(blk);
+    free(blk);
+}
+
+static void __cdecl sh_Block_object_assign(void *destAddr, const void *object,
+                                           int flags)
+{
+    switch (flags & 0x7f) {          /* BLOCK_BYREF_CALLER rides in bit 7 */
+    case BLK_FIELD_IS_BYREF: {
+        struct blk_byref *src = ((struct blk_byref *)object)->forwarding;
+        struct blk_byref *heap;
+        if (src->flags & BLK_NEEDS_FREE) {
+            InterlockedIncrement(&src->flags);
+            *(void **)destAddr = src;
+            break;
+        }
+        heap = (struct blk_byref *)malloc(src->size);
+        if (!heap) { *(void **)destAddr = src; break; }
+        memcpy(heap, src, src->size);
+        heap->forwarding = heap;
+        heap->flags = (heap->flags & ~BLK_REFCOUNT_MASK) | BLK_NEEDS_FREE | 1;
+        if (src->flags & BLK_HAS_COPY_DISPOSE)
+            heap->keep(heap, src);
+        /* The stack copy forwards to the heap from now on, which is the
+         * whole point of __block: everyone sees one variable. */
+        src->forwarding = heap;
+        *(void **)destAddr = heap;
+        break;
+    }
+    case BLK_FIELD_IS_BLOCK:
+        *(void **)destAddr = sh_Block_copy((void *)object);
+        break;
+    default:
+        *(void **)destAddr = (void *)object;
+        break;
+    }
+}
+
+static void __cdecl sh_Block_object_dispose(const void *object, int flags)
+{
+    switch (flags & 0x7f) {
+    case BLK_FIELD_IS_BYREF: {
+        struct blk_byref *b = ((struct blk_byref *)object)->forwarding;
+        if (!(b->flags & BLK_NEEDS_FREE)) return;
+        if (InterlockedDecrement(&b->flags) & BLK_REFCOUNT_MASK) return;
+        if (b->flags & BLK_HAS_COPY_DISPOSE)
+            b->destroy(b);
+        free(b);
+        break;
+    }
+    case BLK_FIELD_IS_BLOCK:
+        sh_Block_release((void *)object);
+        break;
+    default:
+        break;
+    }
+}
 
 static void __cdecl sh_dispatch_sync(void *queue, void *block)
 {

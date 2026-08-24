@@ -122,6 +122,10 @@ static const shim g_shims[] = {
      * happened and wrote a 46-byte wav. */
     { "__Block_copy",           (void *)sh_Block_copy            },
     { "__Block_release",        (void *)sh_Block_release         },
+    /* Called by the engine's own block copy/dispose helpers; thunked, they
+     * silently failed to carry captured __block variables to the heap. */
+    { "__Block_object_assign",  (void *)sh_Block_object_assign   },
+    { "__Block_object_dispose", (void *)sh_Block_object_dispose  },
     { "_dispatch_sync",         (void *)sh_dispatch_sync         },
     { "_dispatch_async",        (void *)sh_dispatch_async        },
     { "_dispatch_sync_f",       (void *)sh_dispatch_sync_f       },
