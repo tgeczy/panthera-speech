@@ -14,9 +14,9 @@ answering requests, which is the only window in which CopyTune runs.  These
 tests are the replacement for that blindness: delete a container shim and
 they fail.
 
-`INPUT_MODES_WORK` is still False on Lion -- the `SLLexerImpl::Error` fault
-on malformed phoneme input is its own open bug -- so each test lifts the flag
-on its own driver instance to reach the host underneath the stripping.
+Each test still sets `INPUT_MODES_WORK` on its own driver instance -- the
+flag is True since 1.1, but these tests are about the HOST, and forcing the
+flag keeps them true to that even if the driver's answer ever changes.
 """
 import pytest
 

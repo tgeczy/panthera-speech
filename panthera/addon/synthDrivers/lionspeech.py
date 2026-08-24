@@ -86,20 +86,17 @@ class SynthDriver(pantheradriver.PantheraDriver):
     name = "lionspeech"
     description = _("Lion speech (Alex, MacinTalk 4.0)")
 
-    #: **Interim, until panthera-speech#6 is solved.**
+    #: True since 1.1, and it was False for two shipped releases with two
+    #: separate faults behind it -- see panthera-speech#6 for both.
     #:
-    #: 10.7 accepts `[[inpt TUNE]]` and then ignores every `{D …; P …}`
-    #: annotation -- measured, `m{D 500}` and a bare `m` render identically at
-    #: 3358 frames -- and a malformed phoneme after `[[inpt PHON]]` faults
-    #: inside Apple's own `SLLexerImpl::Error` and takes the host with it.
-    #: Both work on 10.5 and 10.6.
-    #:
-    #: So the mode switches are stripped here and every other embedded command
-    #: is left alone: `[[slnc]]`, `[[rate]]`, `[[volm]]` and `[[char]]` are all
-    #: measured working on 10.7, and dropping the whole setting -- the first
-    #: thing considered -- would have taken those with them for a fault that
-    #: is not theirs.
-    INPUT_MODES_WORK = False
+    #: The tune annotations died in `SLHomographCopyTune`, whose melody went
+    #: through two CF constructors the host had left as thunks; the issue's
+    #: repro case renders 12094 frames against Leopard's 12096 now.  And the
+    #: malformed-phoneme crash in `SLLexerImpl::Error` was the engine's error
+    #: handler -- a stack block the host's `Block_copy` never actually copied
+    #: -- firing from a dead frame; with the Blocks ABI done honestly the
+    #: engine's own recovery handles bad input the way Apple designed it.
+    INPUT_MODES_WORK = True
 
     TREE = pantheralion
     TITLE = "Lion speech"

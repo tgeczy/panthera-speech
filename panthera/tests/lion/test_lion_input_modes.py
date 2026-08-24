@@ -1,43 +1,35 @@
 # -*- coding: utf-8 -*-
-"""10.7 cannot honour `[[inpt …]]`, so it does not get to see it.
+"""10.7's input modes work now, and the stripping machinery stays.
 
-Interim, until panthera-speech#6 is solved. Two things are wrong with the
-input-mode commands on 10.7 and neither is wrong on 10.5 or 10.6:
+For two shipped releases this file guarded the opposite: `[[inpt TUNE]]`
+annotations were ignored (the melody died in two CF constructors the host
+had left as thunks) and a malformed phoneme after `[[inpt PHON]]` killed the
+host (the engine's error handler was a stack block that was never really
+copied).  Both are fixed -- see panthera-speech#6 -- so Lion answers True
+like its siblings, and these tests now hold the door open instead of shut.
 
-* `[[inpt TUNE]]` is accepted and then every `{D …; P …}` annotation is
-  ignored -- measured, `m{D 500}` and a bare `m` both render 3358 frames,
-  where Leopard gives 12096 and 1008.
-* a malformed phoneme after `[[inpt PHON]]` faults inside Apple's own
-  `SLLexerImpl::Error` and takes the host process with it.
-
-What is *not* wrong on 10.7 is every other embedded command, which is why the
-whole setting is still there and only this family is removed. Dropping the
-checkbox was the first idea and would have cost `[[slnc]]` and `[[rate]]` --
-both measured working -- for a fault that is not theirs.
+`INPUT_MODE_RE` and the per-generation flag remain, tested below, because a
+generation added later must be able to answer False and have the stripping
+work on day one -- the mechanism was built and measured, and the day it is
+needed again is the wrong day to rebuild it.
 """
 import pytest
 
 import pantheradriver
 
 
-def _strip(driver, text):
-    """What reaches the engine, for a driver with commands switched on."""
-    driver._acceptCommands = True
-    if not driver._acceptCommands:
-        return pantheradriver.COMMAND_RE.sub("", text)
-    if driver.INPUT_MODES_WORK is False:
-        return pantheradriver.INPUT_MODE_RE.sub("", text)
-    return text
+def test_every_generation_answers_for_its_input_modes():
+    """The flag is per generation, and every generation now says True.
 
-
-def test_lion_declares_that_its_input_modes_do_not_work():
-    """The flag is the whole switch, and it is per generation."""
+    Lion said False for two releases; what flipped it is recorded in
+    `lionspeech.py` and panthera-speech#6, and the flag stays a per-generation
+    answer so the next generation has to earn its True the same way.
+    """
     import leopardspeech
     import lionspeech
     import snowleopardspeech
     import tigerspeech
-    assert lionspeech.SynthDriver.INPUT_MODES_WORK is False
-    for mod in (tigerspeech, leopardspeech, snowleopardspeech):
+    for mod in (tigerspeech, leopardspeech, snowleopardspeech, lionspeech):
         assert mod.SynthDriver.INPUT_MODES_WORK is True, mod.__name__
 
 
@@ -45,8 +37,12 @@ def test_lion_declares_that_its_input_modes_do_not_work():
     "[[inpt TUNE]]", "[[inpt PHON]]", "[[inpt TEXT]]",
     "[[inpt tune]]", "[[ inpt  TUNE ]]",
 ])
-def test_the_mode_switch_is_removed(command):
-    """Case and spacing included -- the engine's parser tolerates both."""
+def test_the_stripping_machinery_still_strips(command):
+    """Nobody uses `INPUT_MODE_RE` today; the next False will.
+
+    Case and spacing included -- the engine's parser tolerates both, so the
+    stripper has to.
+    """
     assert pantheradriver.INPUT_MODE_RE.sub("", "a %s b" % command) == "a  b"
 
 
@@ -54,44 +50,46 @@ def test_the_mode_switch_is_removed(command):
     "[[slnc 2000]]", "[[rate 90]]", "[[volm 0.5]]", "[[char LTRL]]",
     "[[pbas 60]]", "[[emph +]]",
 ])
-def test_every_other_embedded_command_is_left_alone(command):
-    """**The reason this is a pattern and not a checkbox.**
+def test_the_stripper_takes_only_the_input_modes(command):
+    """**The reason it is a pattern and not a checkbox.**
 
-    All of these are measured working on 10.7. A user who turned embedded
-    commands on almost certainly wanted the pause and the rate change, and
-    they have nothing to do with the input-mode fault.
+    When Lion's stripping was live, these all worked and had to survive it;
+    they still do, and the pattern still must not grow to touch them.
     """
     text = "a %s b" % command
     assert pantheradriver.INPUT_MODE_RE.sub("", text) == text
 
 
-def test_a_tune_source_is_read_as_text_rather_than_silently_dropped(driver):
-    """What is left when the switch goes is the notes, spoken as words.
+def test_a_tune_reaches_the_engine_through_the_driver(driver):
+    """The whole point of the flip: no monkeypatch, just the driver.
 
-    That sounds wrong, and it is meant to: it says out loud that the mode did
-    not engage. Silence would have said nothing at all, and silence is what
-    made this take two reports to notice.
+    `test_lion_tune.py` proves the host can sing with the flag forced; this
+    proves the driver actually lets the user's text through.  A held note is
+    dramatically longer than a bare one, and ratios rather than frame counts
+    because Lion's Fred is not reproducible.
     """
     driver._set_voice("Fred")
     wpm = driver._wpm()
     driver._acceptCommands = True
-    got = driver._render("[[inpt TUNE]] m{D 500; P 50:0 50:100}", wpm, "Fred")
-    bare = driver._render("m", wpm, "Fred")
-    assert got and bare
-    assert len(got) > len(bare) * 2, (
-        "the annotation was dropped along with the mode switch: %d frames "
-        "against %d for a bare note" % (len(got) // 2, len(bare) // 2))
+    noted = driver._render("[[inpt TUNE]] m{D 2000; P 220:0 220:100}", wpm,
+                           "Fred")
+    bare = driver._render("[[inpt TUNE]] m", wpm, "Fred")
+    assert noted and bare
+    assert len(noted) > len(bare) * 8, (
+        "the annotation did not reach the engine: %d frames against %d"
+        % (len(noted) // 2, len(bare) // 2))
 
 
-def test_the_phoneme_mode_that_crashes_the_host_never_reaches_it(driver):
-    """The crash is Apple's; not handing it the input is ours.
+def test_a_malformed_phoneme_no_longer_kills_the_host(driver):
+    """The crash that kept the flag False, as a survival test.
 
-    `[[inpt PHON]] hxEHlOW` faults in `SLLexerImpl::Error` and kills the host
-    outright. With the switch stripped it is read as text, which is ugly and
-    alive.
+    `[[inpt PHON]] hxEHlOW` used to die in the engine's error handler -- a
+    stack block firing from a dead frame.  With the Blocks ABI done honestly
+    the handler records the bad phoneme and the rest is spoken, which is
+    Apple's own recovery doing its job.
     """
     driver._set_voice("Fred")
     wpm = driver._wpm()
     driver._acceptCommands = True
     got = driver._render("[[inpt PHON]] hxEHlOW [[inpt TEXT]]", wpm, "Fred")
-    assert got, "the host did not survive the phoneme that used to crash it"
+    assert got, "the host did not survive the malformed phoneme"
