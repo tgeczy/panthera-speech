@@ -137,10 +137,13 @@ def test_voices_are_read_from_the_install(engine_tree):
     _mt, _sd, voicesdir = tigerspeech.engine_paths(engine_tree)
     voices = tigerspeech.read_voices(voicesdir)
     assert voices, "no voices found"
+    # **The name shown is the folder's**, since 1.0 -- so `Organ` rather than
+    # the "Pipe Organ" inside its descriptor, and the id and the name are one
+    # string.  This used to assert the opposite; see tests/test_voice_names.py
+    # for why it changed and what still has to read the descriptor.
+    assert all(bundle == display for bundle, display, _e in voices)
     names = {display for _b, display, _e in voices}
-    # Display names differ from bundle names; reading the bundle name instead
-    # would silently give "Organ" and "BadNews".
-    assert "Pipe Organ" in names or "Organ" not in {b for b, _d, _e in voices}
+    assert "Pipe Organ" not in names and "Organ" in names, sorted(names)
     engines = {e for _b, _d, e in voices}
     assert engines <= {"mtk3", "gala", "meow"}, engines
 

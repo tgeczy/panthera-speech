@@ -82,11 +82,13 @@ def test_the_vocalizer_voices_are_not_offered(engine_tree):
 
     Out on a decision about what this project is, not on capability.  Nothing
     filters them by name: they carry no `VoiceDescription`, so `read_voices`
-    can find neither a creator nor a name for them and passes them over.
+    has no creator to route them by and passes them over.
 
-    This test exists because that is a coincidence of Apple's packaging rather
-    than an intention in our code, and someone reading `read_voices` could
-    reasonably "fix" it to fall back to the folder name.
+    **The "fix" this warned about has since been made**, which is why the test
+    matters more than it did: voices *are* named after their folders now, and
+    a folder name is the one thing a Compact bundle does have.  What keeps
+    them out is that the descriptor still has to be there.  See
+    `tests/test_voice_names.py`.
     """
     import lionspeech
     _, _, voicesdir = lionspeech.engine_paths(engine_tree)

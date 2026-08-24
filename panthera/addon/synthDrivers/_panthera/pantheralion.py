@@ -36,32 +36,14 @@ both need it, and so does anything run from a command line.
 """
 import os
 
+import pantheratrees
+from pantheratrees import (aac_available, config_base,  # noqa: F401
+                           is_tree)
+
 CONFIG_DIRNAME = os.path.join("macintalk", "lion")
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 HOST_EXE = os.path.join(_HERE, "panthera_host.exe")
-
-
-def config_base():
-    """NVDA's user configuration directory, or a stand-in outside NVDA.
-
-    `globalVars.appArgs.configPath` is the only correct source. NVDA's own
-    `NVDAState.WritePaths.configDir` is a property wrapping exactly this value,
-    so it already accounts for a portable copy and for a config directory given
-    on the command line with `-c`. Expanding `%APPDATA%` ourselves would be
-    right on one machine and wrong on every portable one.
-
-    The fallback exists for running outside NVDA -- the tests, and anything
-    driven from a command line -- and for nothing else.
-    """
-    try:
-        import globalVars
-        path = globalVars.appArgs.configPath
-        if path:
-            return str(path)
-    except Exception:
-        pass
-    return os.path.join(os.path.expanduser("~"), ".nvda")
 
 
 def config_dir():
@@ -89,10 +71,6 @@ def migrate():
     older folder and never will be.
     """
     return None
-
-
-def is_tree(path):
-    return bool(path) and os.path.isdir(os.path.join(path, "Speech", "Voices"))
 
 
 def find_tree():
@@ -145,25 +123,22 @@ LIBSTDCXX = ("libstdc++.6.0.9.dylib", "libstdc++.6.dylib")
 LIBCXXABI = ("libc++abi.dylib",)
 
 
-def _find_runtime(tree, names):
-    """-> the first of `names` present at the root of `tree` or in usr/lib."""
-    for sub in ("", os.path.join("usr", "lib")):
-        for name in names:
-            p = (os.path.join(tree, sub, name) if sub
-                 else os.path.join(tree, name))
-            if os.path.isfile(p):
-                return p
-    return None
-
-
 def find_libstdcxx(tree):
-    """-> the path to Lion's C++ runtime under `tree`, or None."""
-    return _find_runtime(tree, LIBSTDCXX)
+    """-> the path to Lion's C++ runtime under `tree`, or None.
+
+    **6.0.9 is a version number two generations share and do not agree on.**
+    Snow Leopard's file of this name is a different, larger library that
+    implements the C++ ABI itself; Lion's re-exports it from `libc++abi`.
+    Each lives in its own generation's folder and the host searches outwards
+    from the engine, so they never meet -- unless somebody assembles a tree by
+    hand from two discs.
+    """
+    return pantheratrees.find_runtime(tree, LIBSTDCXX)
 
 
 def find_libcxxabi(tree):
     """-> the path to Lion's C++ ABI library under `tree`, or None."""
-    return _find_runtime(tree, LIBCXXABI)
+    return pantheratrees.find_runtime(tree, LIBCXXABI)
 
 
 def engine_paths(tree):
@@ -196,86 +171,15 @@ def engine_paths(tree):
 PLAYABLE_ENGINES = ("mtk3", "gala", "meow")
 
 
-#: The AAC decoder the concatenative banks need, by class id.  Checking the
-#: registration is cheaper and quieter than starting the host to ask, and it
-#: is the same test the host's own `CoCreateInstance` will make a moment later.
-_AAC_CLSID = r"CLSID\{32D186A7-218F-4C75-8876-DD77273A8999}"
-
-
-def aac_available():
-    """-> True when Windows has an AAC decoder for the `meow` sample banks.
-
-    Windows N and KN editions ship without one until the Media Feature Pack is
-    installed.  Absent from *both* registry views is a clear answer; anything
-    else -- no registry at all, an unexpected error -- is not, and says yes,
-    because losing a voice to a failed check is the smaller mistake and the
-    driver still has to survive a host that renders silence.
-
-    It costs more here than on Tiger: `meow` is Alex *and* Vicki on 10.7, and
-    Alex is the voice the generation exists for.
-    """
-    try:
-        import winreg
-    except ImportError:
-        return True
-    views = (getattr(winreg, "KEY_WOW64_32KEY", 0),
-             getattr(winreg, "KEY_WOW64_64KEY", 0))
-    missing = 0
-    for view in views:
-        try:
-            key = winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, _AAC_CLSID, 0,
-                                 winreg.KEY_READ | view)
-            key.Close()
-            return True
-        except FileNotFoundError:
-            missing += 1
-        except OSError:
-            return True
-    return missing < len(views)
-
-
 def read_voices(voicesdir, playable_only=False):
-    """-> [(bundleName, displayName, engine), ...] read from the user's install.
+    """-> [(bundleName, displayName, engine), ...] -- see `pantheratrees`.
 
-    Built from the files rather than a table, so it cannot disagree with what
-    is actually there.  The creator OSType is at +4 and the name is a `Str63`
-    at **+16** -- a `version` long sits between the VoiceSpec and the name, and
-    missing it yields empty strings.
+    A wrapper rather than a re-export, because `explain()` and the tests both
+    replace `aac_available` *on this module*.  A shared reader consulting its
+    own copy would ignore them and answer for a machine nobody is testing.
     """
-    out = []
-    playable = PLAYABLE_ENGINES
-    if playable_only and not aac_available():
-        playable = tuple(e for e in playable if e != "meow")
-    try:
-        entries = sorted(os.listdir(voicesdir))
-    except OSError:
-        return out
-    for entry in entries:
-        if not entry.endswith(".SpeechVoice"):
-            continue
-        desc = os.path.join(voicesdir, entry, "Contents", "Resources",
-                            "VoiceDescription")
-        try:
-            with open(desc, "rb") as f:
-                head = f.read(80)
-        except OSError:
-            # Every Vocalizer voice lands here, and so would a half-copied
-            # bundle.  Both are right to skip: without this file there is no
-            # creator to route the voice to an engine and no name to show.
-            continue
-        if len(head) < 80:
-            continue
-        engine = head[4:8].decode("latin-1")
-        if playable_only and engine not in playable:
-            continue
-        nlen = head[16]
-        name = head[17:17 + nlen].decode("mac-roman", "replace")
-        out.append((entry[:-len(".SpeechVoice")], name or entry, engine))
-    # Concatenative voices first: this list is a menu a blind user arrows
-    # through, and the novelty voices are not what anyone is looking for.
-    order = {"meow": 0, "gala": 1, "mtk3": 2}
-    out.sort(key=lambda v: (order.get(v[2], 3), v[1]))
-    return out
+    return pantheratrees.read_voices(voicesdir, playable_only, aac_available,
+                                     PLAYABLE_ENGINES)
 
 
 def explain():
