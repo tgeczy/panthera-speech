@@ -298,6 +298,11 @@ COMMAND_SPLIT_RE = re.compile(r"(\[\[[^\]]{0,64}\]\])")
 #: needs its own pattern: it is the only family whose failure changes what the
 #: rest of the utterance means.
 INPUT_MODE_RE = re.compile(r"\[\[\s*inpt\s+[A-Za-z]{0,16}\s*\]\]", re.I)
+#: The same family, capturing the mode word -- for carrying an unclosed mode
+#: across utterance boundaries.  See the carry block in `_render` and
+#: panthera-speech#9.
+INPUT_MODE_CAPTURE_RE = re.compile(r"\[\[\s*inpt\s+([A-Za-z]{1,16})\s*\]\]",
+                                   re.I)
 
 #: Characters MacRoman has no room for, mapped to something it can say.
 #: Everything typographic that matters -- em dash, en dash, curly quotes,
@@ -1012,6 +1017,10 @@ class PantheraDriver(SynthDriver):
         self._rate = 50
         self._pitch = 50
         self._acceptCommands = False
+        #: The input mode an earlier utterance switched to and never closed
+        #: -- "TUNE" or "PHON" -- carried forward so say-all can read a tune
+        #: file whose `[[inpt TUNE]]` appears once at the top.  None is text.
+        self._inputMode = None
         self._pauseMode = "short"
         self._rateBoost = False
         self._inflection = 50
@@ -1680,6 +1689,29 @@ class PantheraDriver(SynthDriver):
             #: which sounds wrong, and is *meant* to: it says the mode did not
             #: engage, where silence would have said nothing at all.
             text = INPUT_MODE_RE.sub("", text)
+        if self._acceptCommands:
+            #: **An unclosed input mode survives the utterance boundary.**
+            #: Say-all hands a tune file over in pieces and only the first
+            #: piece carries its `[[inpt TUNE]]`; the engine starts every
+            #: utterance in text mode, so verse two used to arrive as two
+            #: minutes of spoken annotations (panthera-speech#9 -- measured,
+            #: 1.97 s of song and then 110 s per verse).  So the driver
+            #: carries it: an utterance that switched without closing leaves
+            #: the next one beginning with the same switch, until an
+            #: `[[inpt TEXT]]` closes it or a cancel says the person has
+            #: moved on to something that is not the tune file.
+            #:
+            #: The scan runs on the text *after* the prepend, which is what
+            #: makes "no switch in this piece" leave the carried mode in
+            #: force rather than dropping it.
+            if self._inputMode:
+                text = "[[inpt %s]] " % self._inputMode + text
+            lastSwitch = None
+            for m in INPUT_MODE_CAPTURE_RE.finditer(text):
+                lastSwitch = m.group(1).upper()
+            if lastSwitch:
+                self._inputMode = (None if lastSwitch == "TEXT"
+                                   else lastSwitch)
         if self._numberStyle != "off":
             #: Only between the commands, never inside one.  With embedded
             #: commands accepted, "[[rate 200]]" is still in the text at this
@@ -2404,6 +2436,9 @@ class PantheraDriver(SynthDriver):
         #: Whatever was being held for joining belongs to the run that has just
         #: been cancelled, and the next utterance must not wait behind it.
         self._spokeSinceCancel = False
+        #: And so does an input mode a cancelled run left open: the next
+        #: thing spoken is the user doing something else, not verse five.
+        self._inputMode = None
         # Reach the engine before draining anything: whatever it is rendering
         # now is audio for an utterance already abandoned, and the next one
         # cannot start until that response ends.
