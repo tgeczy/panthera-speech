@@ -2042,7 +2042,7 @@ class PantheraDriver(SynthDriver):
                     wpm = self._wpm(value)
             if not self._stopped and self._epoch == epoch:
                 self._flush(run, wpm, voice, adj, epoch, pending, vol)
-                if continuous:
+                if continuous and self._inputMode is None:
                     #: **The engine's own sentence pause, restored between
                     #: chunks.**  Inside one utterance the engine composes
                     #: about half a second between sentences at 180 wpm; a
@@ -2053,6 +2053,16 @@ class PantheraDriver(SynthDriver):
                     #: every voice and generation -- scaled by the same gap
                     #: setting that governs announcement parts, so "Short"
                     #: is audibly short and "Long" is the engine exactly.
+                    #:
+                    #: Never while an input mode is being carried:
+                    #: `_inputMode` here is the mode in force *after* this
+                    #: utterance rendered, so mid-song a chunk boundary is a
+                    #: bar line, not a paragraph -- a tune's prosodic "." and
+                    #: "!" phonemes count as sentence ends, and x0's song
+                    #: gained a half-second rest per verse the day the pause
+                    #: shipped.  The chunk that closes the song with
+                    #: `[[inpt TEXT]]` leaves the mode None and pauses like
+                    #: the prose it returns to.
                     pause = _silence(
                         SENTENCE_PAUSE_FACTOR / max(1, wpm)
                         * self.PAUSE_SCALE.get(self._pauseMode, 1.0))

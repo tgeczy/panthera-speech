@@ -134,6 +134,36 @@ def test_an_indexed_announcement_gains_nothing(driver):
         "navigation has its 0.4 s gap back" % (indexed - plain))
 
 
+def test_a_carried_tune_chunk_gains_nothing(driver, monkeypatch):
+    """Mid-song, a chunk boundary is a bar line, not a paragraph.
+
+    A tune's prosodic "." and "!" phonemes count as sentence ends, so a
+    verse containing them passes the continuous-reading trigger on its own
+    merits -- and x0's song gained a half-second rest per verse the day the
+    sentence pause first shipped.  While an input mode is carried, no prose
+    pause: the engine's own note durations are the timing, all of it.
+    """
+    monkeypatch.setattr(driver, "INPUT_MODES_WORK", True)
+    driver._acceptCommands = True
+    driver.speak(["warming up the engine"])
+    _settle(driver)
+    #: Long enough and "sentenced" enough to pass the trigger; only the
+    #: carried mode may exempt it.
+    verse = ("m{D 200; P 165:0 165:100} .{D 140; P 165:0 165:100} "
+             "m{D 200; P 175:0 175:100} . "
+             "m{D 200; P 185:0 185:100}")
+    driver._render("[[inpt TUNE]] m{D 200; P 220:0 220:100}",
+                   driver._wpm(), driver._get_voice())
+    plain = _fedAfter(driver, [("text", verse)])
+    driver._render("[[inpt TUNE]] m{D 200; P 220:0 220:100}",
+                   driver._wpm(), driver._get_voice())
+    indexed = _fedAfter(driver, [("index", 1), ("text", verse)])
+    assert plain and indexed
+    assert abs(indexed - plain) < 4410, (
+        "a carried tune chunk grew by %d bytes -- the song has a prose "
+        "pause in it again" % (indexed - plain))
+
+
 def test_an_unindexed_utterance_gains_nothing(driver):
     """Arrowing must stay exactly as fast as it was."""
     driver.speak(["warming up the engine"])
