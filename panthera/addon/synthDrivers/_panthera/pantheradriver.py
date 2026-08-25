@@ -595,6 +595,24 @@ def _silence(ms):
     return b"\0" * (2 * int(OUT_RATE * ms / 1000.0))
 
 
+#: The engine's own composed inter-sentence pause, which chunked reading
+#: loses: every utterance ends the instant its last phoneme does, so the
+#: pause that exists between sentences *inside* an utterance never exists
+#: between utterances, and say-all slams sentence endings shut
+#: (panthera-speech#10).
+#:
+#: Measured as whole-minus-parts on "A. B." against "A." and "B.":
+#:
+#:     80 wpm   1116 ms Fred   1062 Alex   1072 Leopard   1077 Snow Leopard
+#:    180 wpm    491           471          476            471
+#:    400 wpm    216           207          207            216
+#:
+#: One number describes all of it: the product of pause and rate is a
+#: constant 86 wpm-seconds, for every voice and every generation measured.
+#: So the restored pause is `this / wpm`, and nothing here is per-voice.
+SENTENCE_PAUSE_FACTOR = 86000.0
+
+
 def _joinFragments(parts):
     """Join the pieces of one utterance back into a sentence.
 
@@ -1957,6 +1975,14 @@ class PantheraDriver(SynthDriver):
             if item is None:
                 break
             epoch = self._epoch
+            #: Read before `_join`, which strips the indexes it reports early:
+            #: an index is the continuous-reading signal, and this item being
+            #: part of a continuous read is what earns it the restored
+            #: sentence pause below.  Text too, so a bare line marker cannot
+            #: buy silence with nothing said.
+            continuous = (any(k == "index" for k, _ in item)
+                          and any(k == "text" and v.strip()
+                                  for k, v in item))
             item = self._join(item, epoch)
             wpm, voice = self._wpm(), self._voiceId
             #: What NVDA has asked us to add to the user's pitch for the
@@ -2005,6 +2031,22 @@ class PantheraDriver(SynthDriver):
                     wpm = self._wpm(value)
             if not self._stopped and self._epoch == epoch:
                 self._flush(run, wpm, voice, adj, epoch, pending, vol)
+                if continuous:
+                    #: **The engine's own sentence pause, restored between
+                    #: chunks.**  Inside one utterance the engine composes
+                    #: about half a second between sentences at 180 wpm; a
+                    #: chunk ends with zero trailing frames, so during
+                    #: continuous reading every chunk boundary slammed shut
+                    #: (panthera-speech#10).  The length is the engine's own,
+                    #: measured: `SENTENCE_PAUSE_FACTOR / wpm`, one law for
+                    #: every voice and generation.  Only on index-carrying
+                    #: utterances, so arrowing and typing gain no latency at
+                    #: all -- and after the *last* chunk of a document it
+                    #: adds half a second of silence nobody can hear.
+                    self._audioQueue.put(
+                        ("audio",
+                         _silence(SENTENCE_PAUSE_FACTOR / max(1, wpm)),
+                         self._epoch))
             for index in pending:               # nothing left to speak
                 self._audioQueue.put(("index", index, None))
             del pending[:]
