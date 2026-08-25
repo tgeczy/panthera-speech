@@ -23,8 +23,18 @@ import sys
 import pytest
 
 
-def _code_only(src):
-    """The file with its prose removed. -> str
+#: Functions entitled to %APPDATA%, named one by one because an exemption
+#: without a name is a hole.  `sapi_roots` locates the **SAPI driver's**
+#: per-user world -- the folder its settings tool remembered, and its
+#: standalone default -- and that world is defined by the machine's real
+#: APPDATA even when NVDA itself is portable: a portable NVDA on a memory
+#: stick still shares this machine's SAPI voices.  NVDA's own configuration
+#: never passes through it.
+EXEMPT = {("pantheratrees.py", "sapi_roots")}
+
+
+def _code_only(src, filename):
+    """The file with its prose and named exemptions removed. -> str
 
     Parsed rather than grepped, and the first version was grepped: the
     docstring in `config_base` explains at length why expanding `%APPDATA%`
@@ -42,6 +52,11 @@ def _code_only(src):
                 and isinstance(body[0].value, ast.Constant)
                 and isinstance(body[0].value.value, str)):
             del body[0]
+        if body:
+            body[:] = [n for n in body
+                       if not (isinstance(n, (ast.FunctionDef,
+                                              ast.AsyncFunctionDef))
+                               and (filename, n.name) in EXEMPT)]
     return ast.unparse(tree)
 
 ADDON = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
@@ -104,7 +119,8 @@ def test_nothing_shipped_reaches_for_appdata(path):
     keeping an engine on another drive. What is not allowed is deciding where
     NVDA keeps its configuration.
     """
-    code = _code_only(io.open(path, encoding="utf-8").read())
+    code = _code_only(io.open(path, encoding="utf-8").read(),
+                      os.path.basename(path))
     for reach in ("APPDATA", "expandvars", "Roaming", r"C:\Users",
                   "LOCALAPPDATA", "USERPROFILE"):
         assert reach not in code, "%s reaches for %s" % (
