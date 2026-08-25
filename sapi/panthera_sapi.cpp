@@ -73,6 +73,35 @@ static void strip_commands(std::wstring &t) {
     }
 }
 
+/* The engine reads numbers well up to six digits and spells them out one
+ * digit at a time from seven -- and grouped digits read correctly, so the
+ * repair is the NVDA driver's: put the separators back.  Runs only, so
+ * "0.7.3" (three one-digit runs) is untouched, and never inside a [[...]]
+ * command, where a comma would corrupt it. */
+static void fix_long_numbers(std::wstring &t) {
+    size_t i=0;
+    while(i<t.size()){
+        if(t.compare(i,2,L"[[")==0){
+            size_t close=t.find(L"]]",i+2);
+            if(close!=std::wstring::npos&&close-(i+2)<=64){i=close+2;continue;}
+        }
+        if(iswdigit(t[i])){
+            size_t start=i;
+            while(i<t.size()&&iswdigit(t[i]))i++;
+            size_t len=i-start;
+            if(len>=7){
+                for(size_t pos=i-3;pos>start;pos-=3){
+                    t.insert(pos,1,L',');
+                    i++;
+                    if(pos<start+4)break;
+                }
+            }
+            continue;
+        }
+        i++;
+    }
+}
+
 class Engine : public ISpTTSEngine, public ISpObjectWithToken {
     LONG refs; ISpObjectToken *token;
 public:
@@ -116,11 +145,29 @@ public:
         if(!setting_dword(L"AcceptCommands",0))
             strip_commands(text);
         if(text.empty())return S_OK;
-        /* Phrasing rides the same TIGER_PARAMS the NVDA host reads.  The
-         * child inherits the environment; process-global, so two truly
-         * simultaneous Speak calls in one application could momentarily see
-         * each other's value -- the same value, unless the user changes the
-         * setting mid-word. */
+        if(setting_string(L"NumberStyle",L"fix")==L"fix")
+            fix_long_numbers(text);
+        /* Inflection is an embedded command prefix, exactly as the NVDA
+         * driver sends it: pmod is inflection times two, nothing at the
+         * halfway default so the untouched utterance stays byte-for-byte
+         * what Apple ships.  No return-to-default bookkeeping here because
+         * each utterance is a fresh process: channel state cannot outlive
+         * it.  Prepended after the stripping on purpose. */
+        {
+            DWORD infl=setting_dword(L"Inflection",50);
+            if(infl>100)infl=100;
+            if(infl!=50){
+                wchar_t cmd[32];
+                swprintf_s(cmd,32,L"[[pmod %u]]",infl*2);
+                text.insert(0,cmd);
+            }
+        }
+        /* Phrasing rides the same TIGER_PARAMS the NVDA host reads, and
+         * abbreviations the same TIGER_NO_ABBREV.  The child inherits the
+         * environment; process-global, so two truly simultaneous Speak
+         * calls in one application could momentarily see each other's
+         * value -- the same value, unless the user changes the setting
+         * mid-word. */
         {
             std::wstring ph=setting_string(L"Phrasing",L"fewest");
             const wchar_t *thr = ph==L"fewest"?L"-8":ph==L"fewer"?L"-4":
@@ -130,6 +177,8 @@ public:
                     (std::wstring(L"Boundaries.SilThreshold=")+thr).c_str());
             else
                 SetEnvironmentVariableW(L"TIGER_PARAMS",NULL);
+            SetEnvironmentVariableW(L"TIGER_NO_ABBREV",
+                setting_dword(L"ExpandAbbreviations",1)?NULL:L"1");
         }
         std::wstring root=token_string(token,L"DataPath"), gen=token_string(token,L"Generation"), voice=token_string(token,L"VoiceName");
         std::wstring tree=root+L"\\"+gen, mt=tree+L"\\Speech\\Synthesizers\\MacinTalk.SpeechSynthesizer\\Contents\\MacOS\\MacinTalk";
@@ -146,9 +195,25 @@ public:
         site->GetRate(&sapiRate);
         if(sapiRate < -10)sapiRate=-10;if(sapiRate > 10)sapiRate=10;
         /* SAPI's rate is logarithmic: zero is the engine default and ten
-         * steps span roughly a factor of three in either direction. */
-        int rate=(int)(180.0*pow(3.0,(double)sapiRate/10.0)+0.5);
-        std::string v=utf8(voice), u=utf8(text); int pitch=0; unsigned request=REQ_MAGIC_STREAM,flags=0,nv=(unsigned)v.size(),nt=(unsigned)u.size();
+         * steps span roughly a factor of three in either direction.  Rate
+         * boost raises only the top -- the engine honours 1200 wpm without a
+         * stumble, and it was measured doing so -- and never the bottom,
+         * because a boost that also made slow slower would be a different
+         * setting wearing this one's name. */
+        double top=(setting_dword(L"RateBoost",0)&&sapiRate>0)?6.667:3.0;
+        int rate=(int)(180.0*pow(top,(double)sapiRate/10.0)+0.5);
+        /* SAPI's per-utterance pitch, from the XML the application sent;
+         * the request's pitch field is an offset in tenths of a semitone
+         * from the voice's own, so one SAPI step is a bit over a semitone
+         * and the ten-step ends land an octave out, matching the NVDA
+         * slider's ends. */
+        int pitch=0;
+        if(frags){
+            long pa=frags->State.PitchAdj.MiddleAdj;
+            if(pa<-10)pa=-10;if(pa>10)pa=10;
+            pitch=(int)(pa*12);
+        }
+        std::string v=utf8(voice), u=utf8(text); unsigned request=REQ_MAGIC_STREAM,flags=0,nv=(unsigned)v.size(),nt=(unsigned)u.size();
         bool ok=exact(inW,&request,4,true)&&exact(inW,&rate,4,true)&&exact(inW,&pitch,4,true)&&exact(inW,&flags,4,true)&&exact(inW,&nv,4,true)&&exact(inW,&nt,4,true)&&exact(inW,(void*)v.data(),nv,true)&&exact(inW,(void*)u.data(),nt,true);CloseHandle(inW);
         unsigned magic=0;int status=-1;bool aborted=false;
         ok=ok&&exact(outR,&magic,4,false)&&exact(outR,&status,4,false)&&magic==RSP_MAGIC;

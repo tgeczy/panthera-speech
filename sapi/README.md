@@ -18,11 +18,20 @@ no NVDA at all. Inside the root sit the generation folders (`tiger`,
 out exactly as the NVDA add-on lays them out. The tool never creates folders
 inside NVDA's tree; extraction is the only thing that writes.
 
-The settings program also carries the two NVDA driver settings SAPI users
-need most: **Accept embedded speech commands in text** (off by default -- the
-engine really parses `[[...]]`, and a wiki page's `[[Main Page]]` is eaten
-rather than mispronounced) and **Pauses** (the phrase-break threshold, from
-fewest to the engine's own default). Both apply to every SAPI application at
-once, from the next utterance spoken.
+The settings program carries the NVDA driver's engine settings: **Accept
+embedded speech commands in text** (off by default -- the engine really
+parses `[[...]]`, and a wiki page's `[[Main Page]]` is eaten rather than
+mispronounced), **Pauses** (the phrase-break threshold, from fewest to the
+engine's own default), **Expand abbreviations**, **Rate boost** (the top of
+the range rises to about 1200 wpm; the bottom never moves), **Inflection**
+(0-100, 50 is the voice exactly as Apple ships it) and **Long numbers**
+(grouping separators restored into seven-plus digit runs, which the engine
+otherwise spells out one digit at a time). All apply to every SAPI
+application at once, from the next utterance spoken. SAPI's own per-voice
+pitch XML is honoured too. Not ported, with reasons: sentence joining and
+the announcement gap are driver-architecture (SAPI applications control
+their own chunking), and the stress respelling assumes NVDA's symbol
+dictionary has already turned ":" into the word "colon", which SAPI input
+never has.
 
 This is development work: do not distribute it with extracted Apple data.

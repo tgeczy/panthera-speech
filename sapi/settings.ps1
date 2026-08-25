@@ -131,17 +131,17 @@ $list = New-Object Windows.Forms.CheckedListBox
 $list.Name = 'speechEngineList'; $list.AccessibleName = 'Mac OS X speech engines'
 $list.AccessibleDescription = 'Tiger, Leopard, and Lion speech data installation status'
 $list.CheckOnClick = $true
-$list.Location = New-Object Drawing.Point(12,38); $list.Size = New-Object Drawing.Size(680,240)
+$list.Location = New-Object Drawing.Point(12,38); $list.Size = New-Object Drawing.Size(680,200)
 $status = New-Object Windows.Forms.Label
 $status.Name = 'speechDataStatus'; $status.AccessibleName = 'Speech data status'
-$status.Location = New-Object Drawing.Point(12,286); $status.Size = New-Object Drawing.Size(680,20)
+$status.Location = New-Object Drawing.Point(12,244); $status.Size = New-Object Drawing.Size(680,20)
 # A real ProgressBar rather than text alone, because screen readers announce
 # progress bar changes on their own -- NVDA's background beeps included --
 # and a long extraction with a silent, frozen window is indistinguishable
 # from a hang, which is exactly how it was reported.
 $progress = New-Object Windows.Forms.ProgressBar
 $progress.Name = 'extractionProgress'; $progress.AccessibleName = 'Extraction progress'
-$progress.Location = New-Object Drawing.Point(12,308); $progress.Size = New-Object Drawing.Size(680,16)
+$progress.Location = New-Object Drawing.Point(12,266); $progress.Size = New-Object Drawing.Size(680,16)
 $progress.Minimum = 0; $progress.Maximum = 100; $progress.Visible = $false
 
 # The two NVDA driver settings SAPI users were living without.  Read by the
@@ -153,25 +153,65 @@ $progress.Minimum = 0; $progress.Maximum = 100; $progress.Visible = $false
 $acceptCommands = New-Object Windows.Forms.CheckBox
 $acceptCommands.Text = 'Accept e&mbedded speech commands in text'
 $acceptCommands.AccessibleName = 'Accept embedded speech commands in text'
-$acceptCommands.Location = New-Object Drawing.Point(12,330); $acceptCommands.AutoSize = $true
+$acceptCommands.Location = New-Object Drawing.Point(12,290); $acceptCommands.AutoSize = $true
 $pausesLabel = New-Object Windows.Forms.Label
 $pausesLabel.Text = '&Pauses:'; $pausesLabel.AutoSize = $true
-$pausesLabel.Location = New-Object Drawing.Point(420,334)
+$pausesLabel.Location = New-Object Drawing.Point(420,294)
 $pauses = New-Object Windows.Forms.ComboBox
 $pauses.DropDownStyle = 'DropDownList'; $pauses.AccessibleName = 'Pauses'
-$pauses.Location = New-Object Drawing.Point(482,330); $pauses.Size = New-Object Drawing.Size(210,24)
+$pauses.Location = New-Object Drawing.Point(482,290); $pauses.Size = New-Object Drawing.Size(210,24)
 $pausesValues = @('fewest','fewer','more','most','leopard')
 foreach ($item in 'Fewest pauses','Fewer pauses','More pauses','Most pauses','Engine default') { [void]$pauses.Items.Add($item) }
+
+# The rest of the NVDA driver's engine settings, ported.  Not ported, with
+# reasons: sentence joining and the announcement gap are driver-architecture
+# (SAPI applications control their own chunking, and each utterance is its
+# own process), and the stress respelling assumes NVDA's symbol dictionary
+# already turned ":" into the word "colon", which SAPI input never has.
+$expandAbbrev = New-Object Windows.Forms.CheckBox
+$expandAbbrev.Text = 'E&xpand abbreviations (Dr, kg)'
+$expandAbbrev.AccessibleName = 'Expand abbreviations'
+$expandAbbrev.Location = New-Object Drawing.Point(12,318); $expandAbbrev.AutoSize = $true
+$rateBoost = New-Object Windows.Forms.CheckBox
+$rateBoost.Text = 'Rate &boost'
+$rateBoost.AccessibleName = 'Rate boost'
+$rateBoost.Location = New-Object Drawing.Point(250,318); $rateBoost.AutoSize = $true
+$inflLabel = New-Object Windows.Forms.Label
+$inflLabel.Text = '&Inflection:'; $inflLabel.AutoSize = $true
+$inflLabel.Location = New-Object Drawing.Point(360,320)
+$inflection = New-Object Windows.Forms.NumericUpDown
+$inflection.Minimum = 0; $inflection.Maximum = 100
+$inflection.AccessibleName = 'Inflection'
+$inflection.Location = New-Object Drawing.Point(432,318); $inflection.Size = New-Object Drawing.Size(56,24)
+$numLabel = New-Object Windows.Forms.Label
+$numLabel.Text = 'Long &numbers:'; $numLabel.AutoSize = $true
+$numLabel.Location = New-Object Drawing.Point(500,320)
+$numberStyle = New-Object Windows.Forms.ComboBox
+$numberStyle.DropDownStyle = 'DropDownList'; $numberStyle.AccessibleName = 'Long numbers'
+$numberStyle.Location = New-Object Drawing.Point(592,318); $numberStyle.Size = New-Object Drawing.Size(100,24)
+$numberValues = @('fix','off')
+foreach ($item in 'Fixed','Engine') { [void]$numberStyle.Items.Add($item) }
 
 function Save-Setting([string]$name, $value) {
     New-Item -Path $dataPrefKey -Force | Out-Null
     Set-ItemProperty -Path $dataPrefKey -Name $name -Value $value
 }
-try { $acceptCommands.Checked = [bool](Get-ItemProperty -Path $dataPrefKey -Name AcceptCommands -ErrorAction Stop).AcceptCommands } catch { $acceptCommands.Checked = $false }
-try { $savedPhrasing = (Get-ItemProperty -Path $dataPrefKey -Name Phrasing -ErrorAction Stop).Phrasing } catch { $savedPhrasing = 'fewest' }
-$pauses.SelectedIndex = [Math]::Max(0, $pausesValues.IndexOf($savedPhrasing))
+function Load-Setting([string]$name, $default) {
+    try { (Get-ItemProperty -Path $dataPrefKey -Name $name -ErrorAction Stop).$name }
+    catch { $default }
+}
+$acceptCommands.Checked = [bool](Load-Setting 'AcceptCommands' 0)
+$pauses.SelectedIndex = [Math]::Max(0, $pausesValues.IndexOf([string](Load-Setting 'Phrasing' 'fewest')))
+$expandAbbrev.Checked = [bool](Load-Setting 'ExpandAbbreviations' 1)
+$rateBoost.Checked = [bool](Load-Setting 'RateBoost' 0)
+$inflection.Value = [Math]::Max(0, [Math]::Min(100, [int](Load-Setting 'Inflection' 50)))
+$numberStyle.SelectedIndex = [Math]::Max(0, $numberValues.IndexOf([string](Load-Setting 'NumberStyle' 'fix')))
 $acceptCommands.Add_CheckedChanged({ Save-Setting 'AcceptCommands' ([int]$acceptCommands.Checked) })
 $pauses.Add_SelectedIndexChanged({ if ($pauses.SelectedIndex -ge 0) { Save-Setting 'Phrasing' $pausesValues[$pauses.SelectedIndex] } })
+$expandAbbrev.Add_CheckedChanged({ Save-Setting 'ExpandAbbreviations' ([int]$expandAbbrev.Checked) })
+$rateBoost.Add_CheckedChanged({ Save-Setting 'RateBoost' ([int]$rateBoost.Checked) })
+$inflection.Add_ValueChanged({ Save-Setting 'Inflection' ([int]$inflection.Value) })
+$numberStyle.Add_SelectedIndexChanged({ if ($numberStyle.SelectedIndex -ge 0) { Save-Setting 'NumberStyle' $numberValues[$numberStyle.SelectedIndex] } })
 
 function Refresh-Voices {
     $list.Items.Clear(); $voices = @(Get-Voices)
@@ -331,7 +371,7 @@ $unregister.Add_Click({
 })
 $close.Add_Click({$form.Close()})
 $form.AcceptButton=$register; $form.CancelButton=$close
-$form.Controls.AddRange(@($label,$list,$status,$progress,$acceptCommands,$pausesLabel,$pauses,$selectAll,$deselectAll,$chooseRoot,$open,$extract,$register,$unregister,$close))
+$form.Controls.AddRange(@($label,$list,$status,$progress,$acceptCommands,$pausesLabel,$pauses,$expandAbbrev,$rateBoost,$inflLabel,$inflection,$numLabel,$numberStyle,$selectAll,$deselectAll,$chooseRoot,$open,$extract,$register,$unregister,$close))
 $form.Add_FormClosing({
     if ($script:extractProc -and -not $script:extractProc.HasExited) {
         try { $script:extractProc.Kill() } catch {}
