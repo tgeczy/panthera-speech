@@ -43,8 +43,8 @@ def test_capitals_are_spelt_out(token):
     assert pantheraabbrev.spell(token) == " ".join(token)
 
 
-@pytest.mark.parametrize("written", ["Dr", "dr", "Mr", "vs", "etc", "St"])
-def test_an_abbreviation_written_as_one_is_left_alone(written):
+@pytest.mark.parametrize("written", ["dr", "vs", "etc", "st"])
+def test_a_lowercase_word_is_left_alone(written):
     """`vs` and `etc` mean what the engine says they mean.
 
     Reading "Ali vs Frazier" as "Ali V S Frazier" would be a plain regression,
@@ -53,10 +53,56 @@ def test_an_abbreviation_written_as_one_is_left_alone(written):
     assert pantheraabbrev.spell(written) == written
 
 
-def test_a_trailing_stop_keeps_the_expansion():
-    """The stop is the tell that somebody wrote an abbreviation."""
-    assert pantheraabbrev.spell("DR.") == "DR."
-    assert pantheraabbrev.spell("ST. LOUIS") == "ST. LOUIS"
+def test_a_trailing_stop_no_longer_saves_it():
+    """Deliberately the reverse of the rule this module shipped with.
+
+    The first release kept "DR." expanded on the theory that the stop marks
+    a deliberate abbreviation.  Tomi, 2026-08-26: "the toggle should do what
+    it's advertised more (including doctor and drive)" -- the setting being
+    off is itself the deliberate act, so the dotted forms despell too.
+    """
+    assert pantheraabbrev.spell("DR.") == "D R."
+    assert pantheraabbrev.spell("ST. LOUIS") == "S T. LOUIS"
+
+
+@pytest.mark.parametrize("written,spoken", [
+    ("Dr. Kirk", "D R. Kirk"),
+    ("Dr Kirk", "D R Kirk"),
+    ("St. Louis", "S T. Louis"),
+    ("Mrs. Kirk", "M R S. Kirk"),
+    ("Prof. Kirk", "P R O F. Kirk"),
+    ("Main Blvd.", "Main B L V D."),
+    #: The dot survives despelling everywhere, deliberately: "Dr." at a
+    #: sentence end still has to end the sentence.  Whether a mid-sentence
+    #: "J R." earns a spurious pause is one for Tomi's ear.
+    ("John Smith Jr. spoke", "John Smith J R. spoke"),
+])
+def test_a_title_case_abbreviation_despells(written, spoken):
+    """The engine expands these from its own lexicon, dotted or not --
+    measured 2026-08-26, "Dr Kirk" reads "doctor Kirk" -- so the setting
+    can only keep its word by despelling the written-as-abbreviation forms
+    too."""
+    assert pantheraabbrev.spell(written) == spoken
+
+
+@pytest.mark.parametrize("written,spoken", [
+    ("4m", "4 M"),
+    ("4 m", "4 M"),
+    ("4mm", "4 M M"),
+    ("4cm", "4 C M"),
+    ("12km", "12 K M"),
+    ("4kg", "4 K G"),
+])
+def test_a_digit_adjacent_unit_despells(written, spoken):
+    """10.7 reads "4m" as "four meters" from inside its lexicon, where
+    `TIGER_NO_ABBREV` cannot reach -- measured with the flag set.  The
+    capital letters are the engine's own bare-letter reading."""
+    assert pantheraabbrev.spell(written) == spoken
+
+
+@pytest.mark.parametrize("untouched", ["4mph", "4ml today", "grams", "M4"])
+def test_a_unit_lookalike_is_left_alone(untouched):
+    assert pantheraabbrev.spell(untouched) == untouched
 
 
 def test_only_whole_words():
@@ -69,9 +115,47 @@ def test_it_works_inside_a_sentence():
         "the D R and S T fields"
 
 
-def test_nothing_else_is_touched():
-    text = "Meeting at 5KB, 1,234MB, room 20ish -- Dr. Who vs. the Master."
+def test_prose_and_dictionary_rules_are_not_this_module():
+    """5KB and 20ish are SpeechDictionary regexes, which TIGER_NO_ABBREV
+    already covers; lowercase vs. is prose.  Dr. despells -- see above."""
+    text = "Meeting at 5KB, room 20ish -- vs. the Master."
     assert pantheraabbrev.spell(text) == text
+
+
+# -- the engine's guesses, settled in both settings ------------------------
+
+def test_x_possessive_never_reads_as_a_numeral():
+    """NVDA's builtin dictionary splits camel case for every synthesizer,
+    and the engine reads "<word> X's" as the roman numeral: "SpaceX's own
+    page" arrived as "Space X's" and was spoken "space ten's"
+    (panthera-speech, news-reading quirks, 2026-08-26)."""
+    for apostrophe in ("'", "’"):
+        text = "Space X%ss own page" % apostrophe
+        want = "Space ex%ss own page" % apostrophe
+        assert pantheraabbrev.disambiguate(text, True) == want
+        assert pantheraabbrev.disambiguate(text, False) == want
+
+
+def test_doctor_before_a_name_stays_a_doctor():
+    """"Forensic Phycologist Dr. Kirk Heilbrun" read as "drive": the POS
+    resolver guesses an unknown capitalised word is a name, and a name
+    before Dr. makes a street.  Writing Doctor settles it."""
+    got = pantheraabbrev.disambiguate("Phycologist Dr. Kirk spoke", True)
+    assert got == "Phycologist Doctor Kirk spoke"
+
+
+def test_a_real_street_is_left_alone():
+    for text in ("Mulholland Dr. is long", "Smith Dr., Springfield",
+                 "turn onto Smith Dr."):
+        assert pantheraabbrev.disambiguate(text, True) == text
+
+
+def test_the_doctor_rewrite_defers_to_despelling():
+    """With expansion off, spell() reads "Dr." as letters; writing Doctor
+    would be an expansion the user declined."""
+    text = "Phycologist Dr. Kirk spoke"
+    assert pantheraabbrev.disambiguate(text, False) == text
+    assert pantheraabbrev.spell(text) == "Phycologist D R. Kirk spoke"
 
 
 # -- the table, against the engine ----------------------------------------

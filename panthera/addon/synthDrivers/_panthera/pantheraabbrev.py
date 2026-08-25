@@ -41,16 +41,24 @@ so the engine already spells out an unknown acronym and this only stops the
 dictionary getting in the way first.  Nothing here decides how anything should
 sound.
 
-## Only the capitals, and only when the setting is off
+## What the setting covers now, and the line that moved
 
-`vs` and `etc` are written that way in ordinary prose and mean exactly what the
-engine says they mean -- reading them as "V S" and "E T C" would be a
-straightforward regression.  `Dr.` and `St.` likewise.
+The first release of this module drew the line at **written as an
+abbreviation, or written as an acronym**: `Dr.` kept its expansion, `DR`
+was spelt.  Tomi moved the line on 2026-08-26, from news articles read by
+ear: the engine's own table turns `Dr.` into "doctor" *or "drive"* by a
+part-of-speech guess, `St.` into "saint" or "street", and on 10.7 `4m`
+into "four meters" -- and none of that is reachable by `TIGER_NO_ABBREV`,
+so the "Expand abbreviations" checkbox only did half of what it said.
 
-The line that holds is **written as an abbreviation, or written as an
-acronym**: `Dr.` is the first, `DR` is the second, and only the second is
-touched.  That is also why this is behind "Expand abbreviations" rather than
-being always on -- the default behaviour does not change for anybody.
+    "the toggle should do what it's advertised more (including doctor
+    and drive)"
+
+So with the setting off, the written-as-abbreviation forms despell too:
+`Dr.` reads "D R.", `4mm` reads "4 M M".  Lowercase prose words -- `vs`,
+`etc`, `dr` as somebody's initials -- are still never touched; reading
+"Ali vs Frazier" as "Ali V S Frazier" is the regression this module
+promised not to have, and keeps promising.
 """
 import re
 
@@ -73,12 +81,34 @@ ACRONYMS = {
     "ETC": "etcetera",
 }
 
-#: Capitals only, whole word, and **not** followed by a full stop.
-#:
-#: The trailing stop is the tell that somebody wrote an abbreviation rather
-#: than an acronym, and it is cheap to respect: "DR." keeps its expansion.
-#: `[^.]` rather than a plain boundary because `\b` matches before a period.
-_RE = re.compile(r"\b(%s)\b(?!\.)" % "|".join(sorted(ACRONYMS)))
+#: Capitals, whole word, dotted or not.  The first release excepted "DR."
+#: on the theory that the trailing stop marks a deliberate abbreviation;
+#: Tomi reversed that on 2026-08-26 -- with the setting off, "ST. LOUIS"
+#: in a headline reads "S T. LOUIS", because the setting being off is
+#: itself the deliberate act.
+_RE = re.compile(r"\b(%s)\b" % "|".join(sorted(ACRONYMS)))
+
+#: The written-as-abbreviation forms, title case, measured against both
+#: engines on 2026-08-26 (Alex's MEOW fetch list names the words): every
+#: one of these expands on 10.5 and 10.7 whether or not the stop is
+#: written -- "Dr Kirk" reads "doctor Kirk" -- and several are homograph
+#: pairs decided by a part-of-speech guess ("Smith St." is "street",
+#: "St. Louis" is "saint"; "Smith Dr." is "drive").  One comedy datum:
+#: 10.7 dropped the Capt expansion 10.5 has.  Despelled all the same --
+#: one shared map, no per-generation branching.
+TITLES = ("Dr", "St", "Mr", "Mrs", "Ms", "Prof", "Gen", "Sen", "Rep",
+          "Gov", "Capt", "Lt", "Jr", "Sr", "Ave", "Rd", "Blvd", "Ft", "Ct")
+
+_TITLE_RE = re.compile(r"\b(%s)\b" % "|".join(sorted(TITLES, key=len,
+                                                     reverse=True)))
+
+#: Units the engine expands from inside its own lexicon, where the
+#: dictionary switch cannot reach: measured with `TIGER_NO_ABBREV=1`,
+#: 10.7 still reads "4m" as "four meters", "4mm" as millimeters, "4cm",
+#: "4km", "4kg" likewise; 10.5 only knows the spaced form ("4 m") and
+#: spells the rest.  The rewrite is to the capital letters -- "4M" is
+#: measured to read "four M" on both -- so "4mm" becomes "4 M M".
+_UNIT_RE = re.compile(r"\b(\d+)\s?(mm|cm|km|kg|g|m)\b")
 
 
 # -- roman numerals -------------------------------------------------------
@@ -145,18 +175,60 @@ def _roman(m):
 
 
 def spell(text):
-    """-> `text` with acronym-shaped abbreviations spelt out.
+    """-> `text` with abbreviation-shaped tokens spelt out.
 
-    Case-sensitive on purpose: only the all-capitals form is touched, so
-    "Dr. Who" and "Ali vs Frazier" are left exactly as written.
+    Case-sensitive on purpose: the all-capitals acronyms, the title-case
+    abbreviations, and digit-adjacent units are touched; "ali vs frazier"
+    and a lowercase "dr" are left exactly as written.
 
-    **No trailing-stop exception for the numerals**, unlike the acronyms
-    above, and the difference is real: a full stop after `DR` is the mark that
-    says "abbreviation", while a full stop after `II` is the end of a
-    sentence.  "He fought in World War II." should not keep its expansion for
-    having ended a paragraph.
+    **No trailing-stop exception for the numerals**: a full stop after `II`
+    is the end of a sentence.  "He fought in World War II." should not keep
+    its expansion for having ended a paragraph.
     """
     if not text:
         return text
     text = _RE.sub(lambda m: " ".join(m.group(1)), text)
+    text = _TITLE_RE.sub(lambda m: " ".join(m.group(1).upper()), text)
+    text = _UNIT_RE.sub(
+        lambda m: m.group(1) + " " + " ".join(m.group(2).upper()), text)
     return _ROMAN.sub(_roman, text)
+
+
+# -- the engine's guesses, corrected in both settings ---------------------
+#
+# Two rewrites that run whether expansion is on or off, because what they
+# fix is not an expansion but a wrong guess (see [[news-reading-quirks]]):
+#
+# * "Dr." before a capitalised word is a title in news prose, but the
+#   engine's part-of-speech resolver reads "<proper noun> Dr." as a street
+#   -- "Forensic Phycologist Dr. Kirk Heilbrun" came back "drive", because
+#   an unknown capitalised word is guessed to be a name.  Writing "Doctor"
+#   settles it.  Streets survive: "Mulholland Dr. is long" and
+#   "Smith Dr., Springfield" have no capitalised word after the stop.
+# * "X's" after any word reads as the roman numeral -- "Space X's" came
+#   back "space ten's", and NVDA's builtin dictionary splits camel case
+#   for every synthesizer, so every "SpaceX's" in a news article arrives
+#   pre-split.  "ex's" is the engine's own reading of the letter, so the
+#   rewrite only stops the numeral guess.  Unconditional because
+#   sentence-initially it rewrites to what the engine already says.
+#
+# Both are authored without lookbehind, deliberately: the SAPI engine
+# ports these to `std::wregex`, which has none.
+
+_DOCTOR_RE = re.compile(r"\bDr\.(\s+)(?=[A-Z][a-z])")
+_EX_RE = re.compile(u"\\bX([\u2019']s)\\b")
+
+
+def disambiguate(text, expand=True):
+    """-> `text` with the engine's measured wrong guesses settled.
+
+    `expand` says whether "Expand abbreviations" is on: the Doctor rewrite
+    only applies then, because with it off `spell()` despells "Dr." to
+    letters and writing "Doctor" would be an expansion the user declined.
+    """
+    if not text:
+        return text
+    text = _EX_RE.sub(r"ex\1", text)
+    if expand:
+        text = _DOCTOR_RE.sub(r"Doctor\1", text)
+    return text
