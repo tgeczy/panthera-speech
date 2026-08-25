@@ -51,6 +51,37 @@ def is_tree(path):
     return bool(path) and os.path.isdir(os.path.join(path, "Speech", "Voices"))
 
 
+def sapi_roots(generation):
+    """-> where the SAPI driver would keep `generation`'s tree, as candidates.
+
+    The SAPI settings tool resolves its data root as: the folder the person
+    chose (remembered in HKCU), then NVDA's shared macintalk folder, then a
+    standalone default -- and it reads NVDA's folder precisely so that an
+    NVDA-first user never needs the data twice.  This is the same courtesy
+    pointed the other way: someone who installed the SAPI driver first and
+    extracted into its world has a tree the add-on should simply find.
+
+    The chosen folder is looked up live rather than cached, because the
+    settings tool can change it while NVDA is running.  Case of the
+    generation folder does not matter on Windows, so the SAPI side's
+    title-case folders match these lowercase names as they are.
+    """
+    roots = []
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Panthera SAPI") as key:
+            value, kind = winreg.QueryValueEx(key, "DataPath")
+            if kind == winreg.REG_SZ and value:
+                roots.append(os.path.join(value, generation))
+    except OSError:
+        pass
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        roots.append(os.path.join(appdata, "macintalk-data", generation))
+    return roots
+
+
 def find_runtime(tree, names):
     """-> the first of `names` present at the root of `tree` or in usr/lib."""
     for sub in ("", os.path.join("usr", "lib")):

@@ -140,6 +140,10 @@ def find_tree():
             except OSError:
                 pass
 
+    #: And the SAPI driver's world, so data extracted there is found here --
+    #: the same courtesy that driver already pays this folder, both ways now.
+    cands += pantheratrees.sapi_roots("tiger")
+
     for c in cands:
         if is_tree(c):
             return c
