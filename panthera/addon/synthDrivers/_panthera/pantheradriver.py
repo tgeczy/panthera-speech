@@ -2058,9 +2058,9 @@ class PantheraDriver(SynthDriver):
                     #: `_inputMode` here is the mode in force *after* this
                     #: utterance rendered, so mid-song a chunk boundary is a
                     #: bar line, not a paragraph -- a tune's prosodic "." and
-                    #: "!" phonemes count as sentence ends, and x0's song
-                    #: gained a half-second rest per verse the day the pause
-                    #: shipped.  The chunk that closes the song with
+                    #: "!" phonemes count as sentence ends, and the reported
+                    #: song gained a half-second rest per verse the day the
+                    #: pause shipped.  The chunk that closes the song with
                     #: `[[inpt TEXT]]` leaves the mode None and pauses like
                     #: the prose it returns to.
                     pause = _silence(

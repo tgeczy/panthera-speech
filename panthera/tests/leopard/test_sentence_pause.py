@@ -139,7 +139,7 @@ def test_a_carried_tune_chunk_gains_nothing(driver, monkeypatch):
 
     A tune's prosodic "." and "!" phonemes count as sentence ends, so a
     verse containing them passes the continuous-reading trigger on its own
-    merits -- and x0's song gained a half-second rest per verse the day the
+    merits -- and the reported song gained a half-second rest per verse the day the
     sentence pause first shipped.  While an input mode is carried, no prose
     pause: the engine's own note durations are the timing, all of it.
     """
