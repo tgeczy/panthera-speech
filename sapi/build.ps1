@@ -24,6 +24,26 @@ foreach ($arch in "x86","x64") {
 $launcherCl = Join-Path $msvc.FullName "bin\Hostx64\x64\cl.exe"
 & $launcherCl /nologo /O2 /MT /W3 "/I$($msvc.FullName)\include" "/I$($sdk.FullName)\ucrt" "/I$($sdk.FullName)\um" "/I$($sdk.FullName)\shared" (Join-Path $PSScriptRoot "settings_launcher.c") "/Fe$stage\panthera_settings.exe" "/Fo$stage\" /link /SUBSYSTEM:WINDOWS "/LIBPATH:$($msvc.FullName)\lib\x64" "/LIBPATH:$($sdk.Parent.Parent.FullName)\Lib\$($sdk.Name)\ucrt\x64" "/LIBPATH:$($sdk.Parent.Parent.FullName)\Lib\$($sdk.Name)\um\x64" user32.lib kernel32.lib
 if ($LASTEXITCODE) { throw "settings launcher build failed ($LASTEXITCODE)" }
+# Embeddable Python rides with the stage so extraction owes nothing to the
+# machine's PATH.  Fetched once and kept; the ._pth is rewritten because the
+# embeddable build locks sys.path to that file's entries -- without the ..
+# line, "import pantheradiscs" from the parent folder fails.
+$py = Join-Path $stage "python"
+if (!(Test-Path (Join-Path $py "python.exe"))) {
+  $pyzip = Join-Path $env:TEMP "python-3.13.1-embed-amd64.zip"
+  Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.13.1/python-3.13.1-embed-amd64.zip" -OutFile $pyzip
+  Expand-Archive $pyzip -DestinationPath $py -Force
+}
+Set-Content -Encoding ASCII (Join-Path $py "python313._pth") @'
+python313.zip
+.
+..
+# The parent directory is where extract.py and its modules live; the
+# embeddable build locks sys.path to exactly this file's entries, so
+# without the .. line "import pantheradiscs" fails and extraction with
+# the bundled interpreter never works.
+#import site
+'@
 Copy-Item (Join-Path $PSScriptRoot "settings.ps1") (Join-Path $stage "settings.ps1")
 Copy-Item (Join-Path $PSScriptRoot "extract.py") (Join-Path $stage "extract.py")
 Copy-Item (Join-Path $repo "panthera\addon\synthDrivers\_panthera\pantheradiscs.py") $stage

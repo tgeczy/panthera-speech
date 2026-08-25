@@ -224,6 +224,59 @@ function Refresh-Voices {
     $status.Text = '{0} voice(s) found in {1}' -f $voices.Count,$data
 }
 
+# --- new data offers itself ----------------------------------------------
+# The Register button being a manual step was confusing people: voice data
+# extracted or pasted into the folder just sat there, silent, until somebody
+# guessed.  On startup and after every extraction, any generation with data
+# present and no token registered gets one yes/no offer -- and a "no" is
+# remembered per generation, so declining once (or unregistering
+# deliberately) is never nagged about.  Registering a generation clears its
+# mark, whichever button or offer did it.
+function Get-RegisteredGenerations {
+    $found = @()
+    foreach ($view in 'Registry32','Registry64') {
+        $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine',$view)
+        $root = $base.OpenSubKey('Software\Microsoft\Speech\Voices\Tokens')
+        if ($root) {
+            foreach ($name in @($root.GetSubKeyNames())) {
+                if ($name -like 'Panthera_*') { $found += ($name -split '_')[1] }
+            }
+            $root.Dispose()
+        }
+        $base.Dispose()
+    }
+    @($found | Sort-Object -Unique)
+}
+function Get-DeclinedGenerations {
+    @(([string](Load-Setting 'DeclinedGenerations' '')) -split ',' | Where-Object { $_ })
+}
+function Set-DeclinedGenerations([string[]]$generations) {
+    Save-Setting 'DeclinedGenerations' (@($generations | Sort-Object -Unique) -join ',')
+}
+function Offer-NewData {
+    $present = @(Get-Voices | ForEach-Object Generation | Sort-Object -Unique)
+    $registered = Get-RegisteredGenerations
+    $declined = Get-DeclinedGenerations
+    $pending = @($present | Where-Object { $_ -notin $registered -and $_ -notin $declined })
+    if (!$pending.Count) { return }
+    $labels = @($GenerationTable | Where-Object { $_.Folder -in $pending } | ForEach-Object Label) -join ', '
+    $answer = [Windows.Forms.MessageBox]::Show($form,
+        ("Voice data for {0} is installed but not registered with SAPI.`n`nRegister it now? (Choosing No will not ask again for these engines; the Register button always works.)" -f $labels),
+        'Panthera SAPI','YesNo','Question')
+    if ($answer -eq 'Yes') {
+        $arguments='-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -STA -File "{0}" -RegisterVoices -GenerationList {1} -DataRoot "{2}"' -f $settingsScript,($pending -join ','),$data
+        $process=Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList $arguments
+        if ($process.ExitCode) {
+            [Windows.Forms.MessageBox]::Show($form,'Registration failed. Use Register to try again.','Panthera SAPI','OK','Error') | Out-Null
+        } else {
+            Set-DeclinedGenerations @(Get-DeclinedGenerations | Where-Object { $_ -notin $pending })
+            Refresh-Voices
+        }
+    } else {
+        Set-DeclinedGenerations (@(Get-DeclinedGenerations) + $pending)
+    }
+}
+
 # --- extraction, off the UI thread --------------------------------------
 # The extractor prints "NN% message" lines as it works; running it inline
 # froze the window for the whole image and read as a hang.  It runs as a
@@ -259,8 +312,13 @@ function Start-Extraction([string]$image, [bool]$replace) {
     # extractor prints it rather than when a block fills.
     $argstr = '-u "{0}" "{1}" "{2}"' -f (Join-Path $stage 'extract.py'), $image, $data
     if ($replace) { $argstr += ' --replace' }
+    # The installer ships an embeddable Python next to this script, so
+    # extraction owes nothing to what is or is not on PATH; PATH python
+    # stays as the fallback for a development stage without the bundle.
+    $bundled = Join-Path $stage 'python\python.exe'
+    $interpreter = if (Test-Path -LiteralPath $bundled) { $bundled } else { 'python' }
     try {
-        $script:extractProc = Start-Process python -ArgumentList $argstr -RedirectStandardOutput $script:extractLog -WindowStyle Hidden -PassThru
+        $script:extractProc = Start-Process $interpreter -ArgumentList $argstr -RedirectStandardOutput $script:extractLog -WindowStyle Hidden -PassThru
         # Touching Handle while the process lives is what lets ExitCode be
         # read after it dies; without this every extraction reports failure.
         $null = $script:extractProc.Handle
@@ -288,6 +346,7 @@ $extractTimer.Add_Tick({
             $status.Text = 'Extraction finished.'
             Refresh-Voices
             [Windows.Forms.MessageBox]::Show($form,'Extraction finished.','Panthera SAPI') | Out-Null
+            Offer-NewData
         } elseif ($code -eq 3) {
             # The extractor refused an occupied folder; replacing is a
             # decision, and it is the person's.
@@ -360,14 +419,23 @@ $register.Add_Click({
     if(!$selected.Count){[Windows.Forms.MessageBox]::Show($form,'Check at least one engine.','Panthera SAPI');return}
     $arguments='-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -STA -File "{0}" -RegisterVoices -GenerationList {1} -DataRoot "{2}"' -f $settingsScript,($selected -join ','),$data
     $process=Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList $arguments
-    if ($process.ExitCode) { [Windows.Forms.MessageBox]::Show($form,'Registration failed.','Panthera SAPI','OK','Error') } else { [Windows.Forms.MessageBox]::Show($form,'Panthera voices were registered for 32-bit and 64-bit SAPI.','Panthera SAPI') }
+    if ($process.ExitCode) { [Windows.Forms.MessageBox]::Show($form,'Registration failed.','Panthera SAPI','OK','Error') } else {
+        # A deliberate registration lifts the never-ask-again mark.
+        Set-DeclinedGenerations @(Get-DeclinedGenerations | Where-Object { $_ -notin $selected })
+        [Windows.Forms.MessageBox]::Show($form,'Panthera voices were registered for 32-bit and 64-bit SAPI.','Panthera SAPI')
+    }
 })
 $unregister.Add_Click({
     $selected=@(); for($i=0;$i -lt $GenerationTable.Count;$i++){if($list.GetItemChecked($i)){$selected+=$GenerationTable[$i].Folder}}
     if(!$selected.Count){[Windows.Forms.MessageBox]::Show($form,'Check at least one engine.','Panthera SAPI');return}
     $arguments='-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -STA -File "{0}" -UnregisterVoices -GenerationList {1} -DataRoot "{2}"' -f $settingsScript,($selected -join ','),$data
     $process=Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList $arguments
-    if ($process.ExitCode) { [Windows.Forms.MessageBox]::Show($form,'Unregistration failed.','Panthera SAPI','OK','Error') } else { [Windows.Forms.MessageBox]::Show($form,'Panthera voices were unregistered.','Panthera SAPI') }
+    if ($process.ExitCode) { [Windows.Forms.MessageBox]::Show($form,'Unregistration failed.','Panthera SAPI','OK','Error') } else {
+        # Unregistering is the person saying no: mark it, so the startup
+        # offer never asks to re-register what was just removed.
+        Set-DeclinedGenerations (@(Get-DeclinedGenerations) + $selected)
+        [Windows.Forms.MessageBox]::Show($form,'Panthera voices were unregistered.','Panthera SAPI')
+    }
 })
 $close.Add_Click({$form.Close()})
 $form.AcceptButton=$register; $form.CancelButton=$close
@@ -377,4 +445,4 @@ $form.Add_FormClosing({
         try { $script:extractProc.Kill() } catch {}
     }
 })
-Refresh-Voices; $form.Add_Shown({$list.Focus()}); [void]$form.ShowDialog()
+Refresh-Voices; $form.Add_Shown({$list.Focus(); Offer-NewData}); [void]$form.ShowDialog()

@@ -21,7 +21,7 @@
 #ifndef StageDir
 #define StageDir "C:\panthera\sapi"
 #endif
-#define AppVer "1.2.0"
+#define AppVer "1.3.0"
 
 [Setup]
 AppId={{8E1B0A4C-5A0D-4F2E-9C1B-7D64A2153F90}
@@ -58,6 +58,10 @@ Source: "{#StageDir}\settings.cmd"; DestDir: "{app}"
 Source: "{#StageDir}\extract.py"; DestDir: "{app}"
 Source: "{#StageDir}\pantheradiscs.py"; DestDir: "{app}"
 Source: "{#StageDir}\pantherahfs.py"; DestDir: "{app}"
+; The embeddable Python that runs the extractor, so extraction works on a
+; machine with no Python of its own.  python.org-official bits, unmodified
+; but for the ._pth naming the app folder on sys.path; still no Apple data.
+Source: "{#StageDir}\python\*"; DestDir: "{app}\python"; Flags: recursesubdirs
 
 [Icons]
 ; The launcher rather than the batch file: a GUI-subsystem program creates no

@@ -7,6 +7,7 @@
 #include <vector>
 #include <cmath>
 #include <cwctype>
+#include <regex>
 
 static HMODULE g_module;
 static long g_objects;
@@ -102,6 +103,100 @@ static void fix_long_numbers(std::wstring &t) {
     }
 }
 
+/* The abbreviation rules, ported from pantheraabbrev.py -- that module and
+ * its tests are the spec; nothing here decides anything the Python side has
+ * not measured.  Authored without lookbehind on both sides, because
+ * std::wregex has none.
+ *
+ * `regex_replace` cannot compute a replacement, so the spaced-letters
+ * rewrites walk matches by hand. */
+static void spell_out(std::wstring &t, const std::wregex &re, bool upper) {
+    std::wstring out; out.reserve(t.size()+8);
+    auto it=std::wsregex_iterator(t.begin(),t.end(),re), end=std::wsregex_iterator();
+    size_t last=0;
+    for(;it!=end;++it){
+        out.append(t,last,it->position(1)-last);
+        const std::wstring tok=it->str(1);
+        for(size_t j=0;j<tok.size();++j){
+            if(j)out.push_back(L' ');
+            out.push_back(upper?towupper(tok[j]):tok[j]);
+        }
+        last=it->position(1)+it->length(1);
+    }
+    out.append(t,last,std::wstring::npos);
+    t.swap(out);
+}
+
+/* The engine's measured wrong guesses, settled whichever way the setting
+ * points: "<proper noun> Dr." read as a street, and "X's" after a
+ * camel-case split read as the roman numeral ("SpaceX's" was
+ * "space ten's").  The Doctor rewrite only with expansion on -- with it
+ * off, despelling reads "Dr." as letters and writing "Doctor" would be an
+ * expansion the user declined. */
+static void disambiguate(std::wstring &t, bool expand) {
+    static const std::wregex ex(L"\\bX(['\x2019]s)\\b");
+    t=std::regex_replace(t,ex,L"ex$1");
+    if(expand){
+        static const std::wregex doc(L"\\bDr\\.(\\s+)(?=[A-Z][a-z])");
+        t=std::regex_replace(t,doc,L"Doctor$1");
+    }
+}
+
+/* "Expand abbreviations" off: the engine's own lexicon expands DR, Dr.,
+ * St., and on 10.7 digit-adjacent units, none of which TIGER_NO_ABBREV
+ * reaches -- so the abbreviation-shaped forms despell in the text.
+ * Case-sensitive exactly as the Python side: lowercase prose ("vs",
+ * "etc", "dr") is never touched. */
+static void despell(std::wstring &t) {
+    static const std::wregex acronyms(
+        L"\\b(CT|DR|ETC|FT|JR|MRS?|RD|SR|ST|VS)\\b");
+    static const std::wregex titles(
+        L"\\b(Blvd|Capt|Prof|Mrs|Ave|Gen|Gov|Rep|Sen|Ct|Dr|Ft|Jr|Lt|Mr|Ms"
+        L"|Rd|Sr|St)\\b");
+    static const std::wregex units(L"\\b(\\d+) ?(mm|cm|km|kg|g|m)\\b");
+    static const std::wregex roman(
+        L"\\b(?=[MDCLXVI]{2,}\\b)"
+        L"(M{0,3}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3}))\\b");
+    spell_out(t,acronyms,false);
+    spell_out(t,titles,true);
+    {   /* units keep their number: "4mm" -> "4 M M" */
+        std::wstring out; out.reserve(t.size()+8);
+        auto it=std::wsregex_iterator(t.begin(),t.end(),units), end=std::wsregex_iterator();
+        size_t last=0;
+        for(;it!=end;++it){
+            out.append(t,last,it->position(0)-last);
+            out.append(it->str(1)); out.push_back(L' ');
+            const std::wstring u=it->str(2);
+            for(size_t j=0;j<u.size();++j){
+                if(j)out.push_back(L' ');
+                out.push_back(towupper(u[j]));
+            }
+            last=it->position(0)+it->length(0);
+        }
+        out.append(t,last,std::wstring::npos);
+        t.swap(out);
+    }
+    {   /* MIX is M+IX, 1009, and the one English word the strict pattern
+         * claims; everything else spaced out is the setting keeping its
+         * word.  See the Python module for the whole argument. */
+        std::wstring out; out.reserve(t.size()+8);
+        auto it=std::wsregex_iterator(t.begin(),t.end(),roman), end=std::wsregex_iterator();
+        size_t last=0;
+        for(;it!=end;++it){
+            out.append(t,last,it->position(1)-last);
+            const std::wstring tok=it->str(1);
+            if(tok==L"MIX")out.append(tok);
+            else for(size_t j=0;j<tok.size();++j){
+                if(j)out.push_back(L' ');
+                out.push_back(tok[j]);
+            }
+            last=it->position(1)+it->length(1);
+        }
+        out.append(t,last,std::wstring::npos);
+        t.swap(out);
+    }
+}
+
 class Engine : public ISpTTSEngine, public ISpObjectWithToken {
     LONG refs; ISpObjectToken *token;
 public:
@@ -147,6 +242,13 @@ public:
         if(text.empty())return S_OK;
         if(setting_string(L"NumberStyle",L"fix")==L"fix")
             fix_long_numbers(text);
+        /* Same rules, same order as the NVDA driver: the wrong-guess
+         * rewrites whichever way the abbreviations setting points, then
+         * despelling only when it is off. */
+        bool expand=setting_dword(L"ExpandAbbreviations",1)!=0;
+        disambiguate(text,expand);
+        if(!expand)
+            despell(text);
         /* Inflection is an embedded command prefix, exactly as the NVDA
          * driver sends it: pmod is inflection times two, nothing at the
          * halfway default so the untouched utterance stays byte-for-byte
@@ -177,8 +279,7 @@ public:
                     (std::wstring(L"Boundaries.SilThreshold=")+thr).c_str());
             else
                 SetEnvironmentVariableW(L"TIGER_PARAMS",NULL);
-            SetEnvironmentVariableW(L"TIGER_NO_ABBREV",
-                setting_dword(L"ExpandAbbreviations",1)?NULL:L"1");
+            SetEnvironmentVariableW(L"TIGER_NO_ABBREV",expand?NULL:L"1");
         }
         std::wstring root=token_string(token,L"DataPath"), gen=token_string(token,L"Generation"), voice=token_string(token,L"VoiceName");
         std::wstring tree=root+L"\\"+gen, mt=tree+L"\\Speech\\Synthesizers\\MacinTalk.SpeechSynthesizer\\Contents\\MacOS\\MacinTalk";
