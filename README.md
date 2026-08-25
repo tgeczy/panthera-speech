@@ -7,7 +7,10 @@ would have filled, and calls the engine directly. An utterance costs about
 twelve milliseconds.
 
 **One add-on for NVDA**, `pantheraspeech`, declaring one synthesizer per
-engine generation:
+engine generation -- **and a SAPI 5 driver**, so the same voices speak in
+JAWS and every other SAPI application ([`sapi/`](sapi/README.md); the
+installer on the [latest release](../../releases/latest) sets it up, and it
+reads the very data the NVDA add-on already extracted):
 
 | synthesizer | | voices |
 |---|---|---|
