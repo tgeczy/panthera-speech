@@ -15,7 +15,13 @@ import time
 
 import pantheradriver
 
-TEXT = "The quick brown fox jumps over the lazy dog."
+#: Long enough to pass JOIN_MIN_CHARS and carrying a sentence end -- the two
+#: marks of a document chunk rather than an announcement.
+TEXT = ("The quick brown fox jumps over the lazy dog, "
+        "and then trots away into the evening.")
+#: An index-carrying announcement: what a list item reached by first letter
+#: looks like.  Short, no full stop -- it must gain nothing.
+ITEM = "Documents folder"
 
 
 def _fedAfter(driver, item, seconds=30.0):
@@ -70,19 +76,62 @@ def _settle(driver, seconds=20.0):
                 return
 
 
-def test_an_indexed_utterance_gains_the_engines_own_pause(driver):
+def _expectedPause(driver):
+    scale = driver.PAUSE_SCALE.get(driver._pauseMode, 1.0)
+    return len(pantheradriver._silence(
+        pantheradriver.SENTENCE_PAUSE_FACTOR / driver._wpm() * scale))
+
+
+def test_an_indexed_chunk_gains_the_scaled_sentence_pause(driver):
     driver.speak(["warming up the engine"])
     _settle(driver)
     plain = _fedAfter(driver, [("text", TEXT)])
     indexed = _fedAfter(driver, [("index", 1), ("text", TEXT)])
     assert plain and indexed
-    expected = len(pantheradriver._silence(
-        pantheradriver.SENTENCE_PAUSE_FACTOR / driver._wpm()))
+    expected = _expectedPause(driver)
     grown = indexed - plain
-    assert abs(grown - expected) < 4410, (
-        "an indexed chunk grew by %d bytes where the engine's own pause is "
-        "%d -- the restored sentence pause is wrong or missing" %
+    assert expected and abs(grown - expected) < 4410, (
+        "an indexed chunk grew by %d bytes where the scaled pause is %d -- "
+        "the restored sentence pause is wrong or missing" %
         (grown, expected))
+
+
+def test_the_gap_setting_scales_the_pause(driver):
+    """One control governs all the gaps; "Long" is the engine exactly."""
+    driver.speak(["warming up the engine"])
+    _settle(driver)
+    plain = _fedAfter(driver, [("text", TEXT)])
+    driver._pauseMode = "long"
+    indexed = _fedAfter(driver, [("index", 1), ("text", TEXT)])
+    driver._pauseMode = "short"
+    full = len(pantheradriver._silence(
+        pantheradriver.SENTENCE_PAUSE_FACTOR / driver._wpm()))
+    #: "Long" also adds its own announcement gap after the flush, so the
+    #: expected growth is the engine pause plus PAUSE_MS["long"].
+    full += len(pantheradriver._silence(driver.PAUSE_MS["long"]))
+    grown = indexed - plain
+    assert abs(grown - full) < 4410, (
+        "at Long the chunk grew by %d bytes where the engine's own pause "
+        "plus the long gap is %d" % (grown, full))
+
+
+def test_an_indexed_announcement_gains_nothing(driver):
+    """First-letter navigation carries an index too, and must stay crisp.
+
+    Reported by Tomi within hours of 1.2.0: a list item reached by first
+    letter grew the sentence pause, because an index alone was read as
+    continuous reading.  The joiner learned this lesson first -- a short
+    thing carrying an index is an announcement -- and now both halves
+    know it.
+    """
+    driver.speak(["warming up the engine"])
+    _settle(driver)
+    plain = _fedAfter(driver, [("text", ITEM)])
+    indexed = _fedAfter(driver, [("index", 1), ("text", ITEM)])
+    assert plain and indexed
+    assert abs(indexed - plain) < 4410, (
+        "an announcement with an index grew by %d bytes -- first-letter "
+        "navigation has its 0.4 s gap back" % (indexed - plain))
 
 
 def test_an_unindexed_utterance_gains_nothing(driver):

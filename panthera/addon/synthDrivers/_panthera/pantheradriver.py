@@ -1978,11 +1978,22 @@ class PantheraDriver(SynthDriver):
             #: Read before `_join`, which strips the indexes it reports early:
             #: an index is the continuous-reading signal, and this item being
             #: part of a continuous read is what earns it the restored
-            #: sentence pause below.  Text too, so a bare line marker cannot
-            #: buy silence with nothing said.
+            #: sentence pause below.
+            #:
+            #: The second half is the joiner's own lesson, re-learned here by
+            #: ear: **an index alone does not mean a document.**  A list item
+            #: reached by first letter can carry one too, and giving it a
+            #: trailing sentence pause read as first-letter navigation
+            #: growing a 0.4 s gap.  A say-all chunk ends at a full stop and
+            #: has a sentence's length -- `speakWithoutPauses` flushes at the
+            #: last full stop it can find -- so a short or unpunctuated thing
+            #: carrying an index is an announcement, and announcements end
+            #: the way they always have.
+            _chunkText = _joinFragments(
+                [v for k, v in item if k == "text"])
             continuous = (any(k == "index" for k, _ in item)
-                          and any(k == "text" and v.strip()
-                                  for k, v in item))
+                          and _sentenceEnds(_chunkText) >= 1
+                          and len(_chunkText) >= JOIN_MIN_CHARS)
             item = self._join(item, epoch)
             wpm, voice = self._wpm(), self._voiceId
             #: What NVDA has asked us to add to the user's pitch for the
@@ -2038,15 +2049,15 @@ class PantheraDriver(SynthDriver):
                     #: chunk ends with zero trailing frames, so during
                     #: continuous reading every chunk boundary slammed shut
                     #: (panthera-speech#10).  The length is the engine's own,
-                    #: measured: `SENTENCE_PAUSE_FACTOR / wpm`, one law for
-                    #: every voice and generation.  Only on index-carrying
-                    #: utterances, so arrowing and typing gain no latency at
-                    #: all -- and after the *last* chunk of a document it
-                    #: adds half a second of silence nobody can hear.
-                    self._audioQueue.put(
-                        ("audio",
-                         _silence(SENTENCE_PAUSE_FACTOR / max(1, wpm)),
-                         self._epoch))
+                    #: measured -- `SENTENCE_PAUSE_FACTOR / wpm`, one law for
+                    #: every voice and generation -- scaled by the same gap
+                    #: setting that governs announcement parts, so "Short"
+                    #: is audibly short and "Long" is the engine exactly.
+                    pause = _silence(
+                        SENTENCE_PAUSE_FACTOR / max(1, wpm)
+                        * self.PAUSE_SCALE.get(self._pauseMode, 1.0))
+                    if pause:
+                        self._audioQueue.put(("audio", pause, self._epoch))
             for index in pending:               # nothing left to speak
                 self._audioQueue.put(("index", index, None))
             del pending[:]
@@ -2792,6 +2803,15 @@ class PantheraDriver(SynthDriver):
 
     #: How much silence to put where NVDA split the sequence, in milliseconds.
     PAUSE_MS = {"short": 0, "medium": 60, "long": 150}
+
+    #: And how much of the engine's own composed sentence pause to restore
+    #: between continuous-reading chunks, on the same setting -- one control,
+    #: because a person reaching for "shorter gaps" means all of them, and a
+    #: pause the setting cannot touch reads as the setting doing nothing.
+    #: "Long" is the engine's own measured length exactly
+    #: (`SENTENCE_PAUSE_FACTOR`); reported by Tomi, who set Short and could
+    #: still hear the full 0.4 s.
+    PAUSE_SCALE = {"short": 0.4, "medium": 0.7, "long": 1.0}
 
     def _get_availablePausemodes(self):
         from collections import OrderedDict
