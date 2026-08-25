@@ -676,6 +676,17 @@ JOIN_MIN_CHARS = SPLIT_MIN
 #: And never hold more than this, however the text is punctuated: a page with
 #: no full stop in it must not accumulate until the reader notices.
 JOIN_MAX_CHARS = 800
+#: The cap while an input mode is carried, replacing both prose bounds: a
+#: tune's prosodic "." and "!" phonemes count as sentence ends, so the
+#: two-sentence rule split a song into verse-sized utterances and the engine
+#: gave every verse an utterance-final pitch fall -- the last note of each
+#: chunk drooped (panthera-speech#11).  Whole-buffer rendering is the only
+#: reference ever validated against a real Mac, so mid-song the joiner holds
+#: until the song ends, the mode closes, or this cap.  Bounded because an
+#: unbounded hold is memory and pathology exposure for zero benefit: a song
+#: longer than this joins in eight-kilobyte movements and takes one fall per
+#: movement instead of one per verse.
+TUNE_JOIN_MAX_CHARS = 8000
 
 
 REQ_MAGIC = 0x54475233          # 'TGR3'
@@ -1739,6 +1750,15 @@ class PantheraDriver(SynthDriver):
                 part if part.startswith("[[")
                 else pantheranumbers.expand(part, self._numberStyle)
                 for part in COMMAND_SPLIT_RE.split(text))
+        #: The engine's measured wrong guesses, settled in the text whichever
+        #: way the abbreviations setting points: "<proper noun> Dr." read as
+        #: a street mid-news-article, and "X's" after NVDA's camel-case split
+        #: read as the roman numeral -- "SpaceX's" was "space ten's".  See
+        #: pantheraabbrev.disambiguate and [[news-reading-quirks]].
+        text = "".join(
+            part if part.startswith("[[")
+            else pantheraabbrev.disambiguate(part, self._expandAbbreviations)
+            for part in COMMAND_SPLIT_RE.split(text))
         if not self._expandAbbreviations:
             #: **The engine's own abbreviation table, which no setting of its
             #: own reaches.**  TIGER_NO_ABBREV turns off the dictionary rules
@@ -1746,12 +1766,13 @@ class PantheraDriver(SynthDriver):
             #: expressions this host compiles, so declining to compile one
             #: turns it off.  "DR" is not one of them: it is a lexical entry
             #: inside MacinTalk, tagged `Abbrev` and `Doctor`, and rendering it
-            #: runs no regular expression and no query at all.
+            #: runs no regular expression and no query at all -- and neither
+            #: is "Dr.", "St." or 10.7's digit-adjacent units, which is why
+            #: the despelling now covers those forms too.
             #:
             #: So the switch only did half of what its label promised, and the
             #: half it missed is the half Tomi noticed.  See pantheraabbrev.py
-            #: for what is covered and, more to the point, what deliberately is
-            #: not.
+            #: for what is covered and what deliberately is not.
             text = "".join(
                 part if part.startswith("[[") else pantheraabbrev.spell(part)
                 for part in COMMAND_SPLIT_RE.split(text))
@@ -2095,6 +2116,25 @@ class PantheraDriver(SynthDriver):
                 rest.append((kind, value))
         return rest
 
+    def _modeAfter(self, text):
+        """-> the input mode in force at the end of `text`, or None.
+
+        The same scan `_render` runs, asked earlier: entering with the mode
+        the previous utterance left open, the last switch in `text` decides,
+        and a piece with no switch stays in the carried mode.  Mirrors
+        `_render`'s gates exactly -- with commands off nothing switches, and
+        a generation whose input modes are stripped never carries one.
+        """
+        #: getattr because the setting only exists once NVDA has loaded the
+        #: config for this synth; before that, commands are off.
+        if (not getattr(self, "_acceptCommands", False)
+                or self.INPUT_MODES_WORK is False):
+            return None
+        mode = self._inputMode
+        for m in INPUT_MODE_CAPTURE_RE.finditer(text):
+            mode = None if m.group(1).upper() == "TEXT" else m.group(1).upper()
+        return mode
+
     def _join(self, item, epoch):
         """Group finished sentences so the engine has a boundary to breathe at.
 
@@ -2114,7 +2154,12 @@ class PantheraDriver(SynthDriver):
         `EndUtteranceCommand` before we see them -- so the timeout is not a
         safety net, it is the mechanism for the final sentence.
         """
-        if not self._joinSentences:
+        #: Breathing is a comfort setting; keeping a song in one utterance is
+        #: correctness (panthera-speech#11).  Turning the joiner off must not
+        #: bring the verse-final pitch falls back, so a chunk in or entering
+        #: a carried mode joins regardless of the setting.
+        if not self._joinSentences and self._modeAfter(
+                _joinFragments([v for k, v in item if k == "text"])) is None:
             return item
         #: Only while reading continuously.  NVDA marks those lines with an
         #: index; nothing else it sends this driver carries one, so an index is
@@ -2132,8 +2177,18 @@ class PantheraDriver(SynthDriver):
 
         items = self._reportIndexes(item)
         text = _joinFragments([v for k, v in items if k == "text"])
-        while (_sentenceEnds(text) < 2 and len(text) < JOIN_MAX_CHARS
-               and not self._stopped and self._epoch == epoch):
+        #: Mid-song, the prose bounds are the bug: a tune's prosodic "." and
+        #: "!" phonemes count as sentence ends, so the two-sentence rule cut
+        #: a song into verse-sized utterances and every verse-final note took
+        #: the engine's utterance-final pitch fall (panthera-speech#11).
+        #: While a mode is carried -- entering, or switched on by this very
+        #: chunk -- the joiner holds the whole song, bounded only by
+        #: TUNE_JOIN_MAX_CHARS, and an `[[inpt TEXT]]` in a joined chunk
+        #: hands the loop back to the prose rules.
+        carried = self._modeAfter(text) is not None
+        while (not self._stopped and self._epoch == epoch
+               and (len(text) < TUNE_JOIN_MAX_CHARS if carried else
+                    (_sentenceEnds(text) < 2 and len(text) < JOIN_MAX_CHARS))):
             #: Two conditions before this is allowed to *block*, and between
             #: them they leave every latency that matters exactly as it was:
             #:
@@ -2152,8 +2207,14 @@ class PantheraDriver(SynthDriver):
             #: Three conditions, and the third was learned the expensive
             #: way -- see JOIN_MIN_CHARS.  A short announcement carrying a
             #: full stop is still an announcement.
-            block = (self._spokeSinceCancel and _sentenceEnds(text) >= 1
-                     and len(text) >= JOIN_MIN_CHARS)
+            #:
+            #: Mid-song, having a verse in hand is what earns the wait: note
+            #: syntax carries no sentence end and no minimum length, and the
+            #: indexes have already been reported, which is what asks NVDA
+            #: for the next verse.
+            block = (self._spokeSinceCancel
+                     and (carried or (_sentenceEnds(text) >= 1
+                                      and len(text) >= JOIN_MIN_CHARS)))
             try:
                 nxt = self._queue.get(timeout=JOIN_WAIT if block else 0)
             except queue.Empty:
@@ -2162,12 +2223,22 @@ class PantheraDriver(SynthDriver):
                 #: terminate().  Put it back for the loop that owns it.
                 self._queue.put(None)
                 break
+            if self._stopped or self._epoch != epoch:
+                #: A cancel arrived during the wait, so `nxt` was spoken
+                #: *after* it and belongs to the run that follows: absorbing
+                #: it into this stale item is how the first utterance after
+                #: a mid-song cancel used to vanish.  Hand it back for the
+                #: fresh epoch; after a cancel the queue is empty, so the
+                #: re-queue cannot reorder anything.
+                self._queue.put(nxt)
+                break
             if any(kind in ("break", "pitch", "rate", "volume")
                    for kind, _ in nxt):
                 items.extend(nxt)
                 break
             items.extend(self._reportIndexes(nxt))
             text = _joinFragments([v for k, v in items if k == "text"])
+            carried = self._modeAfter(text) is not None
         return items
 
     def _flush(self, run, wpm, voice, adj, epoch, pending=None, vol=0):
