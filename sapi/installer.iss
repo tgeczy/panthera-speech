@@ -21,7 +21,7 @@
 #ifndef StageDir
 #define StageDir "C:\panthera\sapi"
 #endif
-#define AppVer "1.3.0"
+#define AppVer "1.3.1"
 
 [Setup]
 AppId={{8E1B0A4C-5A0D-4F2E-9C1B-7D64A2153F90}
