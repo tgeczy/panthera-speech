@@ -40,14 +40,22 @@ if ($LASTEXITCODE) { throw "settings launcher build failed ($LASTEXITCODE)" }
 # machine's PATH.  Fetched once and kept; the ._pth is rewritten because the
 # embeddable build locks sys.path to that file's entries -- without the ..
 # line, "import pantheradiscs" from the parent folder fails.
+#
+# 3.8.10 on purpose: the last Windows build of CPython that runs on
+# Windows 7, which this community runs.  The extraction chain imports
+# clean under it -- measured -- and an offline extractor gains nothing
+# from a newer interpreter that excludes those machines.
 $py = Join-Path $stage "python"
-if (!(Test-Path (Join-Path $py "python.exe"))) {
-  $pyzip = Join-Path $env:TEMP "python-3.13.1-embed-amd64.zip"
-  Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.13.1/python-3.13.1-embed-amd64.zip" -OutFile $pyzip
+if (!(Test-Path (Join-Path $py "python38.dll"))) {
+  if (Test-Path $py) { Remove-Item -Recurse -Force $py }
+  $pyzip = Join-Path $env:TEMP "python-3.8.10-embed-amd64.zip"
+  if (!(Test-Path $pyzip)) {
+    Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.8.10/python-3.8.10-embed-amd64.zip" -OutFile $pyzip
+  }
   Expand-Archive $pyzip -DestinationPath $py -Force
 }
-Set-Content -Encoding ASCII (Join-Path $py "python313._pth") @'
-python313.zip
+Set-Content -Encoding ASCII (Join-Path $py "python38._pth") @'
+python38.zip
 .
 ..
 # The parent directory is where extract.py and its modules live; the
