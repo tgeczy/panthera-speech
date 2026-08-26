@@ -220,13 +220,30 @@ public:
     STDMETHODIMP Speak(DWORD,REFGUID,const WAVEFORMATEX*,const SPVTEXTFRAG *frags,ISpTTSEngineSite *site){
         if(!token||!site)return E_UNEXPECTED;
         std::wstring text;
+        /* JAWS sends each word as its own SPVA_Speak fragment with an
+         * SPVA_Bookmark between every pair, and a bookmark fragment's
+         * text is its name.  Appending blindly reads the names aloud;
+         * appending without a separator runs the words together.  Only
+         * text meant to be heard goes in, with a space restored at the
+         * seam when neither side brought one.
+         *
+         * The bookmarks themselves are the pacing contract for clients
+         * that index -- NVDA's SAPI driver interleaves them with the text
+         * and waits for TTS_BOOKMARK events to advance; an engine that
+         * never posts them is one whose indexes never arrive, and the
+         * scheduler eventually purges what it thinks is a stuck
+         * utterance.  Learned in the outSPOKEN sibling, minutes after
+         * its first real client. */
+        struct Mark { std::wstring name; size_t chars; };
+        std::vector<Mark> marks;
         for(auto f=frags;f;f=f->pNext){
-            /* JAWS sends each word as its own SPVA_Speak fragment with an
-             * SPVA_Bookmark between every pair, and a bookmark fragment's
-             * text is its name.  Appending blindly reads the names aloud;
-             * appending without a separator runs the words together.  Only
-             * text meant to be heard goes in, with a space restored at the
-             * seam when neither side brought one. */
+            if(f->State.eAction==SPVA_Bookmark){
+                if(f->pTextStart&&f->ulTextLen){
+                    Mark m; m.name.assign(f->pTextStart,f->ulTextLen);
+                    m.chars=text.size(); marks.push_back(m);
+                }
+                continue;
+            }
             switch(f->State.eAction){
             case SPVA_Speak: case SPVA_SpellOut: case SPVA_Pronounce: break;
             default: continue;
@@ -237,6 +254,7 @@ public:
             text.append(f->pTextStart,f->ulTextLen);
         }
         if(text.empty())return S_OK;
+        size_t textChars=text.size();
         if(!setting_dword(L"AcceptCommands",0))
             strip_commands(text);
         if(text.empty())return S_OK;
@@ -317,6 +335,7 @@ public:
         std::string v=utf8(voice), u=utf8(text); unsigned request=REQ_MAGIC_STREAM,flags=0,nv=(unsigned)v.size(),nt=(unsigned)u.size();
         bool ok=exact(inW,&request,4,true)&&exact(inW,&rate,4,true)&&exact(inW,&pitch,4,true)&&exact(inW,&flags,4,true)&&exact(inW,&nv,4,true)&&exact(inW,&nt,4,true)&&exact(inW,(void*)v.data(),nv,true)&&exact(inW,(void*)u.data(),nt,true);CloseHandle(inW);
         unsigned magic=0;int status=-1;bool aborted=false;
+        unsigned long long total=0;
         ok=ok&&exact(outR,&magic,4,false)&&exact(outR,&status,4,false)&&magic==RSP_MAGIC;
         std::vector<BYTE> audio;
         while(ok){
@@ -327,6 +346,23 @@ public:
             if(!exact(outR,audio.data(),bytes,false)){ok=false;break;}
             if(site->GetActions()&SPVES_ABORT){aborted=true;TerminateProcess(pi.hProcess,0);break;}
             ULONG wrote=0;if(FAILED(site->Write(audio.data(),bytes,&wrote))){ok=false;break;}
+            total+=bytes;
+        }
+        if(ok&&status==0&&!aborted){
+            /* One TTS_BOOKMARK event per bookmark fragment, offsets as
+             * proportional estimates by character position -- the audio
+             * streamed as one utterance, and NVDA schedules the index at
+             * its own player position when the event arrives. */
+            for(size_t i=0;i<marks.size();i++){
+                SPEVENT ev;memset(&ev,0,sizeof ev);
+                ev.eEventId=SPEI_TTS_BOOKMARK;
+                ev.elParamType=SPET_LPARAM_IS_STRING;
+                ev.ullAudioStreamOffset=textChars?
+                    (unsigned long long)((double)marks[i].chars/(double)textChars*(double)total):0;
+                ev.wParam=(WPARAM)_wtol(marks[i].name.c_str());
+                ev.lParam=(LPARAM)marks[i].name.c_str();
+                site->AddEvents(&ev,1);
+            }
         }
         CloseHandle(outR);
         if(!aborted)WaitForSingleObject(pi.hProcess,2000);
