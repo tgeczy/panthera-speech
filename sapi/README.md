@@ -14,6 +14,24 @@ and everything else got two to three times faster. The replacement starts
 at the interruption rather than at the next request, so whatever gap the
 listener leaves is spent booting.
 
+**Nothing is logged unless you ask for it.** An earlier build wrote a line
+per utterance to `%TEMP%`, forever, with the first forty characters of the
+text in it -- which for a screen reader is a transcript of whatever its
+owner reads, in a folder anything running as them can open. It is now off,
+and with it off no file is created at all: the engine writes nothing and
+its child's diagnostics go to `NUL`. A build that finds logs left by an
+earlier one deletes them. To turn it on for a bug report:
+
+```
+reg add "HKCU\Software\Panthera SAPI" /v Diagnostics /t REG_DWORD /d 1 /f
+```
+
+`1` records the measurements -- byte counts, flags, which voice -- and that
+is what has actually settled every bug this log has settled. `2` also
+records a slice of the spoken text, and is worth using only when the report
+is about particular words. Either way the file stops at 4 MB and starts
+over. `/d 0` turns it off again and the next run clears up.
+
 Three things follow from the engine outliving the utterance, and
 `sapi/resident_test.cpp` gates all of them on every generation: a warm
 utterance must be byte-identical to a cold one, a settings change must
