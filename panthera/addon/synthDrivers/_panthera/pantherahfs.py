@@ -308,9 +308,52 @@ class ExtentStream(io.RawIOBase):
 # ---- UDIF ---------------------------------------------------------------
 
 ZERO, RAW, IGNORE = 0x00000000, 0x00000001, 0x00000002
+ADC = 0x80000004
 ZLIB, BZ2, LZFSE = 0x80000005, 0x80000006, 0x80000007
 COMMENT, TERMINATOR = 0x7FFFFFFE, 0xFFFFFFFF
 SECTOR = 512
+
+def _adc(src, want):
+    """Apple Data Compression, as used by older disk images.
+
+    Not needed by any 10.4-10.7 installer Apple shipped -- those are zlib or
+    bzip2 -- but a `.dmg` somebody made themselves years ago on a Mac may
+    well be ADC, and until now the reader stopped at "unknown blkx chunk
+    type" for one, which tells the person nothing they can act on.
+
+    Three token shapes, distinguished by the top bits: a literal run, a long
+    match with a two-byte distance, and a short match with a ten-bit one.
+    The copy is byte at a time on purpose -- a run may overlap itself, which
+    is how a repeated pattern is stored.
+    """
+    out = bytearray()
+    i = 0
+    while i < len(src) and len(out) < want:
+        b = src[i]
+        i += 1
+        if b & 0x80:                                  # literal
+            n = (b & 0x7F) + 1
+            out += src[i:i + n]
+            i += n
+        elif b & 0x40:                                # long match
+            n = (b & 0x3F) + 4
+            if i + 1 >= len(src) + 1:
+                break
+            dist = ((src[i] << 8) | src[i + 1]) + 1
+            i += 2
+            for _ in range(n):
+                out.append(out[-dist])
+        else:                                         # short match
+            n = ((b & 0x3F) >> 2) + 3
+            if i >= len(src):
+                break
+            dist = (((b & 0x03) << 8) | src[i]) + 1
+            i += 1
+            for _ in range(n):
+                out.append(out[-dist])
+    return bytes(out)
+
+
 class UDIFReader(io.RawIOBase):
     """A seekable, read-only view of a compressed disk image.
 
@@ -321,26 +364,41 @@ class UDIFReader(io.RawIOBase):
     all zero.
     """
 
-    def __init__(self, stream, size):
+    def __init__(self, stream, size, what="this image"):
         self.f = stream
         self.pos = 0
+        self.what = what
         self.f.seek(size - 512)
         koly = self.f.read(512)
         if koly[:4] != b"koly":
-            raise SystemExit("BaseSystem.dmg has no koly trailer")
+            raise SystemExit("%s has no koly trailer" % what)
+        # **The data fork does not have to start at byte zero.**
+        #
+        # Apple's own redistribution of Lion is an installer package with the
+        # disk image appended to it: the file begins `xar!` and the real UDIF
+        # data starts 12,994,304 bytes in.  Every source offset in the block
+        # tables below is relative to *that*, not to the file.  Ignoring it
+        # puts every read in the middle of the package, where zlib says
+        # "incorrect header check" -- and the caller then reports an image
+        # with no HFS+ volume in it, which is exactly how this reached us.
+        # Reported by Gavin, whose 10.7.5 download is that shape.
+        #
+        # Retail DVDs are not: Leopard and Snow Leopard predate the App Store
+        # and their images start at zero.  This costs them nothing.
+        self.fork = struct.unpack(">Q", koly[24:32])[0]
         xmloff, xmllen = struct.unpack(">QQ", koly[216:232])
         self.f.seek(xmloff)
         plist = plistlib.loads(self.f.read(xmllen))
         self.chunks = []
         for entry in plist["resource-fork"]["blkx"]:
-            self.chunks += self._table(entry["Data"])
+            self.chunks += self._table(entry["Data"], self.fork)
         self.chunks.sort(key=lambda c: c[1])
         self.size = max((c[1] + c[2]) for c in self.chunks) \
             if self.chunks else 0
         self._cache_i, self._cache = -1, b""
 
     @staticmethod
-    def _table(blob):
+    def _table(blob, fork=0):
         if blob[:4] != b"mish":
             return []
         start = struct.unpack(">Q", blob[8:16])[0]
@@ -355,7 +413,7 @@ class UDIFReader(io.RawIOBase):
             if kind in (COMMENT, TERMINATOR):
                 continue
             out.append((kind, (start + osec) * SECTOR, ocount * SECTOR,
-                        soff, slen))
+                        soff + fork, slen))
         return out
 
     def readable(self):
@@ -401,6 +459,9 @@ class UDIFReader(io.RawIOBase):
         elif kind == BZ2:
             self.f.seek(src)
             data = bz2.decompress(self.f.read(srclen))
+        elif kind == ADC:
+            self.f.seek(src)
+            data = _adc(self.f.read(srclen), length)
         elif kind == LZFSE:
             raise SystemExit(
                 "this image uses LZFSE compression, which needs a decoder "
@@ -525,3 +586,49 @@ def safe_join(root, rel):
     if not (dest == root or dest.startswith(root + os.sep)):
         return None
     return dest
+
+
+def open_image(path, what=None):
+    """-> (source, base) for whatever shape of disc image somebody hands us.
+
+    People do not arrive with one kind of file.  A retail Leopard or Snow
+    Leopard DVD is a raw image with an Apple partition map; the same DVD
+    imaged by its owner is usually a *compressed* UDIF; and Apple's own
+    download of Lion is an installer package with a compressed UDIF appended
+    to it, so it begins `xar!` and its real data starts twelve megabytes in.
+    All three are legitimate, and until this function existed only the first
+    one worked.
+
+    `source` is the path itself when the image is raw -- nothing is opened
+    that does not need to be -- or a fresh `UDIFReader` when it is not.  It
+    is deliberately not cached: `Volume` reads through it on whichever thread
+    is extracting, so every caller gets its own.
+    """
+    what = what or os.path.basename(path)
+    size = os.path.getsize(path)
+    f = open(path, "rb")
+    try:
+        def read_at(off, n):
+            f.seek(off)
+            return f.read(n)
+        try:
+            base = find_hfs(read_at, size, what)
+        except BaseException:
+            pass                       # not raw; try it as a disk image
+        else:
+            f.close()
+            return path, base
+        if size < 512:
+            raise SystemExit("%s is too small to be a disc image" % what)
+        f.seek(size - 512)
+        if f.read(4) != b"koly":
+            raise SystemExit(
+                "%s is not a disc image this can read: it has no Apple "
+                "partition map, no HFS+ volume and no UDIF trailer." % what)
+        udif = UDIFReader(f, size, what)
+        base = find_hfs(lambda o, n: (udif.seek(o), udif.read(n))[1],
+                        udif.size, what)
+        return udif, base
+    except BaseException:
+        f.close()
+        raise

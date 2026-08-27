@@ -174,7 +174,12 @@ class Disc(object):
         return os.path.basename(self.path)
 
     def volume(self):
-        return hfs.Volume(self.path, self._base)
+        # Reopened rather than remembered: a compressed image is read through
+        # a decompressing stream, and extraction runs on a different thread
+        # from the dialog that identified it.  One stream shared by two
+        # threads is a bug waiting for a big enough image.
+        source, base = hfs.open_image(self.path)
+        return hfs.Volume(source, base)
 
 
 def _read_version(volume):
@@ -216,16 +221,23 @@ def identify(path):
         disc.problem = "There is no file at that path."
         return disc
     try:
-        with open(path, "rb") as probe:
-            def read_at(off, n, _p=probe):
-                _p.seek(off)
-                return _p.read(n)
-            disc._base = hfs.find_hfs(read_at, os.path.getsize(path), path)
-        volume = hfs.Volume(path, disc._base)
+        source, disc._base = hfs.open_image(path)
+        volume = hfs.Volume(source, disc._base)
     except BaseException:
-        disc.problem = ("This does not look like a Mac OS X install image. "
-                        "It has no Mac partition map and no HFS+ volume "
-                        "inside it.")
+        # **Say what was tried, not what the file is.**
+        #
+        # This used to answer "it has no Mac partition map and no HFS+ volume
+        # inside it" -- a confident claim about somebody's file, when all the
+        # code knew was that it had not found one.  A reader that could not
+        # read compressed disk images said it in that voice to a man holding
+        # a perfectly good copy of Lion, and he concluded his own machine was
+        # broken.  A tool should not be able to make someone doubt their disc
+        # on the strength of a gap in itself.
+        disc.problem = ("This file could not be opened as a Mac OS X install "
+                        "image: it is not a raw disc image, and it has no "
+                        "disk image inside it that this can read. If it is a "
+                        "Mac OS X installer, please report it -- it may be a "
+                        "kind of image this does not handle yet.")
         return disc
 
     disc.version = _read_version(volume)

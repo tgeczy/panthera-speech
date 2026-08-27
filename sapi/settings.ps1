@@ -1,4 +1,4 @@
-param([switch]$RegisterVoices,[switch]$UnregisterVoices,[string]$GenerationList,[string]$DataRoot)
+﻿param([switch]$RegisterVoices,[switch]$UnregisterVoices,[string]$GenerationList,[string]$DataRoot)
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -215,10 +215,12 @@ $expandAbbrev.Checked = [bool](Load-Setting 'ExpandAbbreviations' 1)
 $rateBoost.Checked = [bool](Load-Setting 'RateBoost' 0)
 $inflection.Value = [Math]::Max(0, [Math]::Min(100, [int](Load-Setting 'Inflection' 50)))
 $numberStyle.SelectedIndex = [Math]::Max(0, $numberValues.IndexOf([string](Load-Setting 'NumberStyle' 'fix')))
+$diagnostics.Checked = [bool](Load-Setting 'Diagnostics' 0)
 $acceptCommands.Add_CheckedChanged({ Save-Setting 'AcceptCommands' ([int]$acceptCommands.Checked) })
 $pauses.Add_SelectedIndexChanged({ if ($pauses.SelectedIndex -ge 0) { Save-Setting 'Phrasing' $pausesValues[$pauses.SelectedIndex] } })
 $expandAbbrev.Add_CheckedChanged({ Save-Setting 'ExpandAbbreviations' ([int]$expandAbbrev.Checked) })
 $rateBoost.Add_CheckedChanged({ Save-Setting 'RateBoost' ([int]$rateBoost.Checked) })
+$diagnostics.Add_CheckedChanged({ Save-Setting 'Diagnostics' ([int]$diagnostics.Checked) })
 $inflection.Add_ValueChanged({ Save-Setting 'Inflection' ([int]$inflection.Value) })
 $numberStyle.Add_SelectedIndexChanged({ if ($numberStyle.SelectedIndex -ge 0) { Save-Setting 'NumberStyle' $numberValues[$numberStyle.SelectedIndex] } })
 
@@ -375,8 +377,19 @@ $extractTimer.Add_Tick({
 $selectAll = New-Object Windows.Forms.Button; $selectAll.Text = '&Select all'; $selectAll.Location = New-Object Drawing.Point(12,360); $selectAll.AutoSize=$true
 $deselectAll = New-Object Windows.Forms.Button; $deselectAll.Text = '&Deselect all'; $deselectAll.Location = New-Object Drawing.Point(110,360); $deselectAll.AutoSize=$true
 $chooseRoot = New-Object Windows.Forms.Button; $chooseRoot.Text = 'Data &location...'; $chooseRoot.Location = New-Object Drawing.Point(220,360); $chooseRoot.AutoSize=$true
+# Diagnostics: off, and off means no file is created at all.  A checkbox
+# rather than a registry value because the people most likely to be asked for
+# a log are the least likely to want to be talked through regedit.  It offers
+# level 1 only -- the measurements, which are what actually settle bugs.
+# Level 2 adds the spoken text and stays a deliberate registry edit, because a
+# transcript of everything the machine says should take more than one click.
+$diagnostics = New-Object Windows.Forms.CheckBox
+$diagnostics.Text = 'Write a &diagnostic log'
+$diagnostics.AccessibleName = 'Write a diagnostic log'
+$diagnostics.AccessibleDescription = 'Off by default. Records what the engine did, not what was spoken, to a file in your temp folder. Turn it on only if a bug report asks for it.'
+$diagnostics.Location = New-Object Drawing.Point(340,362); $diagnostics.AutoSize = $true
 $open = New-Object Windows.Forms.Button; $open.Text = '&Open data folder'; $open.Location = New-Object Drawing.Point(12,405); $open.AutoSize=$true
-$extract = New-Object Windows.Forms.Button; $extract.Text = '&Extract from ISO...'; $extract.Location = New-Object Drawing.Point(145,405); $extract.AutoSize=$true
+$extract = New-Object Windows.Forms.Button; $extract.Text = '&Extract from disc image...'; $extract.Location = New-Object Drawing.Point(145,405); $extract.AutoSize=$true
 $register = New-Object Windows.Forms.Button; $register.Text = '&Register'; $register.Location = New-Object Drawing.Point(290,405); $register.AutoSize=$true
 $unregister = New-Object Windows.Forms.Button; $unregister.Text = '&Unregister'; $unregister.Location = New-Object Drawing.Point(390,405); $unregister.AutoSize=$true
 $close = New-Object Windows.Forms.Button; $close.Text = '&Close'; $close.Location = New-Object Drawing.Point(505,405); $close.AutoSize=$true
@@ -448,7 +461,7 @@ $unregister.Add_Click({
 })
 $close.Add_Click({$form.Close()})
 $form.AcceptButton=$register; $form.CancelButton=$close
-$form.Controls.AddRange(@($label,$list,$status,$progress,$acceptCommands,$pausesLabel,$pauses,$expandAbbrev,$rateBoost,$inflLabel,$inflection,$numLabel,$numberStyle,$selectAll,$deselectAll,$chooseRoot,$open,$extract,$register,$unregister,$close))
+$form.Controls.AddRange(@($label,$list,$status,$progress,$acceptCommands,$pausesLabel,$pauses,$expandAbbrev,$rateBoost,$inflLabel,$inflection,$numLabel,$numberStyle,$selectAll,$deselectAll,$chooseRoot,$diagnostics,$open,$extract,$register,$unregister,$close))
 $form.Add_FormClosing({
     if ($script:extractProc -and -not $script:extractProc.HasExited) {
         try { $script:extractProc.Kill() } catch {}
