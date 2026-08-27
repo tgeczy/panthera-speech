@@ -146,6 +146,8 @@ int wmain(int argc, wchar_t **argv) {
     wprintf(L"resident host: %s / %s\n",g_gen.c_str(),g_voice.c_str());
     /* A known state, so the run does not depend on this machine's settings. */
     DWORD wasInfl=setting_dword(L"Inflection",50);
+    DWORD wasExpand=setting_dword(L"ExpandAbbreviations",1);
+    DWORD wasCommands=setting_dword(L"AcceptCommands",0);
     std::wstring wasPhrasing=setting_string(L"Phrasing",L"fewest");
     set_dword(L"Inflection",50); set_string(L"Phrasing",L"fewest");
     set_dword(L"ExpandAbbreviations",1); set_dword(L"AcceptCommands",0);
@@ -233,7 +235,12 @@ int wmain(int argc, wchar_t **argv) {
 
     e->Release();
     host_drop();
+    /* Put the machine back: these are the user's live SAPI settings, not
+     * the test's, and a build gate that quietly turns off somebody's
+     * embedded commands has broken more than it checked. */
     set_dword(L"Inflection",wasInfl);
+    set_dword(L"ExpandAbbreviations",wasExpand);
+    set_dword(L"AcceptCommands",wasCommands);
     set_string(L"Phrasing",wasPhrasing.c_str());
     printf(g_fail?"\n%d check(s) FAILED\n":"\nall resident host checks pass\n",
            g_fail);
