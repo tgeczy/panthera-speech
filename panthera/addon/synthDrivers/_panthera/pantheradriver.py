@@ -1809,16 +1809,35 @@ class PantheraDriver(SynthDriver):
         # synthesizer silent for good, and only 99 brought it back.  A user
         # found that; it is the worst failure this driver has.
         #
-        # So the command is sent when the setting is not the default, and once
-        # more when it returns to the default, and then not again.  An
+        # So the command is sent when the setting is not the default, and an
         # utterance from a driver whose settings were never touched still
         # carries no embedded commands at all.
+        #
+        # **But coming back cannot be said, because there is no way to say
+        # it.**  "[[pmod 100]]" reads as the obvious way to mean "back to
+        # normal", and for eleven of Leopard's twenty-four voices it is --
+        # and for the other thirteen it is simply a different number from
+        # the one that voice was recorded with.  Measured: Albert, Alex,
+        # Bahh, Boing, Cellos, Deranged, Junior, Kathy, Organ, Princess,
+        # Trinoids, Vicki and Zarvox are all *changed* by it and stay
+        # changed.  Alex is the worst of them, because he ignores a raised
+        # pmod outright -- so the command sent to undo an inflection he
+        # never had was the only thing that ever altered his voice.
+        #
+        # pmod is a percentage of a depth that belongs to the voice, and
+        # this driver has no table of those depths and should not grow one.
+        # A channel that has just been opened is at whatever the voice's own
+        # depth is, whichever voice it is.  So the way back to the default
+        # is a new engine, and `_restartHost` is already the safe way to ask
+        # for one -- it raises a flag that `_host()` acts on a few lines
+        # below, on this thread, before this utterance is sent.  It costs
+        # one start-up, on the single utterance where the slider comes home.
         if self._inflection != 50:
             pmod = int(self._inflection * INFLECTION_MAX_PMOD / 100)
             text = "[[pmod %d]]%s" % (pmod, text)
             self._inflectionSent = True
         elif self._inflectionSent:
-            text = "[[pmod 100]]%s" % text
+            self._restartHost()
             self._inflectionSent = False
         # **Volume is always sent now, and that is the simpler rule.**
         #

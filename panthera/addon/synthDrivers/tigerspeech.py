@@ -429,6 +429,9 @@ class SynthDriver(SynthDriver):
                 break
 
         self._proc = None
+        #: Set when the channel has to be replaced rather than talked back to
+        #: its default.  See the inflection block in `_render`.
+        self._restartWanted = False
         self._procLock = threading.Lock()
         self._stopped = False
         #: Bumped by `cancel()`.  Read once at the start of a streamed render
@@ -540,11 +543,33 @@ class SynthDriver(SynthDriver):
         raise last
 
     # -- the host ----------------------------------------------------------
+    def _restartHost(self):
+        """Ask for a fresh engine before the next utterance is sent.
+
+        **Ask, rather than kill.**  Closing the host's stdin from whichever
+        thread noticed is how the sibling driver once cut its own stream in
+        half; the swap belongs where nothing is in flight, which is `_host()`
+        at the top of a render.  Raising a flag is the whole of it.
+        """
+        self._restartWanted = True
+
     def _host(self):
         """The resident engine process, started on demand and restarted if it
         dies.  Startup costs about 20 ms including the 2.1 MB dictionary, so a
         restart after a crash is not something the user would notice."""
         with self._procLock:
+            if self._restartWanted:
+                old, self._proc = self._proc, None
+                self._restartWanted = False
+                if old is not None:
+                    try:
+                        old.stdin.close()
+                        old.wait(timeout=1)
+                    except Exception:
+                        try:
+                            old.kill()
+                        except Exception:
+                            pass
             if self._proc is not None and self._proc.poll() is None:
                 return self._proc
             si = subprocess.STARTUPINFO()
@@ -724,16 +749,32 @@ class SynthDriver(SynthDriver):
         # synthesizer silent for good, and only 99 brought it back.  A user
         # found that; it is the worst failure this driver has.
         #
-        # So the command is sent when the setting is not the default, and once
-        # more when it returns to the default, and then not again.  An
+        # So the command is sent when the setting is not the default, and an
         # utterance from a driver whose settings were never touched still
         # carries no embedded commands at all.
+        #
+        # **Volume can be said back and inflection cannot**, and the
+        # difference is measured rather than guessed.  "[[volm 1.000]]" is a
+        # multiplier, and 1.0 is every voice's own level: none of the
+        # twenty-four is altered by it.  "[[pmod 100]]" looks like the same
+        # move and is not -- pmod is a percentage of a depth that belongs to
+        # the voice, and 100 is simply a different number from the one
+        # thirteen of the twenty-four were recorded with.  Albert, Bahh,
+        # Boing, Cellos, Deranged, Junior, Kathy, Organ, Princess, Trinoids,
+        # Vicki and Zarvox are all changed by it and stay changed.
+        #
+        # This driver has no table of per-voice depths and should not grow
+        # one: a channel that has just been opened is at the right depth for
+        # whichever voice it is.  So the way back to the default is a new
+        # engine, asked for here and acted on by `_host()` a few lines below,
+        # before this utterance goes out.  About 20 ms, once, on the single
+        # utterance where the slider comes home.
         if self._inflection != 50:
             pmod = int(self._inflection * INFLECTION_MAX_PMOD / 100)
             text = "[[pmod %d]]%s" % (pmod, text)
             self._inflectionSent = True
         elif self._inflectionSent:
-            text = "[[pmod 100]]%s" % text
+            self._restartHost()
             self._inflectionSent = False
         #: `volume` is a VolumeCommand offset on NVDA's 0-100 scale, 0
         #: meaning the user's own setting.  At the default it is 0 and `level`

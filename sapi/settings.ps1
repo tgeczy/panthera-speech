@@ -159,15 +159,24 @@ $pausesLabel.Text = '&Pauses:'; $pausesLabel.AutoSize = $true
 $pausesLabel.Location = New-Object Drawing.Point(420,294)
 $pauses = New-Object Windows.Forms.ComboBox
 $pauses.DropDownStyle = 'DropDownList'; $pauses.AccessibleName = 'Pauses'
+# One setting, four generations, and it does not reach all of them: the phrase
+# threshold is an engine tunable parameter, and tunable parameters arrived in
+# MacinTalk 3.4.  Tiger's engine is 3.3, where measured, all five positions
+# render byte-identical audio on every text tried.  It is not hidden, because
+# this setting is global here rather than per generation and most people who
+# have Tiger have a later one as well -- the Tiger driver in the NVDA add-on,
+# which *is* per generation, does not offer it at all.
+$pauses.AccessibleDescription =
+  'Has no effect on Tiger voices: MacinTalk 3.3 has no tunable parameters.'
 $pauses.Location = New-Object Drawing.Point(482,290); $pauses.Size = New-Object Drawing.Size(210,24)
 $pausesValues = @('fewest','fewer','more','most','leopard')
 foreach ($item in 'Fewest pauses','Fewer pauses','More pauses','Most pauses','Engine default') { [void]$pauses.Items.Add($item) }
 
 # The rest of the NVDA driver's engine settings, ported.  Not ported, with
 # reasons: sentence joining and the announcement gap are driver-architecture
-# (SAPI applications control their own chunking, and each utterance is its
-# own process), and the stress respelling assumes NVDA's symbol dictionary
-# already turned ":" into the word "colon", which SAPI input never has.
+# (SAPI applications control their own chunking), and the stress respelling
+# assumes NVDA's symbol dictionary already turned ":" into the word "colon",
+# which SAPI input never has.
 $expandAbbrev = New-Object Windows.Forms.CheckBox
 $expandAbbrev.Text = 'E&xpand abbreviations (Dr, kg)'
 $expandAbbrev.AccessibleName = 'Expand abbreviations'

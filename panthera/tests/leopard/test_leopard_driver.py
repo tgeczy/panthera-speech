@@ -1083,9 +1083,28 @@ def test_volume_comes_back_after_being_taken_to_zero(driver):
 
 
 def test_inflection_comes_back_to_the_middle_too(driver, monkeypatch):
-    """The same trap, one setting over: 'pmod' is channel state as well."""
-    import leopardspeech
+    """The same trap, one setting over -- and the obvious fix was the bug.
+
+    This used to assert that "[[pmod 100]]" was sent, which is the mechanism
+    rather than the outcome, and the mechanism was wrong.  pmod is a
+    percentage of a depth that belongs to the voice, so 100 is not "normal",
+    it is just a number: measured across all twenty-four Leopard voices,
+    thirteen are *altered* by being told 100 and stay altered -- Albert,
+    Alex, Bahh, Boing, Cellos, Deranged, Junior, Kathy, Organ, Princess,
+    Trinoids, Vicki and Zarvox.  Alex is the worst of them, because he
+    ignores a raised pmod entirely, so the command sent to undo an
+    inflection he never had was the only thing that ever changed his voice.
+
+    ("[[volm 1.000]]" next door really is neutral, and that was measured on
+    the same twenty-four rather than assumed from the symmetry: volm is a
+    multiplier, and 1.0 is every voice's own level.)
+
+    So the way home is a new channel, and the question is asked the way that
+    catches it: does the voice sound like it did before anyone touched the
+    slider.
+    """
     voice = driver._get_voice()
+    before = driver._render("testing one two three", 180, voice)
     driver._set_inflection(0)
     driver._render("testing one two three", 180, voice)
 
@@ -1094,15 +1113,18 @@ def test_inflection_comes_back_to_the_middle_too(driver, monkeypatch):
     monkeypatch.setattr(pantheradriver, "_encode",
                         lambda t: (seen.append(t), original(t))[1])
     driver._set_inflection(50)
-    driver._render("testing one two three", 180, voice)
-    assert seen and "[[pmod 100]]" in seen[0], (
-        "returning to the middle sent nothing, so the engine stays flat: %r"
-        % (seen,))
+    back = driver._render("testing one two three", 180, voice)
+    assert back == before, (
+        "the voice did not come back to its own depth: %d bytes against %d"
+        % (len(back), len(before)))
+    assert seen and "[[pmod" not in seen[0], (
+        "the way back is a fresh channel, not a command: %r" % (seen,))
 
     del seen[:]
-    driver._render("testing one two three", 180, voice)
+    after = driver._render("testing one two three", 180, voice)
+    assert after == before, "and it did not stay back"
     assert seen and "[[pmod" not in seen[0], (
-        "the command is still being sent after the setting came back: %r"
+        "a command is still being sent after the setting came back: %r"
         % (seen,))
 
 

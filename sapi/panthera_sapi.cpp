@@ -187,10 +187,11 @@ static bool host_ensure(const std::wstring &tree, const std::wstring &mt,
     return true;
 }
 
-/* The two user settings the NVDA driver has and SAPI users were living
- * without, kept in HKCU by the settings program and read per utterance --
- * each Speak launches a fresh host, so a change takes effect on the very
- * next thing spoken. */
+/* The user settings the NVDA driver has and SAPI users were living without,
+ * kept in HKCU by the settings program and read afresh on every Speak, so a
+ * change takes effect on the very next thing spoken.  The two the *engine*
+ * reads rather than this code -- phrasing and abbreviations -- take effect
+ * by replacing the engine; see host_ensure. */
 static DWORD setting_dword(const wchar_t *name, DWORD def) {
     HKEY k; DWORD v=def, n=sizeof v, t;
     if(!RegOpenKeyExW(HKEY_CURRENT_USER,L"Software\\Panthera SAPI",0,KEY_READ,&k)){
