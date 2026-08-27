@@ -1,3 +1,29 @@
+/* Panthera's voices as a SAPI 5 engine, 32- and 64-bit.
+ *
+ * The engine process stays resident.  Until now every utterance spawned its
+ * own panthera_host.exe and killed it at the end, which cost 25-30 ms of
+ * cold start each time -- 36 ms to first sound for Fred and 41 for Alex,
+ * against 11 warm -- and, less obviously, made the process itself the
+ * answer to three awkward questions: cancel was TerminateProcess, a
+ * settings change took effect because the next spawn read the environment
+ * afresh, and an embedded command could not outlive the channel it was
+ * sent to because neither outlived the utterance.
+ *
+ * Keeping the host re-opens all three, and each is answered where it
+ * arises below.  Two of the answers are the NVDA driver's, which has been
+ * resident since it was written; the third is not.  An interruption still
+ * kills the host, because Panthera's cold start turned out to be cheaper
+ * than its engine's own graceful cancel -- measured, and argued at the
+ * abort path.
+ *
+ * What it buys, measured on Tomi's machine, request to first sound:
+ *
+ *     Tiger  Fred    19 ms cold -> 11 warm      Leopard Fred  29 -> 11
+ *     Snow   Fred    26 ms cold -> 10 warm      Lion    Alex  47 -> 21
+ *
+ * An interrupted utterance costs exactly what it did before.  Everything
+ * else got two to three times faster to first sound.
+ */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <sapi.h>
@@ -8,6 +34,8 @@
 #include <cmath>
 #include <cwctype>
 #include <regex>
+#include <cstdio>
+#include <cstdarg>
 
 static HMODULE g_module;
 static long g_objects;
@@ -35,6 +63,128 @@ static std::wstring token_string(ISpObjectToken *t, const wchar_t *name) {
     wchar_t *v=0; std::wstring r;
     if(t && SUCCEEDED(t->GetStringValue(name,&v)) && v) { r=v; CoTaskMemFree(v); }
     return r;
+}
+
+/* The black box: one line per utterance in %TEMP%\panthera_sapi.log.
+ *
+ * outSPOKEN's afternoon of four COM-layer bugs was settled by exactly this
+ * file and nothing else -- three theories died of it, and the log convicted
+ * in one reading.  A resident host has more state to be wrong about than a
+ * fresh process ever did, so it earns its place here before anyone needs
+ * it.  Cheap enough to leave on. */
+static void logline(const wchar_t *fmt, ...) {
+    wchar_t path[MAX_PATH];
+    DWORD n=GetEnvironmentVariableW(L"TEMP",path,MAX_PATH);
+    if(!n||n>=MAX_PATH-24)return;
+    lstrcatW(path,L"\\panthera_sapi.log");
+    HANDLE f=CreateFileW(path,FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,
+                         0,OPEN_ALWAYS,0,0);
+    if(f==INVALID_HANDLE_VALUE)return;
+    wchar_t line[512];
+    va_list ap; va_start(ap,fmt);
+    int len=_vsnwprintf_s(line,512,_TRUNCATE,fmt,ap);
+    va_end(ap);
+    if(len<0)len=511;
+    char out[1100]; int m=WideCharToMultiByte(CP_UTF8,0,line,len,out,1060,0,0);
+    SYSTEMTIME st; GetLocalTime(&st);
+    char stamp[32];
+    int sn=sprintf_s(stamp,32,"%02d:%02d:%02d.%03d ",st.wHour,st.wMinute,
+                     st.wSecond,st.wMilliseconds);
+    DWORD w;
+    WriteFile(f,stamp,sn,&w,0);
+    WriteFile(f,out,m,&w,0);
+    WriteFile(f,"\r\n",2,&w,0);
+    CloseHandle(f);
+}
+
+/* ---- the resident host ------------------------------------------------ */
+
+static CRITICAL_SECTION g_hostLock;
+static bool g_lockReady;
+static HANDLE g_proc, g_in, g_out;
+/* What the live host was started with.
+ *
+ * The engine reads TIGER_PARAMS and TIGER_NO_ABBREV once, in main, before
+ * serve mode begins (tiger_host.c ~347) -- they are inherited at spawn and
+ * a resident child cannot be told they changed.  Left alone, that makes the
+ * Phrasing and Expand-abbreviations controls quietly stop working, which is
+ * the one failure this project keeps meeting: a setting that does nothing.
+ * So they are remembered here and a difference respawns the host, exactly
+ * as pantheradriver.py's _restartHost does for the same two settings.  The
+ * tree is here for the same reason -- a generation is a different engine
+ * with different data, not a different argument. */
+static std::wstring g_hostTree, g_hostParams, g_hostAbbrev;
+/* Inflection is an embedded [[pmod]] command, and once the channel outlives
+ * the utterance, so does the command.  Sending nothing at the default
+ * therefore does not mean "the default", it means "whatever was set last".
+ * The driver learned that from a user whose volume went to zero and stayed
+ * there -- its own comment calls it the worst failure it has had -- so the
+ * return to the default is *said*, once, and then not again. */
+static bool g_inflSent;
+
+static void host_drop() {
+    if(g_proc){TerminateProcess(g_proc,0);CloseHandle(g_proc);g_proc=0;}
+    if(g_in){CloseHandle(g_in);g_in=0;}
+    if(g_out){CloseHandle(g_out);g_out=0;}
+    g_hostTree.clear();g_hostParams.clear();g_hostAbbrev.clear();
+    g_inflSent=false;            /* a new channel starts at the default */
+}
+static bool host_alive() {
+    if(!g_proc)return false;
+    DWORD code=0;
+    if(!GetExitCodeProcess(g_proc,&code)||code!=STILL_ACTIVE){host_drop();return false;}
+    return true;
+}
+/* The host's diagnostics need somewhere that cannot fill up.
+ *
+ * The NVDA driver hands the child a pipe and spends a thread draining it; a
+ * SAPI DLL has no thread to spare, and an undrained pipe stops the writer
+ * dead the moment it fills.  For a process that lived one utterance that
+ * was unreachable.  For one that lives all session it is a wedge waiting to
+ * happen, and it would present as speech stopping for good.  A file never
+ * blocks.  Named per client process, because a 32-bit and a 64-bit SAPI
+ * client can be running at the same time and each has its own host. */
+static HANDLE host_stderr() {
+    wchar_t path[MAX_PATH];
+    DWORD n=GetEnvironmentVariableW(L"TEMP",path,MAX_PATH);
+    if(!n||n>=MAX_PATH-48)return INVALID_HANDLE_VALUE;
+    wchar_t leaf[48];
+    swprintf_s(leaf,48,L"\\panthera_sapi_host-%u.log",
+               (unsigned)GetCurrentProcessId());
+    lstrcatW(path,leaf);
+    SECURITY_ATTRIBUTES sa={sizeof(sa),0,TRUE};
+    return CreateFileW(path,FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,
+                       &sa,OPEN_ALWAYS,0,0);
+}
+static bool host_ensure(const std::wstring &tree, const std::wstring &mt,
+                        const std::wstring &sd, const std::wstring &vd,
+                        const std::wstring &params, const std::wstring &abbrev) {
+    if(host_alive()&&tree==g_hostTree&&params==g_hostParams&&abbrev==g_hostAbbrev)
+        return true;
+    host_drop();
+    SetEnvironmentVariableW(L"TIGER_PARAMS",params.empty()?NULL:params.c_str());
+    SetEnvironmentVariableW(L"TIGER_NO_ABBREV",abbrev.empty()?NULL:abbrev.c_str());
+    std::wstring cmd=L"\""+module_dir()+L"\\panthera_host.exe\" --serve \""+mt+
+                     L"\" \""+sd+L"\" \""+vd+L"\"";
+    SECURITY_ATTRIBUTES sa={sizeof(sa),0,TRUE}; HANDLE inR,inW,outR,outW;
+    if(!CreatePipe(&inR,&inW,&sa,0)||!CreatePipe(&outR,&outW,&sa,0))return false;
+    SetHandleInformation(inW,HANDLE_FLAG_INHERIT,0);SetHandleInformation(outR,HANDLE_FLAG_INHERIT,0);
+    HANDLE err=host_stderr();
+    STARTUPINFOW si={sizeof(si)};si.dwFlags=STARTF_USESTDHANDLES|STARTF_USESHOWWINDOW;si.wShowWindow=SW_HIDE;
+    si.hStdInput=inR;si.hStdOutput=outW;
+    si.hStdError=err!=INVALID_HANDLE_VALUE?err:GetStdHandle(STD_ERROR_HANDLE);
+    PROCESS_INFORMATION pi={}; std::vector<wchar_t> mutableCmd(cmd.begin(),cmd.end());mutableCmd.push_back(0);
+    BOOL made=CreateProcessW(0,mutableCmd.data(),0,0,TRUE,CREATE_NO_WINDOW,0,module_dir().c_str(),&si,&pi);
+    CloseHandle(inR);CloseHandle(outW);
+    if(err!=INVALID_HANDLE_VALUE)CloseHandle(err);
+    if(!made){CloseHandle(inW);CloseHandle(outR);return false;}
+    CloseHandle(pi.hThread);
+    g_proc=pi.hProcess;g_in=inW;g_out=outR;
+    g_hostTree=tree;g_hostParams=params;g_hostAbbrev=abbrev;
+    logline(L"host started: pid=%u params=\"%.40s\" abbrev=%s tree=\"%.80s\"",
+            (unsigned)pi.dwProcessId,params.c_str(),
+            abbrev.empty()?L"expand":L"OFF",tree.c_str());
+    return true;
 }
 
 /* The two user settings the NVDA driver has and SAPI users were living
@@ -253,11 +403,15 @@ public:
                 text.push_back(L' ');
             text.append(f->pTextStart,f->ulTextLen);
         }
-        if(text.empty())return S_OK;
+        /* Bookmarks are answered even when there is nothing to say.  A
+         * fragment list of nothing but marks still carries indexes a client
+         * is waiting on, and an index that never arrives is an utterance
+         * the scheduler eventually purges -- the same contract, in the case
+         * where it is cheapest to forget. */
+        if(text.empty()&&marks.empty())return S_OK;
         size_t textChars=text.size();
         if(!setting_dword(L"AcceptCommands",0))
             strip_commands(text);
-        if(text.empty())return S_OK;
         if(setting_string(L"NumberStyle",L"fix")==L"fix")
             fix_long_numbers(text);
         /* Same rules, same order as the NVDA driver: the wrong-guess
@@ -267,49 +421,22 @@ public:
         disambiguate(text,expand);
         if(!expand)
             despell(text);
-        /* Inflection is an embedded command prefix, exactly as the NVDA
-         * driver sends it: pmod is inflection times two, nothing at the
-         * halfway default so the untouched utterance stays byte-for-byte
-         * what Apple ships.  No return-to-default bookkeeping here because
-         * each utterance is a fresh process: channel state cannot outlive
-         * it.  Prepended after the stripping on purpose. */
-        {
-            DWORD infl=setting_dword(L"Inflection",50);
-            if(infl>100)infl=100;
-            if(infl!=50){
-                wchar_t cmd[32];
-                swprintf_s(cmd,32,L"[[pmod %u]]",infl*2);
-                text.insert(0,cmd);
-            }
-        }
         /* Phrasing rides the same TIGER_PARAMS the NVDA host reads, and
-         * abbreviations the same TIGER_NO_ABBREV.  The child inherits the
-         * environment; process-global, so two truly simultaneous Speak
-         * calls in one application could momentarily see each other's
-         * value -- the same value, unless the user changes the setting
-         * mid-word. */
+         * abbreviations the same TIGER_NO_ABBREV -- but the host reads its
+         * environment once, at startup, so with a resident engine these are
+         * not settings any more: they are part of *which host*.  Worked out
+         * here, compared in host_ensure, and a change respawns rather than
+         * being silently ignored. */
+        std::wstring params, noAbbrev=expand?L"":L"1";
         {
             std::wstring ph=setting_string(L"Phrasing",L"fewest");
             const wchar_t *thr = ph==L"fewest"?L"-8":ph==L"fewer"?L"-4":
                                  ph==L"more"?L"0":ph==L"most"?L"5":NULL;
-            if(thr)
-                SetEnvironmentVariableW(L"TIGER_PARAMS",
-                    (std::wstring(L"Boundaries.SilThreshold=")+thr).c_str());
-            else
-                SetEnvironmentVariableW(L"TIGER_PARAMS",NULL);
-            SetEnvironmentVariableW(L"TIGER_NO_ABBREV",expand?NULL:L"1");
+            if(thr)params=std::wstring(L"Boundaries.SilThreshold=")+thr;
         }
         std::wstring root=token_string(token,L"DataPath"), gen=token_string(token,L"Generation"), voice=token_string(token,L"VoiceName");
         std::wstring tree=root+L"\\"+gen, mt=tree+L"\\Speech\\Synthesizers\\MacinTalk.SpeechSynthesizer\\Contents\\MacOS\\MacinTalk";
         std::wstring sd=tree+L"\\SpeechDictionary.framework\\Versions\\A\\SpeechDictionary", vd=tree+L"\\Speech\\Voices";
-        std::wstring cmd=L"\""+module_dir()+L"\\panthera_host.exe\" --serve \""+mt+L"\" \""+sd+L"\" \""+vd+L"\"";
-        SECURITY_ATTRIBUTES sa={sizeof(sa),0,TRUE}; HANDLE inR,inW,outR,outW;
-        if(!CreatePipe(&inR,&inW,&sa,0)||!CreatePipe(&outR,&outW,&sa,0))return HRESULT_FROM_WIN32(GetLastError());
-        SetHandleInformation(inW,HANDLE_FLAG_INHERIT,0);SetHandleInformation(outR,HANDLE_FLAG_INHERIT,0);
-        STARTUPINFOW si={sizeof(si)};si.dwFlags=STARTF_USESTDHANDLES|STARTF_USESHOWWINDOW;si.wShowWindow=SW_HIDE;si.hStdInput=inR;si.hStdOutput=outW;si.hStdError=GetStdHandle(STD_ERROR_HANDLE);
-        PROCESS_INFORMATION pi={}; std::vector<wchar_t> mutableCmd(cmd.begin(),cmd.end());mutableCmd.push_back(0);
-        BOOL made=CreateProcessW(0,mutableCmd.data(),0,0,TRUE,CREATE_NO_WINDOW,0,module_dir().c_str(),&si,&pi);CloseHandle(inR);CloseHandle(outW);
-        if(!made){CloseHandle(inW);CloseHandle(outR);return HRESULT_FROM_WIN32(GetLastError());}
         long sapiRate=0;
         site->GetRate(&sapiRate);
         if(sapiRate < -10)sapiRate=-10;if(sapiRate > 10)sapiRate=10;
@@ -332,21 +459,95 @@ public:
             if(pa<-10)pa=-10;if(pa>10)pa=10;
             pitch=(int)(pa*12);
         }
-        std::string v=utf8(voice), u=utf8(text); unsigned request=REQ_MAGIC_STREAM,flags=0,nv=(unsigned)v.size(),nt=(unsigned)u.size();
-        bool ok=exact(inW,&request,4,true)&&exact(inW,&rate,4,true)&&exact(inW,&pitch,4,true)&&exact(inW,&flags,4,true)&&exact(inW,&nv,4,true)&&exact(inW,&nt,4,true)&&exact(inW,(void*)v.data(),nv,true)&&exact(inW,(void*)u.data(),nt,true);CloseHandle(inW);
-        unsigned magic=0;int status=-1;bool aborted=false;
+        unsigned request=REQ_MAGIC_STREAM,flags=0;
+        EnterCriticalSection(&g_hostLock);
+        bool ok=true;int status=0;bool aborted=false;
         unsigned long long total=0;
-        ok=ok&&exact(outR,&magic,4,false)&&exact(outR,&status,4,false)&&magic==RSP_MAGIC;
-        std::vector<BYTE> audio;
-        while(ok){
-            unsigned frames=0;
-            if(!exact(outR,&frames,4,false)){ok=false;break;}
-            if(!frames)break;
-            unsigned bytes=frames*2; audio.resize(bytes);
-            if(!exact(outR,audio.data(),bytes,false)){ok=false;break;}
-            if(site->GetActions()&SPVES_ABORT){aborted=true;TerminateProcess(pi.hProcess,0);break;}
-            ULONG wrote=0;if(FAILED(site->Write(audio.data(),bytes,&wrote))){ok=false;break;}
-            total+=bytes;
+        if(!text.empty()){
+            ok=host_ensure(tree,mt,sd,vd,params,noAbbrev);
+            /* Inflection, decided after the host is settled: a respawn is a
+             * fresh channel sitting at the engine's own default, and
+             * host_drop clears the latch to say so.  pmod is inflection
+             * times two, exactly as the NVDA driver sends it, and nothing
+             * at all goes out at the halfway default so an untouched
+             * utterance stays byte-for-byte what Apple ships.  Prepended
+             * after the stripping on purpose. */
+            {
+                DWORD infl=setting_dword(L"Inflection",50);
+                if(infl>100)infl=100;
+                if(infl!=50){
+                    wchar_t cmd[32];
+                    swprintf_s(cmd,32,L"[[pmod %u]]",infl*2);
+                    text.insert(0,cmd);g_inflSent=true;
+                } else if(g_inflSent){
+                    /* Coming back to the middle is a new host, not a command.
+                     *
+                     * The obvious move is to say "[[pmod 100]]" once, which
+                     * is what the NVDA driver does, and on the three older
+                     * generations it is exactly right.  On Lion's Alex it is
+                     * worse than doing nothing: measured, Alex ignores a
+                     * raised pmod entirely and then *accepts* the 100 -- so
+                     * the command sent to undo an inflection that never
+                     * happened is the only thing that ever changes his
+                     * voice, and it stays changed.  100 is simply not his
+                     * default; pmod is per-voice.
+                     *
+                     * A channel that has just been opened is at whatever
+                     * this voice's default is, whatever that is, on every
+                     * engine.  Restarting costs one cold start, and only on
+                     * the utterance where the listener puts the slider back. */
+                    host_drop();
+                    ok=ok&&host_ensure(tree,mt,sd,vd,params,noAbbrev);
+                }
+            }
+            std::string v=utf8(voice), u=utf8(text);
+            unsigned nv=(unsigned)v.size(),nt=(unsigned)u.size();
+            ok=ok&&exact(g_in,&request,4,true)&&exact(g_in,&rate,4,true)&&exact(g_in,&pitch,4,true)&&exact(g_in,&flags,4,true)&&exact(g_in,&nv,4,true)&&exact(g_in,&nt,4,true)&&exact(g_in,(void*)v.data(),nv,true)&&exact(g_in,(void*)u.data(),nt,true);
+            unsigned magic=0;status=-1;
+            ok=ok&&exact(g_out,&magic,4,false)&&exact(g_out,&status,4,false)&&magic==RSP_MAGIC;
+            std::vector<BYTE> audio;
+            /* Not `while(ok&&!status)`: the host answers every request with
+             * a terminator, an errored one included, and a resident pipe
+             * that skips those four bytes is desynced for good. */
+            while(ok){
+                unsigned frames=0;
+                if(!exact(g_out,&frames,4,false)){ok=false;break;}
+                if(!frames)break;
+                unsigned bytes=frames*2; audio.resize(bytes);
+                if(!exact(g_out,audio.data(),bytes,false)){ok=false;break;}
+                if(site->GetActions()&SPVES_ABORT){
+                    /* An interruption still kills the host, and that is a
+                     * measurement rather than an oversight.
+                     *
+                     * The engine has a graceful cancel -- a named event it
+                     * polls mid-render, which the NVDA driver uses -- and
+                     * taking it here was the plan until it was timed.  The
+                     * host answers a cancel by stopping the engine and
+                     * waiting for its pacer to settle, and that costs a flat
+                     * ~47 ms whatever is in the pipe.  Panthera's whole cold
+                     * start is 21-52 ms.  So asking politely and then
+                     * speaking again came to 58-68 ms end to end, against
+                     * 21-52 for killing it, on every generation.
+                     *
+                     * outSPOKEN went the other way on the same question and
+                     * was also right: 158 ms of Python, driver, ROM and
+                     * emulator meant it could not afford to start again.  A
+                     * host cheap enough to throw away is a different
+                     * problem, and this is the one place the two engines
+                     * deliberately disagree.
+                     *
+                     * The replacement starts here rather than at the next
+                     * Speak, so whatever gap the listener leaves is spent
+                     * booting.  pantheradriver.py reaches for the same trick
+                     * under the name of a standby host. */
+                    aborted=true;
+                    host_drop();
+                    host_ensure(tree,mt,sd,vd,params,noAbbrev);
+                    break;         /* g_out belongs to the replacement now */
+                }
+                ULONG wrote=0;if(FAILED(site->Write(audio.data(),bytes,&wrote))){ok=false;break;}
+                total+=bytes;
+            }
         }
         if(ok&&status==0&&!aborted){
             /* One TTS_BOOKMARK event per bookmark fragment, offsets as
@@ -364,9 +565,14 @@ public:
                 site->AddEvents(&ev,1);
             }
         }
-        CloseHandle(outR);
-        if(!aborted)WaitForSingleObject(pi.hProcess,2000);
-        CloseHandle(pi.hThread);CloseHandle(pi.hProcess);
+        /* A desynced pipe is never reused: whatever went wrong, the next
+         * request would read this one's leftovers as its own. */
+        if(!ok)host_drop();
+        logline(L"speak: chars=%u marks=%u bytes=%u ok=%d status=%d aborted=%d "
+                L"voice=%.24s text=\"%.40s\"",
+                (unsigned)text.size(),(unsigned)marks.size(),(unsigned)total,
+                ok?1:0,status,aborted?1:0,voice.c_str(),text.c_str());
+        LeaveCriticalSection(&g_hostLock);
         return aborted||(ok&&status==0)?S_OK:E_FAIL;
     }
 };
@@ -384,4 +590,12 @@ static HRESULT reg(bool add){
     RegSetValueExW(k,0,0,REG_SZ,(BYTE*)path.c_str(),(DWORD)((path.size()+1)*2));const wchar_t both[]=L"Both";RegSetValueExW(k,L"ThreadingModel",0,REG_SZ,(BYTE*)both,sizeof(both));RegCloseKey(k);return S_OK;
 }
 STDAPI DllRegisterServer(){return reg(true);} STDAPI DllUnregisterServer(){return reg(false);}
-BOOL WINAPI DllMain(HINSTANCE h,DWORD why,LPVOID){if(why==DLL_PROCESS_ATTACH){g_module=h;DisableThreadLibraryCalls(h);}return TRUE;}
+BOOL WINAPI DllMain(HINSTANCE h,DWORD why,LPVOID){
+    if(why==DLL_PROCESS_ATTACH){g_module=h;DisableThreadLibraryCalls(h);
+        if(!g_lockReady){InitializeCriticalSection(&g_hostLock);g_lockReady=true;}}
+    /* The host would exit on its own when the client's write handle closed
+     * -- its stdin read fails and serve mode returns.  This is the case
+     * where the client did not get that far. */
+    if(why==DLL_PROCESS_DETACH){if(g_proc){TerminateProcess(g_proc,0);CloseHandle(g_proc);g_proc=0;}}
+    return TRUE;
+}

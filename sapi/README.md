@@ -3,6 +3,27 @@
 This is a SAPI 5 engine shim built for x86 and x64. Both variants launch the
 existing 32-bit `panthera_host.exe`, because Apple's engine itself is i386.
 
+**The host stays resident.** It used to be started and killed once per
+utterance; keeping it takes the time from asking for speech to hearing it
+from 19 ms to 11 on Tiger, 29 to 11 on Leopard, 26 to 10 on Snow Leopard,
+and 47 to 21 for Lion's Alex. An interrupted utterance still kills the
+host -- measured, that is cheaper here than the engine's own graceful
+cancel, which costs a flat ~47 ms to stop and settle where a whole cold
+start is 21-52 ms -- so interruptions cost exactly what they always did
+and everything else got two to three times faster. The replacement starts
+at the interruption rather than at the next request, so whatever gap the
+listener leaves is spent booting.
+
+Three things follow from the engine outliving the utterance, and
+`sapi/resident_test.cpp` gates all of them on every generation: a warm
+utterance must be byte-identical to a cold one, a settings change must
+respawn the host rather than be quietly ignored by one that read its
+environment at startup, and an embedded command must not be left in force.
+That last is why returning **Inflection** to the middle restarts the engine
+instead of sending `[[pmod 100]]` -- 100 is a value, not a default, and on
+Lion's Alex, who ignores a raised inflection entirely, sending it is the
+only thing that ever changes his voice.
+
 Run `powershell -ExecutionPolicy Bypass -File .\sapi\build.ps1`. All build and
 test output is staged under `C:\panthera\sapi`; no generated file is written
 to this repository. Run `C:\panthera\sapi\settings.cmd` to see which speech
