@@ -18,7 +18,7 @@ sys.path.insert(0, _ADDON)
 
 
 def _labels():
-    import leopardspeech
+    from synthDrivers import leopardspeech
     out = []
     for s in leopardspeech.SynthDriver.supportedSettings:
         name = getattr(s, "displayName", None)
@@ -41,7 +41,7 @@ def test_every_setting_of_ours_has_an_access_key():
     """NVDA's own Voice/Rate/Pitch controls bring their own labels; ours are
     the ones declared here, and a setting with no key cannot be reached from
     the keyboard at all."""
-    import leopardspeech
+    from synthDrivers import leopardspeech
     ours = [s for s in leopardspeech.SynthDriver.supportedSettings
             if getattr(s, "id", None) and isinstance(
                 getattr(s, "displayName", None), str)]

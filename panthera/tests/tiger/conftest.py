@@ -13,7 +13,7 @@ import pytest
 
 @pytest.fixture(scope="session")
 def engine_tree():
-    import tigerspeech
+    from synthDrivers import tigerspeech
     tree = tigerspeech.find_tree()
     if not tree:
         pytest.skip("no Tiger speech tree; set TIGER_TREE")
@@ -24,7 +24,7 @@ def engine_tree():
 
 @pytest.fixture
 def driver(engine_tree):
-    import tigerspeech
+    from synthDrivers import tigerspeech
     d = tigerspeech.SynthDriver()
     yield d
     d.terminate()

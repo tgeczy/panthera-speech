@@ -10,7 +10,7 @@ import os
 import sys
 import types
 
-import pantheratrees
+from synthDrivers._panthera import pantheratrees
 
 
 class _FakeKey(object):

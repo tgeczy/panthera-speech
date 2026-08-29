@@ -13,7 +13,7 @@ deterministically, so the appended silence is measurable to the byte.
 """
 import time
 
-import pantheradriver
+from synthDrivers._panthera import pantheradriver
 
 #: Long enough to pass JOIN_MIN_CHARS and carrying a sentence end -- the two
 #: marks of a document chunk rather than an announcement.

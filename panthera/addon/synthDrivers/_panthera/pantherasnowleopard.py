@@ -63,9 +63,9 @@ line.
 """
 import os
 
-import pantheratrees
-from pantheratrees import (PLAYABLE_ENGINES, aac_available,  # noqa: F401
-                           config_base, is_tree)
+from . import pantheratrees
+from .pantheratrees import (PLAYABLE_ENGINES, aac_available,  # noqa: F401
+                            config_base, is_tree)
 
 CONFIG_DIRNAME = os.path.join("macintalk", "snowleopard")
 

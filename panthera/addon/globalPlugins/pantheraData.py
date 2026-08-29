@@ -25,7 +25,6 @@ missed.  The generations live in `GENERATIONS` below, and adding Snow Leopard
 or Lion is a table entry.
 """
 import os
-import sys
 import textwrap
 import threading
 
@@ -35,24 +34,20 @@ import gui
 import wx
 from logHandler import log
 
-_ADDON = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_ENGINE_DIR = os.path.join(_ADDON, "synthDrivers", "_panthera")
-if _ENGINE_DIR not in sys.path:
-    sys.path.insert(0, _ENGINE_DIR)
-
 # Finding the engines lives in the tree modules, not here: the drivers need
 # exactly the same answer, and two copies of a lookup is two chances to
 # disagree about where an engine is.
 #
-# The `panthera` prefix is not tidiness.  Every NVDA add-on shares one
+# Named absolutely rather than relatively because this is `globalPlugins`, not
+# `synthDrivers`; NVDA puts every add-on's `synthDrivers` folder on the real
+# `synthDrivers.__path__`, so the package is reachable from here by name.
+# That it is a package is the point.  Every NVDA add-on shares one
 # `sys.modules`, and while somebody still has the old `tigerspeech` or
 # `leopardspeech` add-on installed alongside this one, their private folders
-# are on `sys.path` too.  Both of those hold a `leopardtree`; a name no older
-# add-on ever used is what keeps this one out of that fight.
-import pantheralion                                           # noqa: E402
-import pantheraleopard                                        # noqa: E402
-import pantherasnowleopard                                    # noqa: E402
-import pantheratiger                                          # noqa: E402
+# are on `sys.path` too -- both holding a `leopardtree`.  Nothing here is
+# reached that way any more, so the fight cannot start.
+from synthDrivers._panthera import (pantheraleopard, pantheralion,
+                                    pantherasnowleopard, pantheratiger)
 
 #: **One dialog covering every Macintosh speech add-on, not one each and not
 #: one that only mentions whichever add-on got there first.**
@@ -605,7 +600,7 @@ def open_speech_data_dialog(select=None):
     """
     try:
         import gui
-        import pantheramanager
+        from synthDrivers._panthera import pantheramanager
         lines, _still_missing = _engine_report()
         pantheramanager.SpeechDataDialog.show(gui.mainFrame, GENERATIONS,
                                               lines, select=select)
@@ -736,7 +731,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
             # to act on it. An import error here must not cost the user the
             # answer they came for, so the old box is still the fallback.
             try:
-                import pantheramanager
+                from synthDrivers._panthera import pantheramanager
                 pantheramanager.SpeechDataDialog.show(
                     gui.mainFrame, GENERATIONS, lines)
                 return
@@ -864,7 +859,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
         folder -- which is what this dialog did before there was better.
         """
         try:
-            import pantheramanager
+            from synthDrivers._panthera import pantheramanager
             lines, _still_missing = _engine_report()
             pantheramanager.SpeechDataDialog.show(
                 gui.mainFrame, GENERATIONS, lines,

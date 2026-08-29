@@ -10,7 +10,7 @@ import time
 import numpy as np
 import pytest
 
-import pantheradriver
+from synthDrivers._panthera import pantheradriver
 
 
 def _settle(player, want_bytes, timeout=5.0):
@@ -103,7 +103,7 @@ def test_a_long_utterance_does_not_poison_the_engine(driver):
 
 def test_only_playable_engines_are_offered(engine_tree):
     """Whatever reaches the list must be something the host can render."""
-    import pantheraleopard as tree
+    from synthDrivers._panthera import pantheraleopard as tree
     _mt, _sd, voicesdir = tree.engine_paths(engine_tree)
     offered = tree.read_voices(voicesdir, playable_only=True)
     assert offered, "nothing offered at all"
@@ -118,7 +118,7 @@ def test_vicki_is_withheld_without_an_aac_decoder(engine_tree, monkeypatch):
     mutes the screen reader for someone who then cannot hear their way back
     out -- so the list has to drop her instead.
     """
-    import pantheraleopard as tree
+    from synthDrivers._panthera import pantheraleopard as tree
     _mt, _sd, voicesdir = tree.engine_paths(engine_tree)
     with_decoder = tree.read_voices(voicesdir, playable_only=True)
     assert any(e == "meow" for _b, _d, e in with_decoder), \
@@ -139,7 +139,7 @@ def test_vicki_is_withheld_without_an_aac_decoder(engine_tree, monkeypatch):
 
 def test_voices_are_read_from_the_install(engine_tree):
     """The list must come from the user's files, not a table that can drift."""
-    import leopardspeech
+    from synthDrivers import leopardspeech
     _mt, _sd, voicesdir = leopardspeech.engine_paths(engine_tree)
     voices = leopardspeech.read_voices(voicesdir)
     assert voices, "no voices found"
@@ -176,11 +176,11 @@ def test_missing_tree_refuses_to_load_rather_than_going_silent(monkeypatch,
     Patch `tree`, not the driver: the lookup lives there, so the global plugin
     that offers to open the folder gets exactly the same answer.
     """
-    import leopardspeech
+    from synthDrivers import leopardspeech
     # `pantheraleopard`, not `tree`: every add-on shares one sys.modules, and
     # rename is exactly what stops this one loading Tiger's copy.  The test
     # kept the old name and had been failing to import ever since.
-    import pantheraleopard as tree
+    from synthDrivers._panthera import pantheraleopard as tree
     monkeypatch.delenv("LEOPARD_TREE", raising=False)
     monkeypatch.setattr(tree, "config_base", lambda: str(tmp_path))
     assert tree.find_tree() is None
@@ -328,7 +328,7 @@ def test_a_voice_change_needs_no_utterance_of_its_own(driver):
     it, so a queued voice change would be eaten and the confirmation spoken in
     the old voice.
     """
-    import leopardspeech
+    from synthDrivers import leopardspeech
     voices = [b for b, _d, _e in driver._voices]
     other = next(v for v in voices if v != driver._get_voice())
     _warm(driver)
@@ -591,7 +591,7 @@ def test_every_index_is_reported_even_when_lines_are_joined(driver):
 def test_a_break_command_becomes_real_silence(driver):
     """NVDA asking for a pause in so many words was dropped until now."""
     import speech.commands
-    import leopardspeech
+    from synthDrivers import leopardspeech
     _warm(driver)
     _f1, plain = _speakAndWait(driver, ["one", "two"])
     _f2, withGap = _speakAndWait(driver, ["one",
@@ -604,7 +604,7 @@ def test_a_break_command_becomes_real_silence(driver):
 
 def test_the_pause_setting_lengthens_the_gaps(driver):
     """The knob two testers asked for, in both directions."""
-    import leopardspeech
+    from synthDrivers import leopardspeech
     _warm(driver)
     driver._set_pauseMode("short")
     _f, short = _speakAndWait(driver, ["alpha", "beta"])
@@ -617,7 +617,7 @@ def test_the_pause_setting_lengthens_the_gaps(driver):
 
 def test_fragments_are_joined_without_gluing_words_together(driver):
     """"link" then "Home" must not reach the engine as "linkHome"."""
-    import leopardspeech
+    from synthDrivers import leopardspeech
     join = pantheradriver._joinFragments
     assert join(["link", "Home"]) == "link Home"
     assert join(["Read more about it ", "here"]) == "Read more about it here"
@@ -627,7 +627,7 @@ def test_fragments_are_joined_without_gluing_words_together(driver):
 
 def test_typographic_characters_reach_the_engine_as_macroman():
     """The engine's text is a single-byte Mac encoding, not UTF-8."""
-    import leopardspeech
+    from synthDrivers import leopardspeech
     enc = pantheradriver._encode
     assert enc(u"—") == b"\xd1"
     assert enc(u"–") == b"\xd0"
@@ -705,7 +705,7 @@ def test_volume_actually_changes_the_level(driver):
 
 def test_full_volume_changes_nothing_about_the_request(driver):
     """The default must not perturb what has been byte-identical for months."""
-    import leopardspeech
+    from synthDrivers import leopardspeech
     driver._set_volume(100)
     text = "Hello there."
     a = driver._render(text, 180, driver._get_voice())
@@ -722,7 +722,7 @@ def test_volume_defaults_to_full_not_nvdas_fifty():
     within the hour: "alex got quieter, not by a whole lot, but it was
     definitely noticeable".
     """
-    import leopardspeech
+    from synthDrivers import leopardspeech
     from synthDriverHandler import SynthDriver
     setting = pantheradriver._fullVolumeByDefault(SynthDriver.VolumeSetting())
     # 90, not 100: that is where each voice reaches its own measured maximum,
@@ -753,7 +753,7 @@ def test_a_typographic_apostrophe_is_an_apostrophe():
     apostrophes.  Reported as the speech "breaking up at and data", which is
     where it landed after the engine lost its place.
     """
-    import leopardspeech
+    from synthDrivers import leopardspeech
     enc = pantheradriver._encode
     assert enc(u"Canopy’s") == b"Canopy's"
     assert enc(u"‘quoted’") == b"'quoted'"
@@ -794,7 +794,7 @@ def test_rate_boost_actually_speaks_faster(driver):
     have made everybody's existing setting faster without asking -- the same
     mistake as a volume control that arrives at half.
     """
-    import leopardspeech
+    from synthDrivers import leopardspeech
     _warm(driver)
     driver._set_rate(100)
     driver._set_rateBoost(False)
@@ -829,7 +829,7 @@ def test_inflection_flattens_and_exaggerates_the_voice(driver):
     climbs in pitch instead, 101.4 Hz to 125.9.  Mean F0 rises on every voice.
     """
     import struct as _s
-    import leopardspeech
+    from synthDrivers import leopardspeech
 
     def meanF0(pcm):
         v = np.frombuffer(pcm, dtype="<i2").astype(float) / 32768.0
@@ -868,7 +868,7 @@ def test_the_default_utterance_carries_no_embedded_commands(driver):
     text, which is what keeps the default render byte-for-byte what it has
     always been -- and what the Tiger regression baseline depends on.
     """
-    import leopardspeech
+    from synthDrivers import leopardspeech
     driver._set_volume(100)
     driver._set_inflection(50)
     a = driver._render("hello there", 180, driver._get_voice())
@@ -940,7 +940,7 @@ def test_an_engine_that_cannot_stream_still_speaks(driver, monkeypatch):
     Simulated by asking for a magic no host will ever know.  The driver must
     notice, stop asking, say so where somebody will see it, and speak.
     """
-    import leopardspeech
+    from synthDrivers import leopardspeech
     _warm(driver)
     monkeypatch.setattr(pantheradriver, "REQ_MAGIC_STREAM", 0x54475239)
     assert driver._streaming, "streaming should start on"
@@ -1278,7 +1278,7 @@ def test_interrupting_over_and_over_leaves_one_engine_running(driver,
     are started by a thread and killed by a thread, and a burst of cancels
     arrives faster than either finishes.
     """
-    import leopardspeech
+    from synthDrivers import leopardspeech
     started = []
     realPopen = leopardspeech.subprocess.Popen
 
@@ -1346,7 +1346,7 @@ def test_the_volume_table_covers_every_voice_we_offer(driver):
     Worth failing on anyway: a voice added later should be measured rather
     than left behind at the old level while everything around it got louder.
     """
-    import leopardspeech
+    from synthDrivers import leopardspeech
     missing = [entry[0] for entry in driver._voices
                if entry[0] not in leopardspeech.VOLUME_NORM]
     assert not missing, (

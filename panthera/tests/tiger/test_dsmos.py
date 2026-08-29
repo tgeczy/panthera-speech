@@ -14,7 +14,7 @@ import os
 
 import pytest
 
-from _panthera import pantheratiger as tree
+from synthDrivers._panthera import pantheratiger as tree
 
 
 def _write_tree(root, engine_bytes, dict_bytes):

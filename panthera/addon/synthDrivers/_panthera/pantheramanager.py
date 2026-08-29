@@ -25,7 +25,7 @@ import wx
 from logHandler import log
 import ui
 
-import pantheradiscs
+from . import pantheradiscs
 
 #: How much of the way through before saying so out loud.
 #:

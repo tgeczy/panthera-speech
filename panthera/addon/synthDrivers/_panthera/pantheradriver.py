@@ -741,10 +741,10 @@ if _HERE not in sys.path:
 #: Prefixed for the same reason, and one worse: `numbers` is a module in
 #: Python's own standard library, and this folder is at the front of
 #: `sys.path`, so a file of that name would shadow it for the whole of NVDA.
-import pantheraabbrev                                         # noqa: E402
-import pantheranumbers                                        # noqa: E402
+from . import pantheraabbrev                                  # noqa: E402
+from . import pantheranumbers                                 # noqa: E402
 #: Prefixed for the same reason as the two above.
-import pantherastress                                         # noqa: E402
+from . import pantherastress                                  # noqa: E402
 
 
 #: **Named holes, not positional ones.**  The version this replaced had one

@@ -110,11 +110,20 @@ def _stage_tree(cfg_dir):
     each -- which has the happy side effect of exercising the real lookup path
     instead of bypassing it.
     """
-    sys.path.insert(0, ADDON)
-    # The drivers themselves add this when they load, but the tests reach into
-    # the shared body directly -- a module-level `import pantheradriver` runs
-    # at collection, before any driver has been imported to do it for us.
-    sys.path.insert(0, PRIVATE)
+    # `synthDrivers` as a real package rooted at the add-on's own folder,
+    # which is exactly what NVDA builds:
+    # `addonHandler.Addon.addToPackagePath` inserts every add-on's
+    # `synthDrivers` directory into the real package's `__path__`.
+    #
+    # Registering it the same way here means the tests exercise the import
+    # path NVDA actually uses -- `from ._panthera import ...` inside a driver,
+    # `synthDrivers._panthera.*` from the global plugin.  A flattened stand-in
+    # on `sys.path` would let a broken relative import pass the suite and fail
+    # only once it was loaded by NVDA, which is the worst place to find it.
+    if "synthDrivers" not in sys.modules:
+        pkg = types.ModuleType("synthDrivers")
+        pkg.__path__ = [ADDON]
+        sys.modules["synthDrivers"] = pkg
     for env_name, pointer in TREES:
         # No guesses.  Whoever runs the tests says where their tree is,
         # exactly as a user does -- and guessing would put somebody's disk

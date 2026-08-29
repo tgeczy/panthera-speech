@@ -15,10 +15,10 @@ import time
 
 import pytest
 
-import leopardspeech
-import pantheradriver
-from leopardspeech import SynthDriver
-from pantheradriver import _sentenceEnds
+from synthDrivers import leopardspeech
+from synthDrivers._panthera import pantheradriver
+from synthDrivers.leopardspeech import SynthDriver
+from synthDrivers._panthera.pantheradriver import _sentenceEnds
 
 
 S1 = "The deadline is now only days away."

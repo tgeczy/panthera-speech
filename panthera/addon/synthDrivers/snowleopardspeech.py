@@ -15,20 +15,13 @@ does, talks the way 10.5 does, and every piece of that already existed; what
 it took was two bug fixes in code that had only ever met one of the two.
 `_panthera/pantherasnowleopard.py` has the table.
 """
-import os
 import subprocess                                             # noqa: F401
-import sys
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_ENGINE_DIR = os.path.join(_HERE, "_panthera")
-if _ENGINE_DIR not in sys.path:
-    sys.path.insert(0, _ENGINE_DIR)
-
-# Imported under a `panthera` prefix for the reason `leopardspeech.py` sets
-# out at length: every NVDA add-on shares one `sys.modules`, and a generic
-# name here once had Leopard speaking in Tiger's voices.
-import pantheradriver                                         # noqa: E402
-import pantherasnowleopard                                    # noqa: E402
+# Imported out of the package for the reason `leopardspeech.py` sets out at
+# length: every NVDA add-on shares one `sys.modules`, a generic name here once
+# had Leopard speaking in Tiger's voices, and a package cannot collide in that
+# namespace at all.
+from ._panthera import pantheradriver, pantherasnowleopard
 
 HOST_EXE = pantherasnowleopard.HOST_EXE
 find_tree = pantherasnowleopard.find_tree

@@ -35,24 +35,17 @@ the Tools menu report is where you find out why Lion is missing, and the
 first-run message points at it by name.
 """
 import os
-import sys
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_ENGINE_DIR = os.path.join(_HERE, "_panthera")
-if _ENGINE_DIR not in sys.path:
-    sys.path.insert(0, _ENGINE_DIR)
+from autoSettingsUtils.driverSetting import DriverSetting      # noqa: F401
+from logHandler import log
+from synthDriverHandler import SynthDriver
 
-from autoSettingsUtils.driverSetting import DriverSetting      # noqa: E402,F401
-from logHandler import log                                     # noqa: E402
-from synthDriverHandler import SynthDriver                     # noqa: E402
-
-# Under a `panthera` prefix for the reason `leopardspeech.py` sets out at
-# length: every add-on shares one `sys.modules`, and an older `tigerspeech` or
-# `leopardspeech` add-on may still be running beside this one.
-import pantheraleopard                                         # noqa: E402
-import pantheralion                                            # noqa: E402
-import pantherasnowleopard                                     # noqa: E402
-import pantheratiger                                           # noqa: E402
+# Out of the package for the reason `leopardspeech.py` sets out at length:
+# every add-on shares one `sys.modules`, an older `tigerspeech` or
+# `leopardspeech` add-on may still be running beside this one, and a package
+# cannot collide in that namespace at all.
+from ._panthera import (pantheraleopard, pantheralion,
+                        pantherasnowleopard, pantheratiger)
 
 #: Where the global plugin leaves the callable that opens the speech data
 #: tool.  A string rather than an import: a synth driver reaching into a global

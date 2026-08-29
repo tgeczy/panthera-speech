@@ -36,7 +36,7 @@ import io
 import os
 import re
 
-import pantherahfs as hfs
+from . import pantherahfs as hfs
 
 #: Where Apple states the version, on every image from 10.4 to 14.
 VERSION_PLIST = "System/Library/CoreServices/SystemVersion.plist"

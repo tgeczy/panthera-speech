@@ -12,16 +12,10 @@ and pitch.  That is also why the shared body lives one folder down: NVDA scans
 `synthDrivers/` for modules with a `SynthDriver` class in them, and a second
 one up here would be a second synthesizer in the list.
 """
-import os
 import subprocess                                             # noqa: F401
-import sys
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_ENGINE_DIR = os.path.join(_HERE, "_panthera")
-if _ENGINE_DIR not in sys.path:
-    sys.path.insert(0, _ENGINE_DIR)
-
-# Both imported under a `panthera` prefix, and that is not cosmetic.
+# Imported out of the package rather than off `sys.path`, and that is not
+# cosmetic.
 #
 # Every NVDA add-on shares one `sys.modules`.  This driver and its Tiger
 # sibling both put their private folder on `sys.path`, and both used to
@@ -31,12 +25,13 @@ if _ENGINE_DIR not in sys.path:
 # perfectly, and completely wrong.  Nothing failed, which is why it took a
 # user noticing the wrong voices to see it.
 #
-# Sharing one folder does not retire that rule, it sharpens it: while somebody
-# still has the old `tigerspeech` or `leopardspeech` add-on installed
-# alongside this one, their private folders are on `sys.path` too.  A prefix
-# no older add-on ever used is what keeps them apart.
-import pantheradriver                                         # noqa: E402
-import pantheraleopard                                        # noqa: E402
+# A prefix no older add-on used was the answer for as long as this folder was
+# reached through `sys.path`.  A package ends the hazard rather than naming its
+# way around it: these are `synthDrivers._panthera.*` and cannot collide in the
+# flat namespace at all, so somebody still running the old `tigerspeech` or
+# `leopardspeech` add-on beside this one is no longer a hazard.  The reasoning
+# is kept in full in `_panthera/__init__.py`.
+from ._panthera import pantheradriver, pantheraleopard
 
 #: Re-exported because finding the engine is the same question the global
 #: plugin asks, and two copies of a lookup are two chances to disagree about

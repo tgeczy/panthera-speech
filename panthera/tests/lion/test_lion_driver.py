@@ -11,12 +11,12 @@ import os
 
 import pytest
 
-import pantheradriver
+from synthDrivers._panthera import pantheradriver
 
 
 def test_the_driver_is_named_what_nvda_stores_settings_under():
     """A rename resets everybody's voice, rate and pitch.  Pin it."""
-    import lionspeech
+    from synthDrivers import lionspeech
     assert lionspeech.SynthDriver.name == "lionspeech"
 
 
@@ -27,8 +27,8 @@ def test_lion_is_its_own_folder_and_not_leopards():
     voices under Leopard's name.  Nothing failed; a user noticed the wrong
     voices.  Two generations that speak the same calls make it easy to repeat.
     """
-    import pantheralion
-    import pantheraleopard
+    from synthDrivers._panthera import pantheralion
+    from synthDrivers._panthera import pantheraleopard
     assert pantheralion.CONFIG_DIRNAME != pantheraleopard.CONFIG_DIRNAME
     assert pantheralion.CONFIG_DIRNAME.endswith("lion")
 
@@ -42,7 +42,7 @@ def test_the_abi_library_is_required_as_well_as_the_runtime(tmp_path,
     vptr, so it misbehaves later and somewhere else.  Refusing up front is the
     only version of that failure anyone can act on.
     """
-    import pantheralion
+    from synthDrivers._panthera import pantheralion
     tree = tmp_path / "lion"
     (tree / "Speech" / "Voices").mkdir(parents=True)
     monkeypatch.setattr(pantheralion, "config_base", lambda: str(tmp_path))
@@ -67,8 +67,8 @@ def test_a_generation_with_no_data_is_not_in_the_list(tmp_path, monkeypatch):
     every generation, hidden ones included, so there is somewhere to find out
     why -- which is exactly what hiding used to cost.
     """
-    import lionspeech
-    import pantheralion
+    from synthDrivers import lionspeech
+    from synthDrivers._panthera import pantheralion
     monkeypatch.delenv("LION_TREE", raising=False)
     monkeypatch.setattr(pantheralion, "config_base", lambda: str(tmp_path))
     assert pantheralion.find_tree() is None
@@ -90,7 +90,7 @@ def test_the_vocalizer_voices_are_not_offered(engine_tree):
     them out is that the descriptor still has to be there.  See
     `tests/test_voice_names.py`.
     """
-    import lionspeech
+    from synthDrivers import lionspeech
     _, _, voicesdir = lionspeech.engine_paths(engine_tree)
     on_disk = [d[:-len(".SpeechVoice")] for d in os.listdir(voicesdir)
                if d.endswith(".SpeechVoice")]
@@ -104,7 +104,7 @@ def test_the_vocalizer_voices_are_not_offered(engine_tree):
 
 def test_the_voice_list_is_the_twenty_four_that_speak(engine_tree):
     """2 concatenative, 3 MacinTalk Pro and 19 MacinTalk 3."""
-    import lionspeech
+    from synthDrivers import lionspeech
     _, _, voicesdir = lionspeech.engine_paths(engine_tree)
     voices = lionspeech.read_voices(voicesdir)
     engines = {}
@@ -155,7 +155,7 @@ def test_the_volume_table_covers_every_voice_we_offer(driver):
     Worth failing on anyway: a voice added later should be measured rather
     than left behind at the old level while everything around it got louder.
     """
-    import lionspeech
+    from synthDrivers import lionspeech
     missing = [entry[0] for entry in driver._voices
                if entry[0] not in lionspeech.VOLUME_NORM]
     assert not missing, (
@@ -171,8 +171,8 @@ def test_lions_levels_are_lions_and_not_leopards(driver):
     1.80, Lion's sits 2 dB below and is given 1.19. Leopard's factor here
     asks for 3.6 dB this recording does not have, and clips.
     """
-    import lionspeech
-    import pantheradriver
+    from synthDrivers import lionspeech
+    from synthDrivers._panthera import pantheradriver
     assert lionspeech.VOLUME_NORM["Alex"] < 1.4, (
         "Alex is at %.2f, which is Leopard's figure rather than Lion's"
         % lionspeech.VOLUME_NORM["Alex"])

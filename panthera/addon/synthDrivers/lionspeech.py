@@ -17,20 +17,13 @@ rate and pitch moved to `SESetSpeechProperty`, and a real FFT because 10.7
 correlates its time-scaling in the frequency domain.  By the time the driver
 is involved, 10.7 answers the same calls 10.5 does.
 """
-import os
 import subprocess                                             # noqa: F401
-import sys
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_ENGINE_DIR = os.path.join(_HERE, "_panthera")
-if _ENGINE_DIR not in sys.path:
-    sys.path.insert(0, _ENGINE_DIR)
-
-# Imported under a `panthera` prefix for the reason `leopardspeech.py` sets
-# out at length: every NVDA add-on shares one `sys.modules`, and a generic
-# name here once had Leopard speaking in Tiger's voices.
-import pantheradriver                                         # noqa: E402
-import pantheralion                                           # noqa: E402
+# Imported out of the package for the reason `leopardspeech.py` sets out at
+# length: every NVDA add-on shares one `sys.modules`, a generic name here once
+# had Leopard speaking in Tiger's voices, and a package cannot collide in that
+# namespace at all.
+from ._panthera import pantheradriver, pantheralion
 
 HOST_EXE = pantheralion.HOST_EXE
 find_tree = pantheralion.find_tree

@@ -7,7 +7,7 @@ a machine with no Mac OS X data at all -- which matters because the bug that
 prompted them was reported in Hungarian and the person who has to reproduce it
 may not have a Hungarian keyboard, let alone Lion.
 """
-import pantheradriver
+from synthDrivers._panthera import pantheradriver
 
 
 def enc(text):

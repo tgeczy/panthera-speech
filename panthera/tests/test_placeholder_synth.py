@@ -37,7 +37,8 @@ def _drivers():
     import importlib
     out = {}
     for name, _tree in GENERATIONS + [("pantheraspeech", None)]:
-        out[name] = importlib.import_module(name).SynthDriver
+        out[name] = importlib.import_module(
+            "synthDrivers." + name).SynthDriver
     return out
 
 
@@ -48,7 +49,8 @@ def usable(monkeypatch):
 
     def setUsable(**flags):
         for name, treeName in GENERATIONS:
-            tree = importlib.import_module(treeName)
+            tree = importlib.import_module(
+                "synthDrivers._panthera." + treeName)
             monkeypatch.setattr(tree, "usable",
                                 lambda v=flags.get(name, False): v)
     return setUsable
@@ -92,7 +94,7 @@ def test_the_placeholder_never_loads(usable):
     the only failure that really matters.
     """
     usable()
-    import pantheraspeech
+    from synthDrivers import pantheraspeech
     with pytest.raises(RuntimeError):
         pantheraspeech.SynthDriver()
 
@@ -106,7 +108,8 @@ def test_a_generation_that_raises_still_leaves_the_placeholder(monkeypatch,
     def boom():
         raise OSError("the folder is not readable")
 
-    monkeypatch.setattr(importlib.import_module("pantheraleopard"), "usable",
-                        boom)
-    import pantheraspeech
+    monkeypatch.setattr(
+        importlib.import_module("synthDrivers._panthera.pantheraleopard"),
+        "usable", boom)
+    from synthDrivers import pantheraspeech
     assert pantheraspeech.SynthDriver.check() is True

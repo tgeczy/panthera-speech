@@ -65,7 +65,6 @@ import codecs
 import os
 import re
 import struct
-import sys
 import subprocess
 import threading
 import time
@@ -241,21 +240,16 @@ def _readExactly(stream, n):
         out += chunk
     return out
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_ENGINE_DIR = os.path.join(_HERE, "_panthera")
-if _ENGINE_DIR not in sys.path:
-    sys.path.insert(0, _ENGINE_DIR)
-
 # Finding the engine lives in `tree`, not here: the global plugin that offers
 # to open the folder needs exactly the same answer, and two copies of a lookup
 # is two chances to disagree about where the engine is.
-# Prefixed, and imported under an alias, because one `sys.modules` is
+# Imported out of the package, under an alias, because one `sys.modules` is
 # shared by every add-on NVDA loads. The Tiger and Leopard add-ons both
 # used to call this module `tree`, so whichever loaded first won and the
 # other silently ran its sibling's lookup -- reading the wrong folder and
-# offering the wrong voices, with nothing failing. The name has to be one
-# nobody else will claim, including the older add-ons this one replaces.
-import pantheratiger as tree                                  # noqa: E402
+# offering the wrong voices, with nothing failing. A package settles that for
+# good: nothing here is reached through `sys.path` any more.
+from ._panthera import pantheratiger as tree                  # noqa: E402
 
 HOST_EXE = tree.HOST_EXE
 find_tree = tree.find_tree

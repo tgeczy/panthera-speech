@@ -27,7 +27,7 @@ RSP = 0x54475253                    # 'TGRS'
 
 
 def _host(tree):
-    import tigerspeech
+    from synthDrivers import tigerspeech
     mt, sd, voices = tigerspeech.engine_paths(tree)
     return subprocess.Popen([tigerspeech.HOST_EXE, "--serve", mt, sd, voices],
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE)

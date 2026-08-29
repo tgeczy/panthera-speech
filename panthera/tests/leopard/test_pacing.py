@@ -13,8 +13,8 @@ The rule both share is that nothing may be lost.  A splitter that drops a
 comma is a splitter that drops a word, and no listening test would find it
 reliably -- so every case here rejoins and compares.
 """
-import leopardspeech as ls
-import pantheradriver as pd
+from synthDrivers import leopardspeech as ls
+from synthDrivers._panthera import pantheradriver as pd
 
 
 # -- what goes to the player -------------------------------------------------

@@ -36,9 +36,9 @@ both need it, and so does anything run from a command line.
 """
 import os
 
-import pantheratrees
-from pantheratrees import (aac_available, config_base,  # noqa: F401
-                           is_tree)
+from . import pantheratrees
+from .pantheratrees import (aac_available, config_base,  # noqa: F401
+                            is_tree)
 
 CONFIG_DIRNAME = os.path.join("macintalk", "lion")
 
