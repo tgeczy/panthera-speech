@@ -36,7 +36,19 @@ import io
 import os
 import re
 
-from . import pantherahfs as hfs
+#: **This module has two homes and the import has to survive both.**  Inside
+#: NVDA it is `synthDrivers._panthera.pantheradiscs` and the relative import
+#: is the right one.  `sapi/build.ps1` also stages it and `pantherahfs.py`
+#: flat beside `extract.py`, where the SAPI installer's bundled Python
+#: imports them as top-level modules with no package around them -- and the
+#: embeddable build's `._pth` locks `sys.path` to exactly that folder.  The
+#: relative form raises `ImportError` there, which is what makes the fallback
+#: a fallback rather than a style choice: extraction for every JAWS user goes
+#: through this line.  `test_sapi_flat_staging.py` keeps it honest.
+try:
+    from . import pantherahfs as hfs
+except ImportError:                     # staged flat for the SAPI installer
+    import pantherahfs as hfs
 
 #: Where Apple states the version, on every image from 10.4 to 14.
 VERSION_PLIST = "System/Library/CoreServices/SystemVersion.plist"
