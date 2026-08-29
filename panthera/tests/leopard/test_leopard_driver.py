@@ -10,6 +10,7 @@ import time
 import numpy as np
 import pytest
 
+from synthDrivers._panthera import host
 from synthDrivers._panthera import pantheradriver
 
 
@@ -644,10 +645,11 @@ def test_the_driver_actually_uses_that_encoder():
     """An encoder that is never called is exactly as broken as no encoder."""
     import io
     import os
+    #: `host.py` since the split -- `_render` builds the request, and that is
+    #: where it lives now.
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__)))),
-                        "addon", "synthDrivers", "_panthera",
-                        "pantheradriver.py")
+                        "addon", "synthDrivers", "_panthera", "host.py")
     src = io.open(path, encoding="utf-8").read()
     assert "t = _encode(text)" in src, "the request no longer encodes the text"
     assert 't = text.encode("utf-8")' not in src, "still sending UTF-8"
@@ -942,7 +944,7 @@ def test_an_engine_that_cannot_stream_still_speaks(driver, monkeypatch):
     """
     from synthDrivers import leopardspeech
     _warm(driver)
-    monkeypatch.setattr(pantheradriver, "REQ_MAGIC_STREAM", 0x54475239)
+    monkeypatch.setattr(host, "REQ_MAGIC_STREAM", 0x54475239)
     assert driver._streaming, "streaming should start on"
 
     _feeds, spoken = _speakAndWait(driver, ["can you still hear me"])
@@ -1110,7 +1112,7 @@ def test_inflection_comes_back_to_the_middle_too(driver, monkeypatch):
 
     seen = []
     original = pantheradriver._encode
-    monkeypatch.setattr(pantheradriver, "_encode",
+    monkeypatch.setattr(host, "_encode",
                         lambda t: (seen.append(t), original(t))[1])
     driver._set_inflection(50)
     back = driver._render("testing one two three", 180, voice)
