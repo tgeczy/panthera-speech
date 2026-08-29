@@ -233,42 +233,31 @@ def _readExactly(stream, n):
         out += chunk
     return out
 
-#: This module already lives in the private folder, so `_HERE` *is* it.  The
-#: drivers one level up put it on `sys.path` before importing this; repeating
-#: it here is what lets the module be imported from a command line too.
-_HERE = os.path.dirname(os.path.abspath(__file__))
-if _HERE not in sys.path:
-    sys.path.insert(0, _HERE)
-
 # Finding the engine lives in `tree`, not here: the global plugin that offers
 # to open the folder needs exactly the same answer, and two copies of a lookup
 # is two chances to disagree about where the engine is.
-# Imported under a `panthera` prefix, not as `tree`, and that is not cosmetic.
 #
-# Every NVDA add-on shares one `sys.modules`. This driver and its Tiger sibling
-# both put their private folder on `sys.path` and both used to `import tree`,
-# so whichever loaded first won and the second silently got the first one's
-# module. Leopard read tigerspeech-data, ran tiger_host.exe, and offered
-# Tiger's twenty-three voices under Leopard's name -- working perfectly, and
-# completely wrong. Nothing failed, which is why it took a user noticing the
-# wrong voices to see it.
-#
-# Sharing one folder does not retire the rule, it sharpens it: while somebody
-# still has the old tigerspeech or leopardspeech add-on installed alongside
-# this one, `_leopardspeech/leopardtree.py` is on `sys.path` too. A prefix no
-# older add-on ever used is what keeps the two apart.
+# This module used to add its own folder to `sys.path` so it could be imported
+# from a command line, and every name in the folder carried a `panthera`
+# prefix to survive the flat namespace that created.  Both are gone: it is a
+# package now, imported relatively, and the prefix is being retired module by
+# module.  What the prefix was defending against is worth keeping written
+# down.  Every NVDA add-on shares one `sys.modules`; this driver and its Tiger
+# sibling both put their private folder on `sys.path` and both did
+# `import tree`, so whichever loaded first won and the second silently got the
+# first one's module.  Leopard read tigerspeech-data, ran tiger_host.exe, and
+# offered Tiger's twenty-three voices under Leopard's name -- working
+# perfectly, and completely wrong.  Nothing failed, which is why it took a
+# user noticing the wrong voices to see it.  A relative import cannot reach
+# another add-on's folder at all, so the fight cannot start.
 #
 # Which tree module to use is a property of the *driver*, not of this file:
 # Leopard's and Lion's are separate folders holding separate engines, and this
 # body serves both.  Each driver names its own as `TREE`, and everything here
 # reaches it through `self.TREE`.
-#: Prefixed for the same reason, and one worse: `numbers` is a module in
-#: Python's own standard library, and this folder is at the front of
-#: `sys.path`, so a file of that name would shadow it for the whole of NVDA.
-from . import pantheraabbrev                                  # noqa: E402
-from . import pantheranumbers                                 # noqa: E402
-#: Prefixed for the same reason as the two above.
-from . import pantherastress                                  # noqa: E402
+from . import pantheraabbrev
+from . import pantheranumbers
+from . import pantherastress
 
 
 #: **Named holes, not positional ones.**  The version this replaced had one
