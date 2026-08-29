@@ -216,6 +216,7 @@ static unsigned bswap(unsigned v)
 #include "tiger_host_dyldinfo.c"
 #include "tiger_host_speech.c"
 #include "tiger_host_serve.c"
+#include "tiger_host_pmod.c"
 
 /* ---- bringing the host up ---------------------------------------------- */
 
@@ -412,6 +413,7 @@ int main(int argc, char **argv)
      * is Bruce, 'meow' 200 is Vicki. */
     const char *voicedir;
     const char *servedir = NULL;
+    int pmodcheck = 0;
     unsigned creator = 'mtk3';
     int voiceid = 1;
 
@@ -452,6 +454,13 @@ int main(int argc, char **argv)
         setvbuf(stderr, NULL, _IONBF, 0);
         return dyld_check(argv[2]);
     }
+    /* Unlike the checks above, this one needs a loaded engine and an open
+     * channel, so it is picked up here and acted on after host_open. */
+    if (argc > 1 && !strcmp(argv[1], "--pmod-check")) {
+        pmodcheck = 1;
+        argv++; argc--;                  /* shift so the paths line up */
+        host_quiet();
+    }
     if (argc > 1 && !strcmp(argv[1], "--serve")) {
         if (argc < 5) {
             fprintf(stderr, "usage: tiger_host --serve <MacinTalk> "
@@ -488,6 +497,15 @@ int main(int argc, char **argv)
     if (servedir) {
         fprintf(stderr, "tiger_host: ready, voices in %s\n", servedir);
         return serve(&g_mt, g_chan, servedir);
+    }
+
+    if (pmodcheck) {
+        if (!voicedir) {
+            fprintf(stderr, "usage: tiger_host --pmod-check <MacinTalk> "
+                            "<SpeechDictionary> <Voice.SpeechVoice>\n");
+            return 2;
+        }
+        return pmod_check(&g_mt, g_chan, voicedir);
     }
 
     /* Pick a voice.  Apple's Speech Manager always does this before speaking,
