@@ -598,27 +598,33 @@ class SpeechPipelineMixin(object):
                                            "an interruption"
                                            if self._afterCancel
                                            else "the previous utterance ended"))
-                                if self._afterCancel:
+                                if (self._afterCancel
+                                        and log.isEnabledFor(log.DEBUG)):
                                     #: The number a listener actually feels:
                                     #: their key, and the first sound after
-                                    #: it.  Warned rather than debugged when
-                                    #: it is bad, because somebody reading a
-                                    #: log for a "it lags for seconds" report
-                                    #: should not have to know what to grep
-                                    #: for.
-                                    gap = ((time.perf_counter()
-                                            - self._cancelledAt) * 1000.0)
-                                    if gap >= 400.0:
-                                        log.warning(
-                                            "%s: " % self.name +
-                                            "%.0f ms of silence between the "
-                                            "interruption and the next sound"
-                                            % gap)
-                                    elif log.isEnabledFor(log.DEBUG):
-                                        log.debug(
-                                            "%s: " % self.name +
-                                            "interrupted; next sound %.0f ms "
-                                            "later" % gap)
+                                    #: it.  Every stage of an interruption is
+                                    #: already logged and every stage measures
+                                    #: fast, so this exists because the pieces
+                                    #: summing to less than the whole is worth
+                                    #: being able to see.
+                                    #:
+                                    #: **Debug only, deliberately.**  It was
+                                    #: written to warn above 400 ms, while a
+                                    #: stall was being hunted.  Nobody is
+                                    #: hunting it now, and a warning that
+                                    #: fires on a busy machine is the mistake
+                                    #: this driver already made once: one real
+                                    #: log was forty host startups in ninety
+                                    #: seconds at warning level, burying the
+                                    #: single line that mattered.  A
+                                    #: measurement kept for a question nobody
+                                    #: is asking belongs where it costs
+                                    #: nothing to ignore.
+                                    log.debug(
+                                        "%s: " % self.name +
+                                        "interrupted; next sound %.0f ms later"
+                                        % ((time.perf_counter()
+                                            - self._cancelledAt) * 1000.0))
                                 self._afterCancel = False
                             else:
                                 self._player.feed(piece)
