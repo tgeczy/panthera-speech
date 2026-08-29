@@ -39,6 +39,7 @@ import os
 import struct
 import subprocess
 import sys
+import threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -136,25 +137,75 @@ def throughExe(mt, sd, voices, requests):
         proc.wait()
 
 
-def throughDll(mt, sd, voices, requests):
-    dll = ctypes.CDLL(os.path.join(BUILD, "tiger_host.dll"))
-    dll.pt_open.restype = ctypes.c_int
-    dll.pt_open.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p,
-                            ctypes.c_char_p,
-                            ctypes.POINTER(ctypes.c_void_p),
-                            ctypes.POINTER(ctypes.c_void_p)]
+_dll = None
+
+#: Everything the DLL has said on its own stderr, as it said it.  Kept rather
+#: than discarded because it is the only direct evidence of what a session
+#: actually decided -- see the abbreviation check in main().
+LOG = []
+
+
+def loadDll():
+    """The DLL, loaded once, with its log already being drained.
+
+    The engine inside it comes up once per process.  The log pipe is opened and
+    read *before* anything can write to it, which is an ordering requirement
+    and not tidiness: bringing the engine up writes more than a pipe holds, so
+    a log nobody is reading yet stops the DLL inside an fprintf and `pt_open`
+    never returns.  That deadlock was built once, here, before `pt_logpipe`
+    became its own entry point.
+    """
+    global _dll
+    if _dll is None:
+        dll = ctypes.CDLL(os.path.join(BUILD, "tiger_host.dll"))
+        dll.pt_open.restype = ctypes.c_int
+        dll.pt_open.argtypes = [
+            ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p,
+            ctypes.c_char_p, ctypes.POINTER(ctypes.c_char_p),
+            ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p)]
+        dll.pt_logpipe.restype = ctypes.c_int
+        dll.pt_logpipe.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
+        logr = ctypes.c_void_p()
+        if dll.pt_logpipe(ctypes.byref(logr)):
+            raise RuntimeError("pt_logpipe refused")
+        stream = os.fdopen(msvcrt.open_osfhandle(logr.value, os.O_RDONLY),
+                           "rb")
+
+        def pump():
+            for line in iter(stream.readline, b""):
+                LOG.append(line.decode("utf-8", "replace").rstrip())
+
+        threading.Thread(target=pump, daemon=True).start()
+        _dll = dll
+    return _dll
+
+
+def openSession(mt, sd, voices, env=None):
+    """-> (request stream, response stream).  Raises if the DLL refuses.
+
+    `env` is what a new process used to carry: the DLL's CRT snapshots its
+    environment when it is loaded, so os.environ here cannot reach getenv
+    there.
+    """
+    dll = loadDll()
+    block = (ctypes.c_char_p * (len(env or []) + 1))()
+    for i, entry in enumerate(env or []):
+        block[i] = entry.encode("mbcs")
     reqw, rspr = ctypes.c_void_p(), ctypes.c_void_p()
     err = dll.pt_open(mt.encode("mbcs"), sd.encode("mbcs"),
-                      voices.encode("mbcs"), None,
+                      voices.encode("mbcs"), None, block,
                       ctypes.byref(reqw), ctypes.byref(rspr))
     if err:
         raise RuntimeError("pt_open returned %d" % err)
-
     # The handles become ordinary file objects; from here the driver's own
     # protocol code would not be able to tell them from a subprocess's pipes,
     # which is the entire point of doing it this way.
-    stdin = os.fdopen(msvcrt.open_osfhandle(reqw.value, 0), "wb")
-    stdout = os.fdopen(msvcrt.open_osfhandle(rspr.value, os.O_RDONLY), "rb")
+    return (os.fdopen(msvcrt.open_osfhandle(reqw.value, 0), "wb"),
+            os.fdopen(msvcrt.open_osfhandle(rspr.value, os.O_RDONLY), "rb"))
+
+
+def throughDll(mt, sd, voices, requests, env=None):
+    stdin, stdout = openSession(mt, sd, voices, env)
     try:
         out = []
         for req, streaming in requests:
@@ -165,15 +216,12 @@ def throughDll(mt, sd, voices, requests):
     finally:
         # Ours to close, and closed before pt_close: the DLL deliberately does
         # not touch these, so that no handle is ever closed twice.
-        try:
-            stdin.close()
-        except Exception:
-            pass
-        try:
-            stdout.close()
-        except Exception:
-            pass
-        dll.pt_close()
+        for f in (stdin, stdout):
+            try:
+                f.close()
+            except Exception:
+                pass
+        loadDll().pt_close()
 
 
 def main(argv):
@@ -194,16 +242,40 @@ def main(argv):
         print("no engine at %s" % mt, file=sys.stderr)
         return 2
 
-    text = ("The quick brown fox jumps over the lazy dog. "
-            "Panthera speaks from a library now.")
+    # A clause inside a sentence, deliberately.  The phrasing threshold below
+    # moves boundaries *within* a phrase, so a text of short sentences would
+    # render to the frame at every setting and the comparison would say
+    # nothing about whether the parameter was honoured.
+    text = ("The quick brown fox jumps over the lazy dog. Panthera speaks "
+            "from a library now, with a clause in it, and then an ending.")
     requests = [(request(voice, text), False),
                 (request(voice, text, streaming=True), True)]
+
+    # **The first comparison carries the phrasing check inside it.**
+    #
+    # `TIGER_PARAMS` cannot be tested later on, and finding that out is most of
+    # what this file learned: the host re-reads it every session, but the
+    # *engine* asks for a preference once and remembers the answer for the life
+    # of the process.  Measured with TIGER_PREF_LOG -- three sessions at three
+    # thresholds, and "asked for Boundaries.SilThreshold" appears in the first
+    # and in neither of the others.
+    #
+    # So it is set here, before anything else runs, to a value that is not the
+    # engine's own and does change this text.  Both halves get it; if the DLL
+    # did not honour it the very first identity check would fail.  Tiger is
+    # exempt because MacinTalk 3.4 was the first version with tunables and
+    # Tiger's is 3.3.
+    env = []
+    if which != "tiger":
+        env = ["TIGER_PARAMS=Boundaries.SilThreshold=5"]
+        os.environ["TIGER_PARAMS"] = "Boundaries.SilThreshold=5"
 
     print("engine: %s" % tree)
     print("running the executable ...")
     fromExe = throughExe(mt, sd, voices, requests)
     print("running the DLL ...")
-    fromDll = throughDll(mt, sd, voices, requests)
+    fromDll = throughDll(mt, sd, voices, requests, env=env)
+    os.environ.pop("TIGER_PARAMS", None)
 
     def frames(raw, streaming):
         """The audio out of a response, without the framing around it."""
@@ -249,6 +321,88 @@ def main(argv):
     if ok and frames(fromDll[0][1], False) != frames(fromDll[1][1], True):
         print("  FAIL -- the DLL's streamed and blocking audio differ")
         ok = False
+
+    # A second session in the same process, which is what the driver's
+    # `_restartHost` becomes: the engine stays, the channel and the pipes are
+    # new, and the settings that used to arrive with a new process are re-read.
+    print("reopening a session ...")
+    try:
+        again = throughDll(mt, sd, voices, requests[:1])
+    except Exception as e:
+        print("  FAIL -- a second session would not open: %s" % e)
+        return 1
+    if frames(again[0][1], False) != frames(fromDll[0][1], False):
+        print("  FAIL -- the second session does not render the same audio")
+        ok = False
+    else:
+        print("  second session: %d frames, identical"
+              % (len(frames(again[0][1], False)) // 2))
+
+    # ... and that a setting delivered through `pt_open` actually lands.
+    #
+    # Checked twice over, because either check alone can be satisfied by a
+    # broken build.  The host's own line says the flag *arrived*; the audio
+    # says it had an *effect*.  A version of this that only compared audio
+    # spent an afternoon looking for a bug in the DLL that was never there --
+    # Tiger reads the probe sentence the same way whatever the setting is --
+    # and a version that only read the log would pass on a build where the
+    # flag arrived and was then ignored.
+    #
+    # The rules are the engine's own, not this add-on's: a quantity with a
+    # unit, a bare unit, "20ish", the month alternation, AT&T.  "Dr." and "St."
+    # are lexical entries inside MacinTalk and are repaired in
+    # `pantheraabbrev.py`, so a probe built from those proves nothing here.
+    print("reopening with the abbreviation rules off, then on ...")
+    probe = [(request(voice, "A 5KB file, 20ish MB, from AT and T in SEPT."),
+              False)]
+    seen, heard = [], []
+    for want, entry in (("on", "TIGER_NO_ABBREV="),
+                        ("OFF", "TIGER_NO_ABBREV=1"),
+                        ("on", "TIGER_NO_ABBREV=")):
+        mark = len(LOG)
+        try:
+            got = throughDll(mt, sd, voices, probe, env=[entry])
+        except Exception as e:
+            print("  FAIL -- %s" % e)
+            return 1
+        said = [ln for ln in LOG[mark:] if "session ready" in ln]
+        seen.append((want, said[-1] if said else "(the session said nothing)"))
+        heard.append(frames(got[0][1], False))
+
+    for want, said in seen:
+        if not said.endswith("abbreviation rules %s" % want):
+            print("  FAIL -- asked for %r, and the session said: %s"
+                  % (want, said))
+            ok = False
+    if heard[0] != heard[2]:
+        print("  FAIL -- turning the rules off and on again did not come back "
+              "to the same audio (%d frames, was %d)"
+              % (len(heard[2]) // 2, len(heard[0]) // 2))
+        ok = False
+    elif ok:
+        print("  the setting round-trips: %d frames on, %d off, %d on again%s"
+              % (len(heard[0]) // 2, len(heard[1]) // 2, len(heard[2]) // 2,
+                 "" if heard[0] != heard[1]
+                 else "  (this engine reads the probe alike either way, so "
+                      "only the host's report proves it arrived)"))
+
+
+    # And the parameter *table*, which is the piece with a real trap in it.
+    #
+    # `cf_params_init` appends and the lookup returns the first key that
+    # matches, so a session that did not reset `g_nparams` would keep answering
+    # with the value from the session before -- the phrasing slider moving and
+    # nothing changing.  The line the host prints cannot show that, because it
+    # reports what was *parsed* rather than what wins, so this one has to be
+    # heard: SilThreshold is the pause threshold, and pauses are frames.
+    # The phrasing parameter was checked by the very first comparison above;
+    # see the comment there for why it cannot be checked from here.
+    print("NOTE: a later session in the same process cannot change the "
+          "phrasing.")
+    print("      The engine reads that preference once and keeps it. "
+          "Inflection and the")
+    print("      abbreviation rules are not like that, and do follow a "
+          "session.")
 
     print("OK" if ok else "MISMATCH")
     return 0 if ok else 1
