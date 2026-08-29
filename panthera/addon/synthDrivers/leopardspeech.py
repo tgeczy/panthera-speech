@@ -31,11 +31,16 @@ import subprocess                                             # noqa: F401
 # flat namespace at all, so somebody still running the old `tigerspeech` or
 # `leopardspeech` add-on beside this one is no longer a hazard.  The reasoning
 # is kept in full in `_panthera/__init__.py`.
+import os
+
+from ._panthera import bridge
 from ._panthera import pantheradriver, pantheraleopard
 
 #: Re-exported because finding the engine is the same question the global
 #: plugin asks, and two copies of a lookup are two chances to disagree about
 #: where the engine is.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+
 HOST_EXE = pantheraleopard.HOST_EXE
 HOST_DLL = pantheraleopard.HOST_DLL
 find_tree = pantheraleopard.find_tree
@@ -86,3 +91,11 @@ class SynthDriver(pantheradriver.PantheraDriver):
         which is the thing whose absence made hiding wrong the first time.
         """
         return pantheraleopard.usable()
+
+#: The class NVDA loads, which is this one everywhere except a secure screen.
+#:
+#: **Still one synthesizer, not two.**  NVDA finds one `SynthDriver` per
+#: module; this rebinds the name, it does not add an entry.  The name, the
+#: description and every stored setting are unchanged either way -- see
+#: `_panthera/bridge.py` for when the substitution happens and why.
+SynthDriver = bridge.driverFor(SynthDriver, "leopardspeech", _HERE, HOST_EXE, HOST_DLL)

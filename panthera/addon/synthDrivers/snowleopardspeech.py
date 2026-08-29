@@ -21,7 +21,12 @@ import subprocess                                             # noqa: F401
 # length: every NVDA add-on shares one `sys.modules`, a generic name here once
 # had Leopard speaking in Tiger's voices, and a package cannot collide in that
 # namespace at all.
+import os
+
+from ._panthera import bridge
 from ._panthera import pantheradriver, pantherasnowleopard
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
 
 HOST_EXE = pantherasnowleopard.HOST_EXE
 HOST_DLL = pantherasnowleopard.HOST_DLL
@@ -107,3 +112,11 @@ class SynthDriver(pantheradriver.PantheraDriver):
         dataless entries was arguable; three would not have been.
         """
         return pantherasnowleopard.usable()
+
+#: The class NVDA loads, which is this one everywhere except a secure screen.
+#:
+#: **Still one synthesizer, not two.**  NVDA finds one `SynthDriver` per
+#: module; this rebinds the name, it does not add an entry.  The name, the
+#: description and every stored setting are unchanged either way -- see
+#: `_panthera/bridge.py` for when the substitution happens and why.
+SynthDriver = bridge.driverFor(SynthDriver, "snowleopardspeech", _HERE, HOST_EXE, HOST_DLL)

@@ -322,7 +322,23 @@ def _install_fake_nvda():
 
     asu = types.ModuleType("autoSettingsUtils")
     ds = types.ModuleType("autoSettingsUtils.driverSetting")
-    ds.DriverSetting = ds.BooleanDriverSetting = ds.NumericDriverSetting = _Setting
+    # Three distinct classes, because the difference between them is
+    # load-bearing and one shared class could not express it.  NVDA draws a
+    # plain `DriverSetting` as a combo box and needs an `available<Id>s` list
+    # to fill it; a `BooleanDriverSetting` is a checkbox and needs no list.
+    # `_panthera/bridge.py` tells them apart with `type(setting) is
+    # DriverSetting` when it decides what the 64-bit proxy can show, so a fake
+    # that made all three the same class would have let a test claim that
+    # every checkbox was missing an option list.
+    class _BooleanSetting(_Setting):
+        pass
+
+    class _NumericSetting(_Setting):
+        pass
+
+    ds.DriverSetting = _Setting
+    ds.BooleanDriverSetting = _BooleanSetting
+    ds.NumericDriverSetting = _NumericSetting
     asu.driverSetting = ds
     sys.modules["autoSettingsUtils"] = asu
     sys.modules["autoSettingsUtils.driverSetting"] = ds

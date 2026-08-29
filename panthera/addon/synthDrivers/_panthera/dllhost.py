@@ -59,22 +59,33 @@ def available(hostDll):
 
 
 def haveHost(hostExe, hostDll):
-    """-> True when there is an engine host here at all, of either kind.
+    """-> True when this add-on could actually speak, here, as things stand.
 
-    **Deliberately not `useLibrary`, and deliberately without the bitness
-    check.**  This answers "could this add-on speak", which is what decides
-    whether a generation is offered in the synthesizer list -- and in 64-bit
-    NVDA on a secure screen the honest answer is yes even though *this* process
-    could never load the library, because the driver will be reached through
-    the 32-bit bridge and the bridge's host can load it.
+    This is what decides whether a generation is offered in the synthesizer
+    list, so it has to be the *whole* question rather than "is there a file":
 
-    Gating that question on the executable alone is how the whole DLL could
-    have been finished and still changed nothing: `usable()` would have said no
-    on every secure screen, the placeholder would have taken every
-    generation's place, and the engine that was sitting right there would never
-    have been asked.
+    * an executable can be spawned from any process, so our bitness does not
+      enter into it;
+    * a library can be loaded here only if we are 32-bit;
+    * and a library in 64-bit NVDA is still usable, but only through NVDA's own
+      32-bit bridge -- which older NVDA does not have.
+
+    Gating this on the executable alone is how the whole DLL could have been
+    finished and still changed nothing: every generation would have reported
+    itself unusable on every secure screen, the placeholder would have taken
+    their place, and the engine sitting right there would never have been
+    asked.  Gating it on either *file* rather than on this would have been the
+    opposite mistake -- claiming a synthesizer that then throws on its first
+    word, which is how the driver behaved for one commit.
     """
-    return os.path.isfile(hostExe) or os.path.isfile(hostDll)
+    if os.path.isfile(hostExe):
+        return True
+    if not os.path.isfile(hostDll):
+        return False
+    if ctypes.sizeof(ctypes.c_void_p) == 4:
+        return True
+    from . import bridge
+    return bridge.available()
 
 
 def useLibrary(hostExe, hostDll):

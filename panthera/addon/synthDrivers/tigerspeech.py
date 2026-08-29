@@ -249,8 +249,11 @@ def _readExactly(stream, n):
 # other silently ran its sibling's lookup -- reading the wrong folder and
 # offering the wrong voices, with nothing failing. A package settles that for
 # good: nothing here is reached through `sys.path` any more.
+from ._panthera import bridge                                 # noqa: E402
 from ._panthera import dllhost                                # noqa: E402
 from ._panthera import pantheratiger as tree                  # noqa: E402
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
 
 HOST_EXE = tree.HOST_EXE
 HOST_DLL = tree.HOST_DLL
@@ -1339,3 +1342,12 @@ class SynthDriver(SynthDriver):
     def _set_voice(self, value):
         if any(v[0] == value for v in self._voices):
             self._voiceId = value
+
+#: The class NVDA loads, which is this one everywhere except a secure screen.
+#:
+#: **Still one synthesizer, not two.**  NVDA finds one `SynthDriver` per
+#: module; this rebinds the name, it does not add an entry.  The name, the
+#: description and every stored setting are unchanged either way -- see
+#: `_panthera/bridge.py` for when the substitution happens and why.
+SynthDriver = bridge.driverFor(SynthDriver, "tigerspeech", _HERE,
+                               HOST_EXE, HOST_DLL)
