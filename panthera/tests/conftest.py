@@ -229,9 +229,64 @@ def _install_fake_nvda():
     class VoiceInfo(object):
         def __init__(self, id, name, language=None):
             self.id, self.name, self.language = id, name, language
-    class SynthDriver(object):
-        VoiceSetting = RateSetting = PitchSetting = VolumeSetting = _Setting
-        InflectionSetting = _Setting
+    class _AutoPropertyType(type):
+        """NVDA's `baseObject.AutoPropertyType`, modelled where it bites.
+
+        The real one turns `_get_x`/`_set_x` into a property at class
+        creation, **from the class's own namespace only** -- it reads
+        `namespace.keys()` and never looks at the bases.  So an accessor
+        written in a plain mixin becomes no property at all, with no error at
+        class creation and no error at import: the control appears in the
+        panel and does nothing.
+
+        The fake used to be a plain class, which meant no setting of ours was
+        readable as an attribute here at all and no test could tell a wired
+        accessor from an unwired one.  Modelled rather than imported because
+        importing NVDA's own `baseObject` drags in `garbageHandler` and the
+        real `logHandler`.
+        """
+        def __init__(cls, name, bases, namespace, **kw):
+            super().__init__(name, bases, namespace, **kw)
+            for attr in {k[5:] for k in namespace
+                         if k[:5] in ("_get_", "_set_", "_del_")}:
+                if attr in namespace:
+                    raise TypeError(
+                        "%s is already a class attribute" % attr)
+                getter = namespace.get("_get_" + attr)
+                if getter is None:
+                    for base in bases:
+                        getter = getattr(base, "_get_" + attr, None)
+                        if getter:
+                            break
+                setter = namespace.get("_set_" + attr)
+                if setter is None:
+                    for base in bases:
+                        setter = getattr(base, "_set_" + attr, None)
+                        if setter:
+                            break
+                setattr(cls, attr, property(getter, setter))
+
+    def _builtinSetting(settingId):
+        """NVDA's own `SynthDriver.VoiceSetting()` and friends, which take no
+        arguments and know their own id.  The fake used to hand all five the
+        bare `_Setting`, so every one of them arrived with `id` of `None` --
+        which made the five settings every generation has the five a test
+        could say least about."""
+        class _Builtin(_Setting):
+            def __init__(self, *a, **k):
+                #: The id only.  NVDA supplies these five labels itself, so
+                #: they have no `displayName` of ours -- which is exactly how
+                #: the access-key test tells our settings from NVDA's.
+                k.setdefault("id", settingId)
+                super().__init__(*a, **k)
+        return _Builtin
+
+    class SynthDriver(object, metaclass=_AutoPropertyType):
+        VoiceSetting = _builtinSetting("voice")
+        RateSetting = _builtinSetting("rate")
+        PitchSetting = _builtinSetting("pitch")
+        VolumeSetting = _builtinSetting("volume")
+        InflectionSetting = _builtinSetting("inflection")
         def __init__(self): pass
     class _Notifier(object):
         """Counts, and lets a test wait for the next notification.
