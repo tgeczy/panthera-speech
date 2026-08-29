@@ -217,16 +217,195 @@ static unsigned bswap(unsigned v)
 #include "tiger_host_speech.c"
 #include "tiger_host_serve.c"
 
-/* ---- main -------------------------------------------------------------- */
+/* ---- bringing the host up ---------------------------------------------- */
 
 typedef int (__cdecl *SEOpen_t)(void **chan);
 
+/* The images, and the channel opened on them.
+ *
+ * These were `main`'s locals until the DLL arrived.  `tiger_host_api.c` has to
+ * perform the identical bring-up from a thread it starts itself, and the one
+ * thing that must never happen is two bring-up sequences that drift apart:
+ * much of the loader's correctness is in the *order* of these steps --
+ * libc++abi before libstdc++ before the engines, every image resolved before
+ * any initializer runs -- and a second copy would be a second chance to get
+ * that order wrong, discovered months later in whichever half nobody was
+ * looking at.  So there is one copy and both entry points call it. */
+static image g_mt, g_sd, g_ls, g_ab;
+static int g_have_ls, g_have_ab;
+static void *g_chan;
+
+/* Serve mode is quiet from the very first line, not from the point `serve`
+ * takes over: the driver puts everything this writes into NVDA's log, and the
+ * loader's commentary is several hundred lines of it.
+ *
+ * Unless the user has actually asked for debug logging, in which case they
+ * should get ours too.  A synthesizer that stays silent when someone has
+ * deliberately turned the logging up is no easier to diagnose than one with no
+ * logging at all -- and the driver only passes this when NVDA's own level is
+ * DEBUG, so nobody pays for it by accident. */
+static void host_quiet(void)
+{
+    if (getenv("TIGER_HOST_VERBOSE"))
+        fprintf(stderr, "tiger_host: verbose logging on, at NVDA's "
+                        "request\n");
+    else
+        g_verbose = 0;
+}
+
+/* Everything between "a process exists" and "a speech channel is open".
+ *
+ * Returns 0 with `g_chan` set, or the engine's OSErr.  Nothing in here is
+ * specific to being an executable, which is the point: the DLL runs exactly
+ * these steps, in exactly this order, on the thread that goes on to serve.
+ *
+ * **Once per process.**  There is no teardown path -- `VirtualFree` appears in
+ * this loader only as cleanup for a reservation that failed -- so calling this
+ * twice would map a second copy of every image and, with Alex's 701 MB bank
+ * among them, exhaust a 2 GB address space rather than reuse it. */
+static int host_open(const char *mtpath, const char *sdpath)
+{
+    SEOpen_t open_chan;
+    int err;
+
+    /* Unbuffered stderr: this program's other job is to crash informatively,
+     * and buffered output is discarded when it does. */
+    setvbuf(stderr, NULL, _IONBF, 0);
+    if (getenv("TIGER_CF_LOG")) g_cflog = 1;
+    { const char *e = getenv("TIGER_SPEED");
+      if (e && atof(e) > 0.0) g_speed = atof(e);
+      g_pace = 100.0 / g_speed;              /* pacer follows the clock */
+      e = getenv("TIGER_STATUS");
+      if (e) g_ask_status = atoi(e) != 0;
+      e = getenv("TIGER_RESET");
+      if (e) g_use_reset = atoi(e) != 0;
+      e = getenv("TIGER_PACE_FLOOR");
+      if (e) g_pace_floor = atof(e); }
+    /* Windows sleeps in 15.6 ms steps by default, so a 1 ms pace tick really
+     * costs 15 ms and an utterance renders at wall-clock speed no matter how
+     * low the pace goes.  Ask for 1 ms resolution and the pacer means what it
+     * says. */
+    timeBeginPeriod(1);
+    init_rune_locale();
+    InitializeCriticalSection(&g_p_cs);
+    CreateThread(NULL, 0, pacer_thread, NULL, 0, NULL);
+
+    g_thunks = (unsigned char *)VirtualAlloc(NULL, MAX_MISSING * THUNK_SZ,
+                                             MEM_RESERVE | MEM_COMMIT,
+                                             PAGE_EXECUTE_READWRITE);
+    if (!g_thunks) die("cannot allocate thunk area");
+
+    g_float_stats = getenv("TIGER_FLOAT_STATS") ? 1 : 0;
+    cf_params_init();       /* TIGER_PARAMS; does nothing when it is unset */
+    g_no_abbrev = getenv("TIGER_NO_ABBREV") ? 1 : 0;
+    g_pref_log  = getenv("TIGER_PREF_LOG") ? 1 : 0;
+    g_gcd_log   = getenv("TIGER_GCD_LOG") ? 1 : 0;
+    g_deferred_stop = getenv("TIGER_DEFERRED_STOP") ? 1 : 0;
+    if (g_no_abbrev)
+        fprintf(stderr, "tiger_host: abbreviation rules are off\n");
+
+    AddVectoredExceptionHandler(1, on_fault);
+
+    /* The optional runtime images, loaded before the engines so their
+     * initializers run before anything calls into them.
+     *
+     * libc++abi first: from 10.7 the C++ ABI lives there and libstdc++
+     * re-exports it, so libstdc++ is the one with the dependency.  Leopard
+     * wants neither ordering nor the library -- its 6.0.4 implements the ABI
+     * itself -- so its absence is reported and then ignored. */
+    {
+        char path[CFPATH];
+        if (find_libcxxabi(sdpath, path, sizeof(path))) {
+            load(&g_ab, path);
+            g_images[g_nimages++] = &g_ab;
+            g_have_ab = 1;
+        } else if (g_verbose) {
+            printf("no libc++abi beside the engine; only 10.7 wants one\n");
+        }
+        if (find_libstdcxx(sdpath, path, sizeof(path))) {
+            load(&g_ls, path);
+            g_images[g_nimages++] = &g_ls;
+            g_have_ls = 1;
+        } else if (g_verbose) {
+            printf("no libstdc++ beside the engine; Tiger needs none\n");
+        }
+    }
+
+    load(&g_sd, sdpath);
+    load(&g_mt, mtpath);
+    g_images[g_nimages++] = &g_sd;
+    g_images[g_nimages++] = &g_mt;
+    g_primary = &g_mt;
+
+    /* The dictionary bundle is the directory holding the framework binary:
+     * .../SpeechDictionary.framework/Versions/A, whose Resources carry the
+     * 2.1 MB StdDictionary. */
+    {
+        char dir[CFPATH];
+        char *cut;
+        strncpy(dir, sdpath, sizeof(dir) - 1);
+        dir[sizeof(dir) - 1] = 0;
+        /* Take the LAST of either separator.  Searching for '/' first and only
+         * falling back to '\\' cuts a *mixed* path at the wrong place -- and a
+         * mixed path is exactly what Python's os.path.join produces from a
+         * forward-slash root: "<root>/x86\\SpeechDictionary.framework\\Versions
+         * \\A\\SpeechDictionary" cut at the last '/' -- the one inside <root>
+         * -- so the dictionary was never found and the engine died inside a
+         * lookup, a long way from here. */
+        {
+            char *a = strrchr(dir, '/');
+            char *b = strrchr(dir, '\\');
+            cut = (a > b) ? a : b;
+        }
+        if (cut) *cut = 0;
+        g_dict_bundle = cf_pinned(dir);
+        if (g_verbose) printf("dictionary bundle: %s\n", dir);
+    }
+
+    if (g_have_ab) {
+        if (g_verbose) printf("binding libc++abi:\n");
+        resolve(&g_ab, NULL);
+    }
+    if (g_have_ls) {
+        if (g_verbose) printf("binding libstdc++:\n");
+        resolve(&g_ls, NULL);
+    }
+    if (g_verbose) printf("binding SpeechDictionary:\n");
+    resolve(&g_sd, NULL);
+    if (g_verbose) printf("binding MacinTalk:\n");
+    resolve(&g_mt, &g_sd);
+
+    if (g_verbose) printf("running initializers:\n");
+    if (g_have_ab) run_initializers(&g_ab);
+    if (g_have_ls) run_initializers(&g_ls);
+    run_initializers(&g_sd);
+    run_initializers(&g_mt);
+
+    open_chan = (SEOpen_t)find_export(&g_mt, "_SEOpenSpeechChannel");
+    if (!open_chan) die("SEOpenSpeechChannel not found");
+    if (g_verbose) printf("\nSEOpenSpeechChannel at %p\n", (void *)open_chan);
+
+    /* Every entry into the engine goes through an aligning trampoline:
+     * Darwin i386 guarantees ESP is 16-byte aligned at each call and
+     * Leopard's engine spends that guarantee on movapd. */
+    err = call_aligned1((void *)open_chan, &g_chan);
+    if (g_verbose) printf("  -> OSErr %d, channel %p\n", err, g_chan);
+    /* A zero OSErr with a null channel has never been seen, but everything
+     * downstream dereferences it, so it is refused here as an error rather
+     * than arriving later as a fault. */
+    if (!err && !g_chan) err = -1;
+    return err;
+}
+
+/* ---- main -------------------------------------------------------------- */
+
+/* The executable's entry point only.  The DLL build has its own, in
+ * tiger_host_api.c, and a DLL with a `main` in it links but confuses every
+ * tool that looks at one. */
+#ifndef PT_DLL
+
 int main(int argc, char **argv)
 {
-    image mt, sd, ls, ab;
-    int have_ls = 0, have_ab = 0;
-    SEOpen_t open_chan;
-    void *chan = NULL;
     int err, i;
     /* Defaults speak Fred, because he is the voice everyone means.  The ids
      * come from each bundle's VoiceDescription: 'mtk3' 1 is Fred, 'gala' 100
@@ -281,49 +460,14 @@ int main(int argc, char **argv)
         }
         servedir = argv[4];
         argv++; argc--;                  /* shift so the paths line up */
-        /* Quiet from the very first line, not from the point serve() takes
-         * over: the driver puts everything this writes into NVDA's log, and
-         * the loader's commentary is several hundred lines of it.
-         *
-         * Unless the user has actually asked for debug logging, in which case
-         * they should get ours too.  A synthesizer that stays silent when
-         * someone has deliberately turned the logging up is no easier to
-         * diagnose than one with no logging at all -- and the driver only
-         * passes this when NVDA's own level is DEBUG, so nobody pays for it by
-         * accident. */
-        if (getenv("TIGER_HOST_VERBOSE"))
-            fprintf(stderr, "tiger_host: verbose logging on, at NVDA's "
-                            "request\n");
-        else
-            g_verbose = 0;
+        host_quiet();
     }
     voicedir = (argc > 3) ? argv[3] : NULL;
     if (argc > 4 && !servedir) creator = (unsigned)strtoul(argv[4], NULL, 16);
     if (argc > 5 && !servedir) voiceid = atoi(argv[5]);
 
-    /* Unbuffered stderr: this program's other job is to crash informatively,
-     * and buffered output is discarded when it does. */
-    setvbuf(stderr, NULL, _IONBF, 0);
-    if (getenv("TIGER_CF_LOG")) g_cflog = 1;
-    { const char *e = getenv("TIGER_SPEED");
-      if (e && atof(e) > 0.0) g_speed = atof(e);
-      g_pace = 100.0 / g_speed;              /* pacer follows the clock */
-      e = getenv("TIGER_STATUS");
-      if (e) g_ask_status = atoi(e) != 0;
-      e = getenv("TIGER_RESET");
-      if (e) g_use_reset = atoi(e) != 0;
-      e = getenv("TIGER_PACE_FLOOR");
-      if (e) g_pace_floor = atof(e); }
-    /* Windows sleeps in 15.6 ms steps by default, so a 1 ms pace tick really
-     * costs 15 ms and an utterance renders at wall-clock speed no matter how
-     * low the pace goes.  Ask for 1 ms resolution and the pacer means what it
-     * says. */
-    timeBeginPeriod(1);
-    init_rune_locale();
-    InitializeCriticalSection(&g_p_cs);
-    CreateThread(NULL, 0, pacer_thread, NULL, 0, NULL);
-
     if (argc < 4) {
+        setvbuf(stderr, NULL, _IONBF, 0);
         fprintf(stderr,
                 "usage:\n"
                 "  tiger_host <MacinTalk> <SpeechDictionary> "
@@ -338,111 +482,12 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    g_thunks = (unsigned char *)VirtualAlloc(NULL, MAX_MISSING * THUNK_SZ,
-                                             MEM_RESERVE | MEM_COMMIT,
-                                             PAGE_EXECUTE_READWRITE);
-    if (!g_thunks) die("cannot allocate thunk area");
-
-    g_float_stats = getenv("TIGER_FLOAT_STATS") ? 1 : 0;
-    cf_params_init();       /* TIGER_PARAMS; does nothing when it is unset */
-    g_no_abbrev = getenv("TIGER_NO_ABBREV") ? 1 : 0;
-    g_pref_log  = getenv("TIGER_PREF_LOG") ? 1 : 0;
-    g_gcd_log   = getenv("TIGER_GCD_LOG") ? 1 : 0;
-    g_deferred_stop = getenv("TIGER_DEFERRED_STOP") ? 1 : 0;
-    if (g_no_abbrev)
-        fprintf(stderr, "tiger_host: abbreviation rules are off\n");
-
-    AddVectoredExceptionHandler(1, on_fault);
-
-    /* The optional runtime images, loaded before the engines so their
-     * initializers run before anything calls into them.
-     *
-     * libc++abi first: from 10.7 the C++ ABI lives there and libstdc++
-     * re-exports it, so libstdc++ is the one with the dependency.  Leopard
-     * wants neither ordering nor the library -- its 6.0.4 implements the ABI
-     * itself -- so its absence is reported and then ignored. */
-    {
-        char path[CFPATH];
-        if (find_libcxxabi(argv[2], path, sizeof(path))) {
-            load(&ab, path);
-            g_images[g_nimages++] = &ab;
-            have_ab = 1;
-        } else if (g_verbose) {
-            printf("no libc++abi beside the engine; only 10.7 wants one\n");
-        }
-        if (find_libstdcxx(argv[2], path, sizeof(path))) {
-            load(&ls, path);
-            g_images[g_nimages++] = &ls;
-            have_ls = 1;
-        } else if (g_verbose) {
-            printf("no libstdc++ beside the engine; Tiger needs none\n");
-        }
-    }
-
-    load(&sd, argv[2]);
-    load(&mt, argv[1]);
-    g_images[g_nimages++] = &sd;
-    g_images[g_nimages++] = &mt;
-    g_primary = &mt;
-
-    /* The dictionary bundle is the directory holding the framework binary:
-     * .../SpeechDictionary.framework/Versions/A, whose Resources carry the
-     * 2.1 MB StdDictionary. */
-    {
-        char dir[CFPATH];
-        char *cut;
-        strncpy(dir, argv[2], sizeof(dir) - 1);
-        dir[sizeof(dir) - 1] = 0;
-        /* Take the LAST of either separator.  Searching for '/' first and only
-         * falling back to '\\' cuts a *mixed* path at the wrong place -- and a
-         * mixed path is exactly what Python's os.path.join produces from a
-         * forward-slash root: "<root>/x86\\SpeechDictionary.framework\\Versions
-         * \\A\\SpeechDictionary" cut at the last '/' -- the one inside <root>
-         * -- so the dictionary was never found and the engine died inside a
-         * lookup, a long way from here. */
-        {
-            char *a = strrchr(dir, '/');
-            char *b = strrchr(dir, '\\');
-            cut = (a > b) ? a : b;
-        }
-        if (cut) *cut = 0;
-        g_dict_bundle = cf_pinned(dir);
-        if (g_verbose) printf("dictionary bundle: %s\n", dir);
-    }
-
-    if (have_ab) {
-        if (g_verbose) printf("binding libc++abi:\n");
-        resolve(&ab, NULL);
-    }
-    if (have_ls) {
-        if (g_verbose) printf("binding libstdc++:\n");
-        resolve(&ls, NULL);
-    }
-    if (g_verbose) printf("binding SpeechDictionary:\n");
-    resolve(&sd, NULL);
-    if (g_verbose) printf("binding MacinTalk:\n");
-    resolve(&mt, &sd);
-
-    if (g_verbose) printf("running initializers:\n");
-    if (have_ab) run_initializers(&ab);
-    if (have_ls) run_initializers(&ls);
-    run_initializers(&sd);
-    run_initializers(&mt);
-
-    open_chan = (SEOpen_t)find_export(&mt, "_SEOpenSpeechChannel");
-    if (!open_chan) die("SEOpenSpeechChannel not found");
-    if (g_verbose) printf("\nSEOpenSpeechChannel at %p\n", (void *)open_chan);
-
-    /* Every entry into the engine goes through an aligning trampoline:
-     * Darwin i386 guarantees ESP is 16-byte aligned at each call and
-     * Leopard's engine spends that guarantee on movapd. */
-    err = call_aligned1((void *)open_chan, &chan);
-    if (g_verbose) printf("  -> OSErr %d, channel %p\n", err, chan);
-    if (err || !chan) goto report;
+    err = host_open(argv[1], argv[2]);
+    if (err) goto report;
 
     if (servedir) {
         fprintf(stderr, "tiger_host: ready, voices in %s\n", servedir);
-        return serve(&mt, chan, servedir);
+        return serve(&g_mt, g_chan, servedir);
     }
 
     /* Pick a voice.  Apple's Speech Manager always does this before speaking,
@@ -456,7 +501,7 @@ int main(int argc, char **argv)
         typedef int (__cdecl *SEUseVoice_t)(void *chan, const void *spec,
                                             const void *bundle);
         struct { unsigned creator; int id; } spec;
-        SEUseVoice_t use = (SEUseVoice_t)find_export(&mt, "_SEUseVoice");
+        SEUseVoice_t use = (SEUseVoice_t)find_export(&g_mt, "_SEUseVoice");
         cfobj *bundle = cf_pinned(voicedir);
         spec.creator = creator;
         spec.id      = voiceid;
@@ -464,7 +509,7 @@ int main(int argc, char **argv)
         printf("\nSEUseVoice at %p, spec {'%c%c%c%c', %d}\n  bundle %s\n",
                (void *)use, (creator >> 24) & 0xff, (creator >> 16) & 0xff,
                (creator >> 8) & 0xff, creator & 0xff, voiceid, voicedir);
-        err = call_aligned3((void *)use, chan, &spec, bundle);
+        err = call_aligned3((void *)use, g_chan, &spec, bundle);
         printf("  -> OSErr %d\n", err);
         if (err) goto report;
     }
@@ -480,7 +525,7 @@ int main(int argc, char **argv)
         static const char deftext[] = "Hello there.";
         const char *text = envtext && *envtext ? envtext : deftext;
         size_t textlen = strlen(text);
-        speech_api api = speech_api_of(&mt);
+        speech_api api = speech_api_of(&g_mt);
         /* TIGER_RATE, in words per minute, so the amount of time-scaling can
          * be varied deliberately.
          *
@@ -495,10 +540,10 @@ int main(int argc, char **argv)
                 typedef int (__cdecl *SESetInfo_t)(void *, unsigned,
                                                    const void *);
                 SESetInfo_t setinfo =
-                    (SESetInfo_t)find_export(&mt, "_SESetSpeechInfo");
+                    (SESetInfo_t)find_export(&g_mt, "_SESetSpeechInfo");
                 unsigned fixed = (unsigned)atoi(rt) << 16;   /* Fixed 16.16 */
                 if (setinfo) {
-                    int r = call_aligned3((void *)setinfo, chan,
+                    int r = call_aligned3((void *)setinfo, g_chan,
                                           (void *)0x72617465u, &fixed);
                     printf("\nSESetSpeechInfo 'rate' %d wpm -> OSErr %d\n",
                            atoi(rt), r);
@@ -506,7 +551,7 @@ int main(int argc, char **argv)
             }
         }
         printf("\n%s, %d bytes of text\n", api.which, (int)textlen);
-        err = speak_text(&api, chan, text, textlen);
+        err = speak_text(&api, g_chan, text, textlen);
         printf("  -> OSErr %d\n", err);
 
         /* SESpeakBuffer returns as soon as the utterance is accepted; the
@@ -583,3 +628,12 @@ report:
     }
     return 0;
 }
+
+#endif  /* !PT_DLL */
+
+/* The DLL's entry points, which is the same `serve` over a pair of private
+ * pipes instead of the process's own.  Last, because it calls `host_open` and
+ * `serve` and this is one translation unit. */
+#ifdef PT_DLL
+#include "tiger_host_api.c"
+#endif

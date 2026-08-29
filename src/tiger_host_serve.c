@@ -5,9 +5,17 @@
 
 /* ---- serve mode -------------------------------------------------------- */
 /*
- * One long-lived process behind the NVDA driver.  Opening a channel costs a
+ * One long-lived engine behind the NVDA driver.  Opening a channel costs a
  * 2.1 MB dictionary map and a voice load, so it happens once; after that a
- * request is text in, PCM out, over stdin/stdout.
+ * request is text in, PCM out, over `g_in` and `g_out`.
+ *
+ * **Those two are the only reason anything in this file knows it is a
+ * process.**  The executable points them at its own stdin and stdout; the DLL
+ * points them at a pair of private pipes it made itself, because inside NVDA's
+ * 32-bit bridge host the process's stdin and stdout already belong to RPyC and
+ * would not survive being shared.  Everything below is written once and runs
+ * unchanged either way, which is the whole reason a DLL could be added without
+ * a second protocol to keep in step with this one.
  *
  * The voice is named rather than numbered, and the host reads the creator
  * OSType and id straight out of the bundle's VoiceDescription -- so nothing
@@ -30,6 +38,12 @@
  * The magic changed with the field: a stale host in the add-on folder should
  * fail loudly rather than misread a request by one word and speak nonsense.
  */
+/* The request and response channels.  Left null until `serve` starts, because
+ * `stdin` and `stdout` are function calls in the UCRT and cannot initialise a
+ * static; the DLL sets them before calling and `serve` fills in the
+ * executable's answer when it finds them empty. */
+static FILE *g_in, *g_out;
+
 #define REQ_MAGIC 0x54475233u           /* 'TGR3' */
 /* 'TGR4' asks for the same audio, streamed.  A separate magic rather than a
  * flag because the failure it guards against is a stale tiger_host.exe left in
@@ -249,7 +263,7 @@ static void put_frames(unsigned from, unsigned to)
         if (v > 1.0) v = 1.0;
         if (v < -1.0) v = -1.0;
         s = (short)(v * 32767.0);
-        fwrite(&s, 2, 1, stdout);
+        fwrite(&s, 2, 1, g_out);
     }
 }
 
@@ -266,9 +280,9 @@ static unsigned stream_chunk(unsigned sent, unsigned upto)
     while (sent < upto) {
         unsigned n = upto - sent;
         if (n > 1024u) n = 1024u;
-        fwrite(&n, 4, 1, stdout);
+        fwrite(&n, 4, 1, g_out);
         put_frames(sent, sent + n);
-        fflush(stdout);
+        fflush(g_out);
         sent += n;
     }
     return sent;
@@ -305,8 +319,10 @@ static int serve(image *mt, void *chan, const char *voicesdir)
     int  curpitch = -1;
 
     g_verbose = 0;                       /* the pipe carries audio, not chat */
-    _setmode(_fileno(stdin), _O_BINARY);
-    _setmode(_fileno(stdout), _O_BINARY);
+    if (!g_in)  g_in  = stdin;           /* the executable's channels */
+    if (!g_out) g_out = stdout;
+    _setmode(_fileno(g_in), _O_BINARY);
+    _setmode(_fileno(g_out), _O_BINARY);
 
     for (;;) {
         unsigned magic, namelen, textlen, nframes, i;
@@ -319,19 +335,19 @@ static int serve(image *mt, void *chan, const char *voicesdir)
         char name[128];
         char *text;
 
-        if (!read_all(stdin, &magic, 4)) return 0;      /* driver went away */
+        if (!read_all(g_in, &magic, 4)) return 0;      /* driver went away */
         if (magic != REQ_MAGIC && magic != REQ_MAGIC_STREAM) return 1;
         streaming = (magic == REQ_MAGIC_STREAM);
-        if (!read_all(stdin, &wpm, 4) ||
-            !read_all(stdin, &pitch, 4) ||
-            !read_all(stdin, &flags, 4) ||
-            !read_all(stdin, &namelen, 4) ||
-            !read_all(stdin, &textlen, 4)) return 1;
+        if (!read_all(g_in, &wpm, 4) ||
+            !read_all(g_in, &pitch, 4) ||
+            !read_all(g_in, &flags, 4) ||
+            !read_all(g_in, &namelen, 4) ||
+            !read_all(g_in, &textlen, 4)) return 1;
         if (namelen >= sizeof(name)) return 1;
-        if (!read_all(stdin, name, namelen)) return 1;
+        if (!read_all(g_in, name, namelen)) return 1;
         name[namelen] = 0;
         text = (char *)malloc(textlen + 1);
-        if (!text || !read_all(stdin, text, textlen)) { free(text); return 1; }
+        if (!text || !read_all(g_in, text, textlen)) { free(text); return 1; }
         text[textlen] = 0;
         text = break_letter_runs(text, &textlen);
 
@@ -455,9 +471,9 @@ static int serve(image *mt, void *chan, const char *voicesdir)
          * immediately instead of waiting out the render. */
         if (streaming) {
             magic = RSP_MAGIC;
-            fwrite(&magic, 4, 1, stdout);
-            fwrite(&err, 4, 1, stdout);
-            fflush(stdout);
+            fwrite(&magic, 4, 1, g_out);
+            fwrite(&err, 4, 1, g_out);
+            fflush(g_out);
         }
 
         /* AUGraphStop is the engine's own end-of-utterance signal, with a
@@ -814,16 +830,16 @@ static int serve(image *mt, void *chan, const char *voicesdir)
              * it was the difference between 446 ms and not noticing. */
             if (!cancelled)
                 sent = stream_chunk(sent, g_pcm_n);
-            fwrite(&zero, 4, 1, stdout);
-            fflush(stdout);
+            fwrite(&zero, 4, 1, g_out);
+            fflush(g_out);
         } else {
             nframes = g_pcm_n;
             magic = RSP_MAGIC;
-            fwrite(&magic, 4, 1, stdout);
-            fwrite(&err, 4, 1, stdout);
-            fwrite(&nframes, 4, 1, stdout);
+            fwrite(&magic, 4, 1, g_out);
+            fwrite(&err, 4, 1, g_out);
+            fwrite(&nframes, 4, 1, g_out);
             put_frames(0, nframes);
-            fflush(stdout);
+            fflush(g_out);
         }
     }
 }
