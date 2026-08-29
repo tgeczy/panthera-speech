@@ -39,10 +39,21 @@ typedef int (__cdecl *SEOpenChan_t)(void **chan);
  * The counter reset is serve()'s, kept in step with it deliberately: a render
  * that started from different state would not be comparable with the one
  * before it, which is the only thing this file measures. */
+/* How long the last `pmod_render` took, wall clock.
+ *
+ * **The reset calls are not where a cost would hide.**  If soReset drops
+ * Alex's 701 MB bank and the engine reloads it lazily, `rset` and `SEUseVoice`
+ * both return at once and the whole reload lands in the *next render* -- where
+ * byte-identity would still pass, because a reload changes timing and not
+ * samples.  So every render is timed, and the number that answers "is the
+ * reset free" is the render after it, against the baseline render. */
+static double g_pmod_ms;
+
 static int pmod_render(speech_api *api, void *chan, const char *text,
                        short **out)
 {
     unsigned last = 0, quiet = 0, ticks = 0, i;
+    double t0 = wall_ms();
     int err;
 
     g_defer_arm = 0;
@@ -58,6 +69,7 @@ static int pmod_render(speech_api *api, void *chan, const char *text,
         if (g_slices != last) { last = g_slices; quiet = 0; }
         else quiet++;
     }
+    g_pmod_ms = wall_ms() - t0;
     *out = (short *)malloc(g_pcm_n * sizeof(short) + 2);
     if (!*out) return -1;
     for (i = 0; i < g_pcm_n; i++) {
@@ -94,7 +106,8 @@ static int pmod_check(image *mt, void *chan, const char *voicedir)
     short *base = NULL, *inflected = NULL, *after = NULL;
     short *afterReset = NULL, *afterReopen = NULL;
     int nb, ni, na, nr = -1, no = -1;
-    double t0, resetMs = -1.0, reopenMs = -1.0;
+    double t0, resetMs = -1.0, reopenMs = -1.0, baseMs = 0.0;
+    double resetRenderMs = -1.0, reopenRenderMs = -1.0;
     int rc = 0;
 
     g_verbose = 0;
@@ -115,10 +128,29 @@ static int pmod_check(image *mt, void *chan, const char *voicedir)
             (spec.creator >> 24) & 0xff, (spec.creator >> 16) & 0xff,
             (spec.creator >> 8) & 0xff, spec.creator & 0xff, spec.id);
 
+    /* A throwaway render before the baseline, because the *first* render of a
+     * session is not always like the ones after it.
+     *
+     * Snow Leopard's Alex, measured: three renders of one sentence in one
+     * session give 145743, 146926 and 146926 frames.  The first is the odd one
+     * every time, and Leopard's Alex and Snow Leopard's Kathy are steady
+     * across all three -- so it is this voice on this generation, warming up.
+     *
+     * Taken as a baseline it reported that soReset had failed on the one
+     * generation where it had not, which is exactly the wrong way for a
+     * measurement to be wrong. */
+    {
+        short *warm = NULL;
+        int nw = pmod_render(&api, chan, text, &warm);
+        fprintf(stderr, "  warm-up            %d frames, discarded\n", nw);
+        free(warm);
+    }
+
     nb = pmod_render(&api, chan, text, &base);
     if (nb <= 0) { fprintf(stderr, "pmod-check: the baseline render "
                                    "produced nothing\n"); return 2; }
-    fprintf(stderr, "  baseline           %d frames\n", nb);
+    baseMs = g_pmod_ms;
+    fprintf(stderr, "  baseline           %d frames in %.0f ms\n", nb, baseMs);
 
     ni = pmod_render(&api, chan, loud, &inflected);
     fprintf(stderr, "  with [[pmod 200]]  %d frames, %s\n", ni,
@@ -152,11 +184,13 @@ static int pmod_check(image *mt, void *chan, const char *voicedir)
         call_aligned3((void *)use, chan, &spec, cf_pinned(voicedir));
         resetMs = wall_ms() - t0;
         nr = pmod_render(&api, chan, text, &afterReset);
-        fprintf(stderr, "  after 'rset'       %d frames, %s (reset took "
-                        "%.0f ms)\n", nr,
+        resetRenderMs = g_pmod_ms;
+        fprintf(stderr, "  after 'rset'       %d frames, %s -- the reset calls "
+                        "took %.0f ms, the render %.0f ms (baseline %.0f)\n",
+                nr,
                 pmod_same(base, nb, afterReset, nr) ? "IDENTICAL to baseline"
                                                     : "still not the baseline",
-                resetMs);
+                resetMs, resetRenderMs, baseMs);
     }
 
     /* Route two: close the channel and open another one.  If soReset was
@@ -180,19 +214,35 @@ static int pmod_check(image *mt, void *chan, const char *voicedir)
             call_aligned3((void *)use, fresh, &spec, cf_pinned(voicedir));
             reopenMs = wall_ms() - t0;
             no = pmod_render(&api, fresh, text, &afterReopen);
-            fprintf(stderr, "  after reopen       %d frames, %s (reopen took "
-                            "%.0f ms)\n", no,
+            reopenRenderMs = g_pmod_ms;
+            fprintf(stderr, "  after reopen       %d frames, %s -- the reopen "
+                            "calls took %.0f ms, the render %.0f ms "
+                            "(baseline %.0f)\n", no,
                     pmod_same(base, nb, afterReopen, no)
                         ? "IDENTICAL to baseline" : "still not the baseline",
-                    reopenMs);
+                    reopenMs, reopenRenderMs, baseMs);
         }
     }
 
     fprintf(stderr, "\nRESULT: ");
     if (pmod_same(base, nb, afterReset, nr))
-        fprintf(stderr, "soReset plus SEUseVoice is the way back, at %.0f ms.\n"
+        fprintf(stderr, "soReset plus SEUseVoice is the way back.\n"
+                        "  the reset calls    %.0f ms\n"
+                        "  the render after   %.0f ms, against %.0f ms for "
+                        "the baseline render\n"
                         "An in-process host does not need a new process to "
-                        "return inflection to its default.\n", resetMs);
+                        "return inflection to its default.%s\n",
+                resetMs, resetRenderMs, baseMs,
+                /* A lazy bank reload would show up here and nowhere else.
+                 * Half again plus a quarter of a second is far outside the
+                 * run-to-run spread of a render and far inside a 2887 ms
+                 * reload, so it cannot call one the other. */
+                resetRenderMs > baseMs * 1.5 + 250.0
+                    ? "\n\nBUT the render after the reset is markedly slower: "
+                      "the cost did not vanish,\nit moved into the next "
+                      "utterance.  Schedule the reset the way a restart is\n"
+                      "scheduled today; do not call it freely."
+                    : "");
     else if (pmod_same(base, nb, afterReopen, no))
         fprintf(stderr, "soReset is NOT enough, but reopening the channel is, "
                         "at %.0f ms.\nAn in-process host can still return "
