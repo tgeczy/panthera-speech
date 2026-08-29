@@ -503,7 +503,11 @@ public:
                                  ph==L"more"?L"0":ph==L"most"?L"5":NULL;
             if(thr)params=std::wstring(L"Boundaries.SilThreshold=")+thr;
         }
-        std::wstring root=token_string(token,L"DataPath"), gen=token_string(token,L"Generation"), voice=token_string(token,L"VoiceName");
+        std::wstring root=token_string(token,L"DataPath"), gen=token_string(token,L"Generation"), voice=token_string(token,L"EngineVoiceName");
+        /* New registrations expose a generation-qualified VoiceName because
+         * some clients incorrectly use it as the token identity.  Old tokens
+         * and the resident test only have VoiceName, so retain that fallback. */
+        if(voice.empty()) voice=token_string(token,L"VoiceName");
         std::wstring tree=root+L"\\"+gen, mt=tree+L"\\Speech\\Synthesizers\\MacinTalk.SpeechSynthesizer\\Contents\\MacOS\\MacinTalk";
         std::wstring sd=tree+L"\\SpeechDictionary.framework\\Versions\\A\\SpeechDictionary", vd=tree+L"\\Speech\\Voices";
         long sapiRate=0;

@@ -79,12 +79,21 @@ function Add-VoiceTokens([string[]]$SelectedGenerations) {
         $root = $base.CreateSubKey('Software\Microsoft\Speech\Voices\Tokens')
         foreach ($voice in $voices) {
             $name = 'Panthera_{0}_{1}' -f $voice.Generation,($voice.Voice -replace ' ','_')
+            # Some SAPI clients key their voice list by Attributes\Name (or by
+            # the convenient VoiceName value) instead of by the token ID.  A
+            # bare "Alex" therefore made Tiger, Leopard, Snow Leopard and Lion
+            # look like one voice even though their token keys were distinct.
+            # Keep the engine's bundle name separately and make every value an
+            # application might use as an identity generation-qualified.
+            $displayName = '{0} ({1})' -f $voice.Voice,$voice.Label
             $key = $root.CreateSubKey($name)
-            $key.SetValue('',('{0} ({1})' -f $voice.Voice,$voice.Label))
-            $key.SetValue('CLSID',$clsid); $key.SetValue('VoiceName',$voice.Voice)
+            $key.SetValue('',$displayName)
+            $key.SetValue('CLSID',$clsid); $key.SetValue('VoiceName',$displayName)
+            $key.SetValue('EngineVoiceName',$voice.Voice)
             $key.SetValue('Generation',$voice.Generation); $key.SetValue('DataPath',$data)
             $attributes = $key.CreateSubKey('Attributes')
-            $attributes.SetValue('Name',$voice.Voice); $attributes.SetValue('Vendor','Panthera Speech')
+            $attributes.SetValue('Name',$displayName); $attributes.SetValue('Vendor','Panthera Speech')
+            $attributes.SetValue('Version',$voice.Label)
             $attributes.SetValue('Language','409'); $attributes.SetValue('Gender','Neutral')
             $attributes.Dispose(); $key.Dispose()
         }
