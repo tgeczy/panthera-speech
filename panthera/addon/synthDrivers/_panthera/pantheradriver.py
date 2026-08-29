@@ -836,6 +836,14 @@ class PantheraDriver(HostMixin, SpeechPipelineMixin, SynthDriver):
         # Stopping tears the output stream down, so the next chunk pays to
         # start it again -- which is exactly the wait after an interruption
         # that a user feels most sharply.
+        #
+        # So time it, end to end, and let the driver say when it was slow.
+        # Everything between here and the next sound is already logged in
+        # pieces -- the render, the device start, the handoff -- and every one
+        # of those pieces has measured fast while a user still heard seconds.
+        # A stall nobody can see in a log is a stall nobody can fix, and the
+        # pieces summing to less than the whole is itself the finding.
+        self._cancelledAt = time.perf_counter()
         self._playerIdle = True
         self._afterCancel = True
         # Nothing is queued at the device any more, so the feeder is not ahead.

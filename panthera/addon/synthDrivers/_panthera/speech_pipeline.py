@@ -78,6 +78,11 @@ TUNE_JOIN_MAX_CHARS = 8000
 class SpeechPipelineMixin(object):
     """Rendering, joining and feeding, on their own threads."""
 
+    #: When the last interruption happened, for the one measurement a listener
+    #: can actually confirm by ear.  A class attribute so no driver `__init__`
+    #: needs to know this mixin keeps state.
+    _cancelledAt = 0.0
+
     # -- threads -----------------------------------------------------------
     def _run(self):
         """Render each utterance and hand it on.
@@ -593,6 +598,27 @@ class SpeechPipelineMixin(object):
                                            "an interruption"
                                            if self._afterCancel
                                            else "the previous utterance ended"))
+                                if self._afterCancel:
+                                    #: The number a listener actually feels:
+                                    #: their key, and the first sound after
+                                    #: it.  Warned rather than debugged when
+                                    #: it is bad, because somebody reading a
+                                    #: log for a "it lags for seconds" report
+                                    #: should not have to know what to grep
+                                    #: for.
+                                    gap = ((time.perf_counter()
+                                            - self._cancelledAt) * 1000.0)
+                                    if gap >= 400.0:
+                                        log.warning(
+                                            "%s: " % self.name +
+                                            "%.0f ms of silence between the "
+                                            "interruption and the next sound"
+                                            % gap)
+                                    elif log.isEnabledFor(log.DEBUG):
+                                        log.debug(
+                                            "%s: " % self.name +
+                                            "interrupted; next sound %.0f ms "
+                                            "later" % gap)
                                 self._afterCancel = False
                             else:
                                 self._player.feed(piece)
