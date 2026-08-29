@@ -249,9 +249,11 @@ def _readExactly(stream, n):
 # other silently ran its sibling's lookup -- reading the wrong folder and
 # offering the wrong voices, with nothing failing. A package settles that for
 # good: nothing here is reached through `sys.path` any more.
+from ._panthera import dllhost                                # noqa: E402
 from ._panthera import pantheratiger as tree                  # noqa: E402
 
 HOST_EXE = tree.HOST_EXE
+HOST_DLL = tree.HOST_DLL
 find_tree = tree.find_tree
 engine_paths = tree.engine_paths
 read_voices = tree.read_voices
@@ -547,6 +549,16 @@ class SynthDriver(SynthDriver):
         """
         self._restartWanted = True
 
+    def _useLibrary(self):
+        """-> True when the engine has to be a library rather than a process.
+
+        The rule itself is `dllhost.useLibrary`, shared with the other three
+        generations' driver; see there for why it is one question in one place.
+        Tiger has no standby host to suppress alongside it -- this driver never
+        grew one -- so there is nothing else to say here.
+        """
+        return dllhost.useLibrary(HOST_EXE, HOST_DLL)
+
     def _host(self):
         """The resident engine process, started on demand and restarted if it
         dies.  Startup costs about 20 ms including the 2.1 MB dictionary, so a
@@ -585,10 +597,23 @@ class SynthDriver(SynthDriver):
                 env.pop("TIGER_HOST_VERBOSE", None)
             if self._cancelEvent:
                 env["TIGER_CANCEL_EVENT"] = self._cancelEventName
-            self._proc = subprocess.Popen(
-                [HOST_EXE, "--serve", self._mt, self._sd, self._voicesdir],
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, startupinfo=si, env=env)
+            if dllhost.useLibrary(HOST_EXE, HOST_DLL):
+                # No executable to start, so the engine is a library in this
+                # process instead -- which is the only way this add-on speaks
+                # on a secure screen, where NVDA does not copy the `.exe`.
+                # What comes back answers `Popen`'s questions and carries the
+                # same two pipes, so nothing below here learns which it got.
+                self._proc = dllhost.DllHost(
+                    self.name, HOST_DLL, self._mt, self._sd, self._voicesdir,
+                    self._cancelEventName if self._cancelEvent else None,
+                    ["TIGER_HOST_VERBOSE=%s"
+                     % env.get("TIGER_HOST_VERBOSE", "")])
+            else:
+                self._proc = subprocess.Popen(
+                    [HOST_EXE, "--serve", self._mt, self._sd,
+                     self._voicesdir],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, startupinfo=si, env=env)
             self._watchStderr(self._proc)
             return self._proc
 

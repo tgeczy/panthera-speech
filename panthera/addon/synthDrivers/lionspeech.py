@@ -26,6 +26,7 @@ import subprocess                                             # noqa: F401
 from ._panthera import pantheradriver, pantheralion
 
 HOST_EXE = pantheralion.HOST_EXE
+HOST_DLL = pantheralion.HOST_DLL
 find_tree = pantheralion.find_tree
 engine_paths = pantheralion.engine_paths
 read_voices = pantheralion.read_voices

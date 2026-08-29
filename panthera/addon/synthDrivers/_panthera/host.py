@@ -28,6 +28,7 @@ import time
 
 from logHandler import log
 
+from . import dllhost
 from . import pantheraabbrev
 from . import pantheranumbers
 from . import pantherastress
@@ -71,6 +72,14 @@ class HostMixin(object):
     """The host process, and everything said down the pipe to it."""
 
     # -- the host ----------------------------------------------------------
+    def _useLibrary(self):
+        """-> True when the engine has to be a library rather than a process.
+
+        The rule itself is `dllhost.useLibrary`, which Tiger's separate driver
+        asks as well; see there for why it is one question in one place.
+        """
+        return dllhost.useLibrary(self.TREE.HOST_EXE, self.TREE.HOST_DLL)
+
     def _startHost(self, standby=False):
         """Start one engine process and return it without choosing it.
 
@@ -108,19 +117,35 @@ class HostMixin(object):
             env.pop("TIGER_NO_ABBREV", None)
         else:
             env["TIGER_NO_ABBREV"] = "1"
-        proc = subprocess.Popen(
-            [self.TREE.HOST_EXE, "--serve", self._mt, self._sd,
-             self._voicesdir],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, startupinfo=si, env=env)
-        #: Set when this host says it is ready, out of its own stderr.
-        #:
-        #: **Alive is not ready, and the difference is the whole of
-        #: panthera-speech's interrupt storm.**  A standby is a `Popen` the
-        #: instant it exists, so `poll() is None` says yes about a process
-        #: that has not yet mapped the engine or opened a channel.  Promoting
-        #: one of those is not a handoff, it is a cold start with extra steps.
-        proc.pantheraReady = threading.Event()
+
+        if self._useLibrary():
+            # No executable to start, so the engine is a library in this
+            # process instead.  Everything below is the same afterwards: what
+            # comes back answers `Popen`'s questions and carries the same two
+            # pipes, so the protocol, the streaming reader and the cancel
+            # event never learn which one they got.
+            proc = dllhost.DllHost(
+                self.name, self.TREE.HOST_DLL, self._mt, self._sd, self._voicesdir,
+                self._cancelEventName if self._cancelEvent else None,
+                ["%s=%s" % (k, env.get(k, ""))
+                 for k in ("TIGER_HOST_VERBOSE", "TIGER_PARAMS",
+                           "TIGER_NO_ABBREV")])
+        else:
+            proc = subprocess.Popen(
+                [self.TREE.HOST_EXE, "--serve", self._mt, self._sd,
+                 self._voicesdir],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, startupinfo=si, env=env)
+            #: Set when this host says it is ready, out of its own stderr.
+            #:
+            #: **Alive is not ready, and the difference is the whole of
+            #: panthera-speech's interrupt storm.**  A standby is a `Popen`
+            #: the instant it exists, so `poll() is None` says yes about a
+            #: process that has not yet mapped the engine or opened a channel.
+            #: Promoting one of those is not a handoff, it is a cold start
+            #: with extra steps.  A `DllHost` sets its own, because `pt_open`
+            #: does not return until the engine is up.
+            proc.pantheraReady = threading.Event()
         self._watchStderr(proc)
         log.debug("%s: " % self.name + "%shost %d started; abbreviations %s, "
                   "phrasing %r"
@@ -178,7 +203,17 @@ class HostMixin(object):
         The host blocks on stdin once initialisation is complete, so sharing
         the auto-reset cancellation event is safe: only the active host has a
         render in flight and waits on that event.
+
+        **There is no spare when the engine is a library.**  One process holds
+        one engine and there is no way to unmap it -- a second copy of
+        Leopard's Alex would not fit in a 2 GB address space beside the first
+        -- so a standby is not something to arrange more cheaply here, it is
+        something that cannot exist.  Nothing is lost by it: a spare exists to
+        hide the cost of *starting a host*, and starting a session costs the
+        1 to 5 ms of opening a channel.  There is nothing left to hide.
         """
+        if self._useLibrary():
+            return
         with self._procLock:
             if self._stopped or self._restartWanted:
                 return
@@ -523,6 +558,12 @@ class HostMixin(object):
         fills up, and then the host blocks inside a printf and the screen
         reader goes quiet.  DEVNULL avoided that by throwing the evidence away.
         """
+        if proc.stderr is None:
+            # A later library session: the log belongs to the process and the
+            # first session took it, so there is nothing here to read.  One
+            # reader per pipe, or two would take turns and split lines.
+            return
+
         def pump():
             try:
                 for line in iter(proc.stderr.readline, b""):

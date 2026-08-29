@@ -24,6 +24,7 @@ import subprocess                                             # noqa: F401
 from ._panthera import pantheradriver, pantherasnowleopard
 
 HOST_EXE = pantherasnowleopard.HOST_EXE
+HOST_DLL = pantherasnowleopard.HOST_DLL
 find_tree = pantherasnowleopard.find_tree
 engine_paths = pantherasnowleopard.engine_paths
 read_voices = pantherasnowleopard.read_voices

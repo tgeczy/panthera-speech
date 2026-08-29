@@ -166,7 +166,17 @@ def _install_fake_nvda():
                 "speech": {"outputDevice": "default"}}
     sys.modules["config"] = cfg
 
-    cfg_dir = os.path.join(ROOT, "build", "test-config")
+    # Overridable, so that something importing this file from *another*
+    # process cannot write into the suite's own configuration.
+    #
+    # `secure_screen_probe.py` does exactly that -- it drives a real driver in
+    # a 32-bit interpreter -- and it points a tree variable at whichever engine
+    # it means to speak with.  Sharing this folder meant its pointer files
+    # overwrote the suite's, so the Lion tree quietly became one with no
+    # Compact voices in it and `test_the_vocalizer_voices_are_not_offered`
+    # failed for a reason unconnected to anything it tests.
+    cfg_dir = os.environ.get("PANTHERA_TEST_CONFIG") or os.path.join(
+        ROOT, "build", "test-config")
     _stage_tree(cfg_dir)
     gv = types.ModuleType("globalVars")
     gv.appArgs = type("_A", (), {"configPath": cfg_dir, "secure": False})()

@@ -37,6 +37,7 @@ from ._panthera import pantheradriver, pantheraleopard
 #: plugin asks, and two copies of a lookup are two chances to disagree about
 #: where the engine is.
 HOST_EXE = pantheraleopard.HOST_EXE
+HOST_DLL = pantheraleopard.HOST_DLL
 find_tree = pantheraleopard.find_tree
 engine_paths = pantheraleopard.engine_paths
 read_voices = pantheraleopard.read_voices

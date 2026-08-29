@@ -37,6 +37,8 @@ both need it, and so does anything run from a command line.
 """
 import os
 
+from . import dllhost
+
 from . import pantheratrees
 from .pantheratrees import (aac_available, config_base,  # noqa: F401
                             is_tree)
@@ -52,6 +54,10 @@ LEGACY_DIRNAMES = ("leopardspeech-data", "leopard-data")
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 HOST_EXE = os.path.join(_HERE, "panthera_host.exe")
+#: The same program, as a library, for the screens NVDA will not copy an
+#: executable to.  See `HostMixin._useLibrary`: which of the two is used
+#: is decided by whether the executable is there, and nothing else.
+HOST_DLL = os.path.join(_HERE, "panthera_host.dll")
 
 
 def config_dir():
@@ -228,10 +234,16 @@ def explain():
     lines = []
     ok = True
 
+    # Either kind of host will do.  On a secure screen NVDA has not copied
+    # the executable -- it drops every `.exe` -- and the library beside it is
+    # what speaks there, so a report that only looked for the executable would
+    # call a working install broken on the one screen hardest to check.
     lines.append("host: %s %s"
                  % (HOST_EXE, "found" if os.path.isfile(HOST_EXE)
-                    else "MISSING"))
-    if not os.path.isfile(HOST_EXE):
+                    else ("MISSING, but %s is there and will be used"
+                          % os.path.basename(HOST_DLL))
+                    if os.path.isfile(HOST_DLL) else "MISSING"))
+    if not dllhost.haveHost(HOST_EXE, HOST_DLL):
         ok = False
 
     home = config_dir()
@@ -279,7 +291,7 @@ def explain():
 
 def usable():
     """-> True when there is an engine we could actually speak with."""
-    if not os.path.isfile(HOST_EXE):
+    if not dllhost.haveHost(HOST_EXE, HOST_DLL):
         return False
     tree = find_tree()
     if not tree:

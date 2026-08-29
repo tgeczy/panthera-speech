@@ -297,6 +297,21 @@ __declspec(dllexport) int __cdecl pt_open(const char *mtpath,
     return 0;
 }
 
+/* Is the session still able to answer?  1 while `serve` is running.
+ *
+ * A process either exists or it does not, and `Popen.poll` says which; a
+ * session has no such thing to ask, so this stands in for it.  `serve` returns
+ * on its own if a request does not begin with a magic it knows -- the
+ * protocol-desync exit -- and without this the driver would keep writing into
+ * a session nobody is reading and wait for a response nobody will send.  The
+ * executable makes that visible by dying; here it has to be asked.
+ */
+__declspec(dllexport) int __cdecl pt_alive(void)
+{
+    return g_thread &&
+           WaitForSingleObject(g_thread, 0) == WAIT_TIMEOUT;
+}
+
 /* End the session.
  *
  * **The caller closes its own three ends first, and this closes only the pair
