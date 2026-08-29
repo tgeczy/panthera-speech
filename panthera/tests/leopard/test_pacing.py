@@ -14,6 +14,7 @@ comma is a splitter that drops a word, and no listening test would find it
 reliably -- so every case here rejoins and compares.
 """
 from synthDrivers import leopardspeech as ls
+from synthDrivers._panthera import speech_pipeline
 from synthDrivers._panthera import pantheradriver as pd
 
 
@@ -139,7 +140,7 @@ def test_a_streaming_host_is_sent_the_text_whole(monkeypatch):
     """
     called = []
     real = pd._splitUtterance
-    monkeypatch.setattr(pd, "_splitUtterance",
+    monkeypatch.setattr(speech_pipeline, "_splitUtterance",
                         lambda t: called.append(t) or real(t))
 
     long_text = ("The engine renders at about ninety times real time. "
