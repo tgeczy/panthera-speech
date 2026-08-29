@@ -113,6 +113,14 @@ class HostMixin(object):
              self._voicesdir],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, startupinfo=si, env=env)
+        #: Set when this host says it is ready, out of its own stderr.
+        #:
+        #: **Alive is not ready, and the difference is the whole of
+        #: panthera-speech's interrupt storm.**  A standby is a `Popen` the
+        #: instant it exists, so `poll() is None` says yes about a process
+        #: that has not yet mapped the engine or opened a channel.  Promoting
+        #: one of those is not a handoff, it is a cold start with extra steps.
+        proc.pantheraReady = threading.Event()
         self._watchStderr(proc)
         log.debug("%s: " % self.name + "%shost %d started; abbreviations %s, "
                   "phrasing %r"
@@ -185,6 +193,39 @@ class HostMixin(object):
             except Exception as e:
                 log.debugWarning("%s: could not start standby host: %s"
                                  % (self.name, e))
+
+    #: The shortest interval between two handoffs, in seconds.
+    #:
+    #: A handoff is cheap once.  Twenty-six of them in twelve seconds is a
+    #: process killed and another spawned on every arrow key, which is what a
+    #: user's log showed while he heard two and three second stalls -- and the
+    #: spares were all ready, so nothing about readiness explains it.  The
+    #: cost is the volume itself.
+    #:
+    #: So the first interrupt after a quiet moment still gets its instant
+    #: promotion, and a burst of them falls back to waiting for the engine's
+    #: own cancel, which it answers in a few hundred milliseconds.  Waiting is
+    #: the cheaper of the two once the machine is already busy spawning.
+    RETIRE_COOLDOWN = 1.0
+
+    #: When the last handoff happened.  A class attribute so no driver
+    #: `__init__` has to know this mixin keeps state; the instance shadows it
+    #: on the first retirement.
+    _lastRetire = 0.0
+
+    def _standbyIsReady(self):
+        """-> True when a spare exists, is alive, and has said it is ready.
+
+        `poll()` answers "has this process exited", which a host that is still
+        mapping 400 MB of voice has not.  Readiness is the host's own `ready,`
+        line, caught by `_watchStderr`.
+        """
+        with self._procLock:
+            spare = self._standby
+        if spare is None or spare.poll() is not None:
+            return False
+        flag = getattr(spare, "pantheraReady", None)
+        return bool(flag is not None and flag.is_set())
 
     #: How long a cancelled response is given to end on its own before the
     #: host is killed instead.
@@ -341,10 +382,34 @@ class HostMixin(object):
                         return
                     replacementWaiting = not self._queue.empty()
                 if (replacementWaiting
-                        and time.time() - started >= self.HANDOFF_GRACE):
+                        and time.time() - started >= self.HANDOFF_GRACE
+                        and self._standbyIsReady()
+                        and (time.time() - self._lastRetire
+                             >= self.RETIRE_COOLDOWN)):
                     # The worker cannot take the queued utterance until this
                     # cancelled response ends.  Retire now; the longer deadline
                     # below is only for recovery when no speech is waiting.
+                    #
+                    # **Only onto a spare that is ready**, and that condition
+                    # is what stops a handoff becoming a stampede.  Measured
+                    # on this machine, a render lets go of the worker a median
+                    # 273-347 ms after a cancel on Lion, 318-366 on Snow
+                    # Leopard and 413-791 on Leopard -- against a
+                    # `HANDOFF_GRACE` of 60 ms.  So the grace expires long
+                    # before the engine could possibly have answered, every
+                    # single mid-render interrupt looked stuck, and 26 of 44
+                    # utterances in one user's log ended "the host was
+                    # retired": each one a process killed, a spare promoted
+                    # and another spawned, on a machine already busy.  The
+                    # spare promoted at 60 ms was itself 60 ms old.
+                    #
+                    # Waiting for a ready spare keeps the fast path exactly as
+                    # it was -- after any pause there is one, and it is
+                    # promoted at once -- while making the cascade impossible,
+                    # because during rapid navigation there is never a ready
+                    # spare and the engine's own cancel is allowed to land.
+                    # `ABANDON_GRACE` below is still the backstop for a host
+                    # that really has stopped answering.
                     if log.isEnabledFor(log.DEBUG):
                         log.debug(
                             "%s: render %d still holds the worker %.0f ms "
@@ -387,6 +452,7 @@ class HostMixin(object):
                     discard, self._standby = self._standby, None
             self._stopHost(proc)
             self._stopHost(discard)
+            self._lastRetire = time.time()
             if not self._stopped:
                 if replacement is not None:
                     log.debug("%s: " % self.name + "promoted standby host %d"
@@ -467,6 +533,15 @@ class HostMixin(object):
                     # read with its own name.  Everything else is commentary
                     # and belongs at debug level, or a user's log fills with
                     # several hundred lines of loader detail.
+                    if line.startswith("tiger_host:"):
+                        #: The host's own word for it, and the only honest
+                        #: signal available: everything before this line is
+                        #: mapping, binding and running initialisers.
+                        if line[11:].lstrip().startswith("ready,"):
+                            try:
+                                proc.pantheraReady.set()
+                            except Exception:
+                                pass
                     if not line.startswith("tiger_host:"):
                         log.debug("%s host: " % self.name + "%s" % line)
                     elif line[11:].lstrip().startswith(_HOST_ROUTINE):
