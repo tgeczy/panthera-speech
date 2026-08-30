@@ -1,4 +1,5 @@
-﻿param([switch]$RegisterVoices,[switch]$UnregisterVoices,[string]$GenerationList,[string]$DataRoot)
+﻿param([switch]$RegisterVoices,[switch]$UnregisterVoices,[string]$GenerationList,[string]$DataRoot,
+      [switch]$MigrateData,[string]$MigrateFrom,[switch]$ShowMigrationPlan,[string]$MirrorSettings)
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -8,22 +9,114 @@ $settingsScript = $PSCommandPath
 $clsid = '{C1F7FC55-3512-4F5D-A6EB-F53220BE4693}'
 $Generations = @($GenerationList -split ',' | Where-Object { $_ })
 
-# Where the MacinTalk data lives.  Three answers, in order: the folder the
-# user chose (remembered in HKCU, and passed explicitly through the elevated
-# re-invocation, whose HKCU may not be this user's); NVDA's own shared
-# macintalk folder, so an NVDA user registers SAPI voices from the data they
-# already extracted rather than extracting everything twice; and a standalone
-# default for a machine with no NVDA at all.
+# Where the MacinTalk data lives.  In order: the folder the user chose
+# (remembered in HKCU, and passed explicitly through the elevated
+# re-invocation, whose HKCU may not be this user's); the folder set for the
+# *machine* (HKLM, which is the only one of the two a service account can
+# read); NVDA's own shared macintalk folder, so an NVDA user registers SAPI
+# voices from the data they already extracted rather than extracting
+# everything twice; and a standalone default under %ProgramData%, falling
+# back to the per-user folder earlier versions used.
+#
+# Explicit choices outrank defaults and this user outranks the machine --
+# the same ranking `pantheratrees.sapi_roots` encodes on the NVDA side, and
+# the two have to agree or a person's data is found by one and not the other.
 $dataPrefKey = 'HKCU:\Software\Panthera SAPI'
+$machinePrefPath = 'Software\Panthera SAPI'
+
+#: %ProgramData%, named rather than hard-coded because a Windows install is
+#: not obliged to put it on C:.
+function Get-CommonRoot {
+    $common = if ($env:ProgramData) { $env:ProgramData } else { $env:ALLUSERSPROFILE }
+    if ($common) { Join-Path $common 'macintalk-data' } else { $null }
+}
+
+# The machine-wide DataPath, read from and written to **both registry views**.
+#
+# `HKLM\Software` is redirected under WOW64 and `HKCU\Software` is not, so
+# this is a trap that arrives with the machine-wide key and did not exist
+# before it: a 64-bit PowerShell writing through `Set-ItemProperty` lands in
+# the 64-bit view alone, where 32-bit NVDA and the 32-bit engine DLL -- both
+# of which read `Wow6432Node` -- will never see it.  The whole feature would
+# ship dead and every test would still pass.  `Add-VoiceTokens` already
+# writes tokens through both views for exactly this reason; this is the same
+# dance for the same reason.
+function Get-MachineDataPath {
+    foreach ($view in 'Registry64','Registry32') {
+        try {
+            $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine',$view)
+            $key = $base.OpenSubKey($machinePrefPath)
+            if ($key) {
+                $value = $key.GetValue('DataPath'); $key.Dispose(); $base.Dispose()
+                if ($value) { return [string]$value }
+            } else { $base.Dispose() }
+        } catch {}
+    }
+    return $null
+}
+function Set-MachineDataPath([string]$path) {
+    foreach ($view in 'Registry32','Registry64') {
+        $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine',$view)
+        $key = $base.CreateSubKey($machinePrefPath)
+        $key.SetValue('DataPath',$path,'String')
+        $key.Dispose(); $base.Dispose()
+    }
+}
+
+#: The settings the engine DLL reads, in one place so the mirror below cannot
+#: drift from the checkboxes above it.  Tool state -- which generations were
+#: declined, whether the migration was declined -- is deliberately not here:
+#: it is this person's business and means nothing to another account.
+$SettingNames = @('AcceptCommands','Phrasing','ExpandAbbreviations','RateBoost',
+                  'Inflection','NumberStyle','Diagnostics')
+
+# The engine reads these from HKCU and falls back to HKLM per value, because a
+# voice speaking under a service account -- the sign-in screen -- has an HKCU
+# holding nothing anybody chose.  Mirroring happens on the elevated trips this
+# tool already makes, and the values travel as an argument rather than being
+# re-read on the other side: the elevated process's HKCU belongs to whichever
+# account answered the prompt, which need not be this one.  Same reason
+# -DataRoot has always been passed rather than resolved twice.
+function Set-MachineSettings([string]$pairs) {
+    if (!$pairs) { return }
+    foreach ($view in 'Registry32','Registry64') {
+        $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine',$view)
+        $key = $base.CreateSubKey($machinePrefPath)
+        foreach ($pair in @($pairs -split ';' | Where-Object { $_ })) {
+            $name,$value = $pair -split '=',2
+            if ($name -notin $SettingNames) { continue }
+            # A number is a DWORD and a word is a string, which is exactly the
+            # split the DLL makes between setting_dword and setting_string.
+            if ($value -match '^\d+$') { $key.SetValue($name,[int]$value,'DWord') }
+            else { $key.SetValue($name,[string]$value,'String') }
+        }
+        $key.Dispose(); $base.Dispose()
+    }
+}
+
 function Resolve-DataRoot {
     if ($DataRoot) { return $DataRoot }
     try {
         $saved = (Get-ItemProperty -Path $dataPrefKey -Name DataPath -ErrorAction Stop).DataPath
         if ($saved -and (Test-Path -LiteralPath $saved)) { return $saved }
     } catch {}
-    $nvda = Join-Path $env:APPDATA 'nvda\macintalk'
-    if (Test-Path -LiteralPath $nvda) { return $nvda }
-    Join-Path $env:APPDATA 'macintalk-data'
+    $machine = Get-MachineDataPath
+    if ($machine -and (Test-Path -LiteralPath $machine)) { return $machine }
+    $perUser = $null
+    if ($env:APPDATA) {
+        $nvda = Join-Path $env:APPDATA 'nvda\macintalk'
+        if (Test-Path -LiteralPath $nvda) { return $nvda }
+        $perUser = Join-Path $env:APPDATA 'macintalk-data'
+        if (Test-Path -LiteralPath $perUser) { return $perUser }
+    }
+    # Nothing exists yet, so this is a fresh install choosing where to put
+    # things.  %ProgramData% is the answer: every account on the machine can
+    # read it, and a standard user can create a folder there and write into
+    # it, so extraction needs no elevation.  The per-user folder remains the
+    # answer only where there is no %ProgramData% to speak of.
+    $common = Get-CommonRoot
+    if ($common) { return $common }
+    $perUser
 }
 $data = Resolve-DataRoot
 
@@ -55,6 +148,58 @@ function Get-Voices {
         }
     }
     $rows
+}
+
+# --- moving the data somewhere every account can read ---------------------
+# The SAPI data moves to %ProgramData%; NVDA's does not.  That looks
+# inconsistent and is not: a portable NVDA copy carries its own configuration
+# folder with it, so data kept inside that folder travels and data outside it
+# is silently lost -- while SAPI has no portable copy to protect and every
+# account on the machine needs to read one copy.  The NVDA driver *adds*
+# %ProgramData% to the places it looks rather than moving anything.
+#
+# Exactly one arrangement is moved: the standalone per-user default,
+# %APPDATA%\macintalk-data.  A folder somebody chose by hand is their choice
+# and stays where they put it, and NVDA's macintalk folder is moved by
+# nothing, ever -- taking it out of NVDA's configuration directory is exactly
+# what breaks speech on the sign-in screen, where NVDA reads a copy of that
+# directory and nothing else.
+function Get-ComparablePath([string]$path) {
+    if (!$path) { return '' }
+    try { return ([System.IO.Path]::GetFullPath($path)).TrimEnd('\').ToLowerInvariant() }
+    catch { return $path.TrimEnd('\').ToLowerInvariant() }
+}
+function Test-SamePath([string]$a, [string]$b) {
+    $x = Get-ComparablePath $a
+    return ($x -ne '' -and $x -eq (Get-ComparablePath $b))
+}
+
+function Get-MigrationPlan {
+    $common = Get-CommonRoot
+    $plan = [pscustomobject]@{ Action='none'; Reason=''; From=$data; To=$common }
+    if (!$common) {
+        $plan.Reason = 'this machine has no ProgramData folder'; return $plan
+    }
+    if (Test-SamePath $data $common) {
+        $plan.Action='done'; $plan.Reason='the data is already in the machine-wide folder'; return $plan
+    }
+    if ($env:APPDATA) {
+        if (Test-SamePath $data (Join-Path $env:APPDATA 'nvda\macintalk')) {
+            $plan.Action='nvda'
+            $plan.Reason='the data belongs to NVDA and moving it would break speech on the sign-in screen'
+            return $plan
+        }
+        if (!(Test-SamePath $data (Join-Path $env:APPDATA 'macintalk-data'))) {
+            $plan.Action='chosen'; $plan.Reason='this folder was chosen deliberately'; return $plan
+        }
+    } else {
+        $plan.Action='chosen'; $plan.Reason='this folder was chosen deliberately'; return $plan
+    }
+    if (!(Test-Path -LiteralPath $data) -or !(@(Get-Voices).Count)) {
+        $plan.Reason='there is no voice data to move'; return $plan
+    }
+    $plan.Action='migrate'; $plan.Reason='the data is in a folder only this account can read'
+    $plan
 }
 
 function Remove-VoiceTokens([string[]]$SelectedGenerations) {
@@ -114,11 +259,80 @@ function Test-AnyPantheraTokens {
     return $false
 }
 
+if ($ShowMigrationPlan) {
+    # What the migration offer would decide, without deciding it.  The move
+    # itself needs elevation, a machine with data on it and a registry to
+    # write; the classification needs none of those, so it is the part a test
+    # can hold still.  Pass -DataRoot to pin the resolved root.
+    $plan = Get-MigrationPlan
+    Write-Output ('plan: {0}' -f $plan.Action)
+    Write-Output ('from: {0}' -f $plan.From)
+    Write-Output ('to: {0}' -f $plan.To)
+    Write-Output ('reason: {0}' -f $plan.Reason)
+    exit 0
+}
+
+if ($MigrateData) {
+    # Elevated, and told both ends explicitly: -MigrateFrom is the folder
+    # being emptied and -DataRoot is where it lands, which also makes $data
+    # the destination so Add-VoiceTokens registers against the new root
+    # unchanged.  Neither may be read from this process's own HKCU or
+    # %APPDATA%, which belong to whichever account answered the elevation
+    # prompt and need not be the account whose data this is.
+    if (!$MigrateFrom -or !$DataRoot) { Write-Error 'Both -MigrateFrom and -DataRoot are required.'; exit 2 }
+    if (!(Test-Path -LiteralPath $MigrateFrom)) { Write-Error 'The folder to move is not there.'; exit 3 }
+    try {
+        New-Item -ItemType Directory -Force -Path $DataRoot -ErrorAction Stop | Out-Null
+        # One generation at a time rather than the folder whole, so a run
+        # that stopped halfway -- a locked voice bank, a full disk -- is
+        # finished by running it again instead of refused.
+        foreach ($child in @(Get-ChildItem -LiteralPath $MigrateFrom -Force)) {
+            $target = Join-Path $DataRoot $child.Name
+            if (Test-Path -LiteralPath $target) { continue }
+            Move-Item -LiteralPath $child.FullName -Destination $target -ErrorAction Stop
+        }
+    } catch {
+        # A resident panthera_host.exe holds voice banks open, and on the same
+        # volume a move is a rename: it fails whole rather than half-moving.
+        Write-Error ('Could not move the speech data: {0}' -f $_.Exception.Message)
+        exit 4
+    }
+    # A same-volume move carries the source's security descriptor with it, so
+    # data moved out of a profile arrives in ProgramData still readable by
+    # that one account -- machine-wide in name and not in fact, and a
+    # single-account test cannot tell the difference because SYSTEM reads it
+    # either way.  Reset, so the folder inherits what ProgramData grants
+    # everybody.
+    # Past this line the data has moved, so a failure here is a different
+    # failure and has its own exit code: "it did not move" and "it moved but
+    # the registry did not follow" need different things said to the person,
+    # and telling them nothing changed when 1.6 GB just did is the one answer
+    # that sends them looking in the wrong place.
+    try {
+        & "$env:SystemRoot\System32\icacls.exe" $DataRoot /reset /T /C /Q | Out-Null
+        Set-MachineDataPath $DataRoot
+        Set-MachineSettings $MirrorSettings
+        # Every registered token carries the old DataPath.  Follow the data,
+        # all four lineages, the same way a deliberate folder change does.
+        if (Test-AnyPantheraTokens) { Add-VoiceTokens @($GenerationTable.Folder) | Out-Null }
+    } catch {
+        Write-Error ('The data moved to {0}, but registering it there failed: {1}' -f $DataRoot,$_.Exception.Message)
+        exit 5
+    }
+    if (!(@(Get-ChildItem -LiteralPath $MigrateFrom -Force)).Count) {
+        Remove-Item -LiteralPath $MigrateFrom -Force -ErrorAction SilentlyContinue
+    }
+    exit 0
+}
+
 if ($RegisterVoices) {
     & "$env:SystemRoot\SysWOW64\regsvr32.exe" /s (Join-Path $stage 'x86\panthera_sapi.dll')
     if ($LASTEXITCODE) { exit $LASTEXITCODE }
     & "$env:SystemRoot\System32\regsvr32.exe" /s (Join-Path $stage 'x64\panthera_sapi.dll')
     if ($LASTEXITCODE) { exit $LASTEXITCODE }
+    # Registration is the elevated trip everybody makes, so it is where the
+    # machine-wide copy of the settings gets refreshed.
+    Set-MachineSettings $MirrorSettings
     Add-VoiceTokens $Generations | Out-Null
     exit 0
 }
@@ -218,6 +432,17 @@ function Load-Setting([string]$name, $default) {
     try { (Get-ItemProperty -Path $dataPrefKey -Name $name -ErrorAction Stop).$name }
     catch { $default }
 }
+# This person's settings, packed for the elevated process to mirror into HKLM.
+# Only the ones actually set travel: a value nobody chose has no business
+# becoming the default every other account on the machine inherits.
+function Get-SettingsArgument {
+    $pairs = @()
+    foreach ($name in $SettingNames) {
+        $value = Load-Setting $name $null
+        if ($null -ne $value) { $pairs += ('{0}={1}' -f $name,$value) }
+    }
+    $pairs -join ';'
+}
 $acceptCommands.Checked = [bool](Load-Setting 'AcceptCommands' 0)
 $pauses.SelectedIndex = [Math]::Max(0, $pausesValues.IndexOf([string](Load-Setting 'Phrasing' 'fewest')))
 $expandAbbrev.Checked = [bool](Load-Setting 'ExpandAbbreviations' 1)
@@ -284,7 +509,7 @@ function Offer-NewData {
         ("Voice data for {0} is installed but not registered with SAPI.`n`nRegister it now? (Choosing No will not ask again for these engines; the Register button always works.)" -f $labels),
         'Panthera SAPI','YesNo','Question')
     if ($answer -eq 'Yes') {
-        $arguments='-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -STA -File "{0}" -RegisterVoices -GenerationList {1} -DataRoot "{2}"' -f $settingsScript,($pending -join ','),$data
+        $arguments='-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -STA -File "{0}" -RegisterVoices -GenerationList {1} -DataRoot "{2}" -MirrorSettings "{3}"' -f $settingsScript,($pending -join ','),$data,(Get-SettingsArgument)
         $process=Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList $arguments
         if ($process.ExitCode) {
             [Windows.Forms.MessageBox]::Show($form,'Registration failed. Use Register to try again.','Panthera SAPI','OK','Error') | Out-Null
@@ -295,6 +520,52 @@ function Offer-NewData {
     } else {
         Set-DeclinedGenerations (@(Get-DeclinedGenerations) + $pending)
     }
+}
+
+# The one-time offer to move the data somewhere every account can read.
+# Asked once and remembered, like the registration offer beside it: somebody
+# who says no is not asked again, and the Choose data folder button has
+# always been the way to move it by hand.
+function Offer-Migration {
+    if ([int](Load-Setting 'DeclinedMigration' 0)) { return }
+    $plan = Get-MigrationPlan
+    if ($plan.Action -ne 'migrate') { return }
+    $answer = [Windows.Forms.MessageBox]::Show($form,
+        ("Your MacinTalk speech data is in a folder only your Windows account can read:`n`n{0}`n`nMoving it to`n`n{1}`n`nlets every account on this machine use the voices, and leaves one copy instead of one per person. Nothing is re-extracted and the voices stay registered.`n`nMove it now? (This needs administrator permission.)" -f $plan.From,$plan.To),
+        'Panthera SAPI','YesNo','Question')
+    if ($answer -ne 'Yes') { Save-Setting 'DeclinedMigration' 1; return }
+    $arguments = '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -STA -File "{0}" -MigrateData -MigrateFrom "{1}" -DataRoot "{2}" -MirrorSettings "{3}"' -f $settingsScript,$plan.From,$plan.To,(Get-SettingsArgument)
+    $process = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList $arguments
+    if ($process.ExitCode -eq 5) {
+        # The folder moved and the registry did not follow, so the voices are
+        # registered against a folder that is now empty.  Choose data folder
+        # pointed at the new place re-registers them, which is the one action
+        # that fixes it -- so say that, rather than "it failed".
+        $script:data = $plan.To
+        [Windows.Forms.MessageBox]::Show($form,
+            ('The speech data was moved to {0}, but the voices could not be registered from there. Use Choose data folder, pick that folder, and the voices will be registered again.' -f $plan.To),
+            'Panthera SAPI','OK','Warning') | Out-Null
+        Refresh-Voices
+        return
+    }
+    if ($process.ExitCode) {
+        [Windows.Forms.MessageBox]::Show($form,
+            ('The speech data could not be moved, and nothing was changed. Anything using a Panthera voice right now will be holding the files open -- close it and try again.'),
+            'Panthera SAPI','OK','Error') | Out-Null
+        return
+    }
+    $script:data = $plan.To
+    # A remembered per-user folder now names a folder that is not there.  It
+    # is only rewritten if it was set at all, so nobody acquires an explicit
+    # choice they never made.
+    try {
+        $saved = (Get-ItemProperty -Path $dataPrefKey -Name DataPath -ErrorAction Stop).DataPath
+        if ($saved) { Set-ItemProperty -Path $dataPrefKey -Name DataPath -Value $plan.To }
+    } catch {}
+    Refresh-Voices
+    [Windows.Forms.MessageBox]::Show($form,
+        ('The speech data now lives in {0}, where every account on this machine can read it.' -f $plan.To),
+        'Panthera SAPI') | Out-Null
 }
 
 # --- extraction, off the UI thread --------------------------------------
@@ -429,7 +700,7 @@ $chooseRoot.Add_Click({
             # Guarded on tokens existing at all, so browsing folders never
             # costs anyone an elevation prompt they did not earn.
             $all = @($GenerationTable.Folder) -join ','
-            $arguments='-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -STA -File "{0}" -RegisterVoices -GenerationList {1} -DataRoot "{2}"' -f $settingsScript,$all,$script:data
+            $arguments='-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -STA -File "{0}" -RegisterVoices -GenerationList {1} -DataRoot "{2}" -MirrorSettings "{3}"' -f $settingsScript,$all,$script:data,(Get-SettingsArgument)
             $process=Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList $arguments
             if ($process.ExitCode) { [Windows.Forms.MessageBox]::Show($form,'The folder was remembered, but re-registering the voices from it failed. Use Register to try again.','Panthera SAPI','OK','Error') }
             else { [Windows.Forms.MessageBox]::Show($form,'Voices are now registered from the new folder.','Panthera SAPI') }
@@ -448,7 +719,7 @@ $extract.Add_Click({
 $register.Add_Click({
     $selected=@(); for($i=0;$i -lt $GenerationTable.Count;$i++){if($list.GetItemChecked($i)){$selected+=$GenerationTable[$i].Folder}}
     if(!$selected.Count){[Windows.Forms.MessageBox]::Show($form,'Check at least one engine.','Panthera SAPI');return}
-    $arguments='-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -STA -File "{0}" -RegisterVoices -GenerationList {1} -DataRoot "{2}"' -f $settingsScript,($selected -join ','),$data
+    $arguments='-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -STA -File "{0}" -RegisterVoices -GenerationList {1} -DataRoot "{2}" -MirrorSettings "{3}"' -f $settingsScript,($selected -join ','),$data,(Get-SettingsArgument)
     $process=Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList $arguments
     if ($process.ExitCode) { [Windows.Forms.MessageBox]::Show($form,'Registration failed.','Panthera SAPI','OK','Error') } else {
         # A deliberate registration lifts the never-ask-again mark.
@@ -476,4 +747,7 @@ $form.Add_FormClosing({
         try { $script:extractProc.Kill() } catch {}
     }
 })
-Refresh-Voices; $form.Add_Shown({$list.Focus(); Offer-NewData}); [void]$form.ShowDialog()
+# Migration first, registration second: moving the data re-registers the
+# tokens against the new root on its way out, so asking about registration
+# before the move would ask about a folder that is about to be left behind.
+Refresh-Voices; $form.Add_Shown({$list.Focus(); Offer-Migration; Offer-NewData}); [void]$form.ShowDialog()

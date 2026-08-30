@@ -48,14 +48,41 @@ to this repository. Run `C:\panthera\sapi\settings.cmd` to see which speech
 data is present and register or unregister the voices.
 
 The MacinTalk data folder is resolved in this order: a folder you chose with
-the "Data location" button (remembered per user), then NVDA's own shared
+the "Data location" button (remembered per user), then a folder set for the
+whole machine (`HKLM\Software\Panthera SAPI\DataPath`), then NVDA's own shared
 folder at `%APPDATA%\nvda\macintalk` -- so an NVDA user registers SAPI voices
 from the data they already extracted, with nothing copied and nothing
-extracted twice -- and finally `%APPDATA%\macintalk-data` for a machine with
-no NVDA at all. Inside the root sit the generation folders (`tiger`,
-`leopard`, `snowleopard`, `lion`; case does not matter on Windows), each laid
-out exactly as the NVDA add-on lays them out. The tool never creates folders
-inside NVDA's tree; extraction is the only thing that writes.
+extracted twice -- then `%APPDATA%\macintalk-data`, where earlier versions put
+it, and finally `%ProgramData%\macintalk-data`, where a fresh install puts it
+now. Inside the root sit the generation folders (`tiger`, `leopard`,
+`snowleopard`, `lion`; case does not matter on Windows), each laid out exactly
+as the NVDA add-on lays them out. The tool never creates folders inside NVDA's
+tree; extraction is the only thing that writes.
+
+**The SAPI data moves to `%ProgramData%` and NVDA's does not**, which reads as
+an inconsistency and is not one. A portable NVDA copy carries its own
+configuration folder with it, so data kept inside that folder travels and data
+outside it is silently lost -- and on the Windows sign-in screen NVDA reads a
+copy of that folder and nothing else. SAPI has no portable copy to protect,
+and every account on the machine should read one copy rather than each
+extracting their own. So the NVDA driver only *adds* `%ProgramData%` to the
+places it looks, while this tool offers, once, to move its own data there.
+
+Exactly one arrangement is offered a move: the per-user default,
+`%APPDATA%\macintalk-data`. A folder you chose by hand stays where you put it,
+and NVDA's `macintalk` folder is moved by nothing, ever. Saying no is
+remembered, and "Data location" has always moved the folder by hand.
+
+The move also resets the folder's permissions to what `%ProgramData%` grants
+everybody. A folder moved within one volume keeps the security descriptor it
+had, which would otherwise leave it machine-wide in name and readable by one
+account in fact -- and a machine with one account on it cannot tell the
+difference.
+
+Both registry views are written and read throughout, because `HKLM\Software`
+is redirected under WOW64 while `HKCU\Software` is not: NVDA and the 32-bit
+engine DLL see `Wow6432Node`, so a machine-wide value written once, from
+64-bit code, would be perfectly present and entirely invisible.
 
 The settings program carries the NVDA driver's engine settings: **Accept
 embedded speech commands in text** (off by default -- the engine really
