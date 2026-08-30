@@ -106,9 +106,27 @@ function Resolve-DataRoot {
     if ($env:APPDATA) {
         $nvda = Join-Path $env:APPDATA 'nvda\macintalk'
         if (Test-Path -LiteralPath $nvda) { return $nvda }
+    }
+    # **NVDA's folder name, machine-wide.**  `%ProgramData%\macintalk` rather
+    # than `macintalk-data`: the add-on looks there now, so somebody who moved
+    # NVDA's folder to %ProgramData% has their data in a place this tool could
+    # see and, until this line, did not -- one word apart, exactly the way the
+    # add-on's own `find_tree` missed it.
+    #
+    # It matters more here than there, because the add-on searches on every
+    # start and these tokens do not: each of the 96 carries a DataPath written
+    # once, at registration.  Move the folder by hand and every token still
+    # names the old one, SAPI dispatches into the engine, and the engine finds
+    # nothing -- which sounds exactly like silence and logs like success.
+    $commonNvda = if ($env:ProgramData) { Join-Path $env:ProgramData 'macintalk' }
+                  elseif ($env:ALLUSERSPROFILE) { Join-Path $env:ALLUSERSPROFILE 'macintalk' }
+    if ($commonNvda -and (Test-Path -LiteralPath $commonNvda)) { return $commonNvda }
+    if ($env:APPDATA) {
         $perUser = Join-Path $env:APPDATA 'macintalk-data'
         if (Test-Path -LiteralPath $perUser) { return $perUser }
     }
+    $common = Get-CommonRoot
+    if ($common -and (Test-Path -LiteralPath $common)) { return $common }
     # Nothing exists yet, so this is a fresh install choosing where to put
     # things -- and it chooses the *per-user* folder, not %ProgramData%.
     #
@@ -256,6 +274,32 @@ function Add-VoiceTokens([string[]]$SelectedGenerations) {
         $root.Dispose(); $base.Dispose()
     }
     $voices.Count
+}
+
+# The DataPath one registered Panthera token carries, or $null.  They all
+# carry the same one, written at registration, so the first is the answer.
+function Get-TokenDataPath {
+    foreach ($view in 'Registry32','Registry64') {
+        try {
+            $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine',$view)
+            $root = $base.OpenSubKey('Software\Microsoft\Speech\Voices\Tokens')
+            if ($root) {
+                foreach ($name in @($root.GetSubKeyNames())) {
+                    if ($name -notlike 'Panthera_*') { continue }
+                    $key = $root.OpenSubKey($name)
+                    if ($key) {
+                        $value = $key.GetValue('DataPath'); $key.Dispose()
+                        if ($value) {
+                            $root.Dispose(); $base.Dispose(); return [string]$value
+                        }
+                    }
+                }
+                $root.Dispose()
+            }
+            $base.Dispose()
+        } catch {}
+    }
+    return $null
 }
 
 function Test-AnyPantheraTokens {
@@ -609,6 +653,50 @@ function Offer-Migration {
         'Panthera SAPI') | Out-Null
 }
 
+# **The voices point at a folder that is not there any more.**
+#
+# Each of the 96 tokens carries a DataPath written once, at registration.  The
+# add-on searches for its data on every start; these do not.  So moving the
+# folder by hand -- which is a reasonable thing to do, and which the add-on
+# now follows -- leaves every token naming the old place, and the failure is
+# the quietest one this project has: SAPI finds the voices, lists them, hands
+# text to the engine, and the engine renders nothing.  Measured on Tomi's Rog
+# from the sign-in screen: 24 utterances, every one returning its bookmark in
+# 21-23 ms flat, no matter how long the words were.  Working voices on the
+# same screen took 216 to 2164 ms.  A constant is not slow rendering, it is
+# no rendering, and nothing in any log said so.
+#
+# Only offered when the remembered folder is genuinely gone and a real one has
+# been found instead, so nobody is asked about a second copy they keep on
+# purpose.
+function Offer-Rebind {
+    if (!(Test-AnyPantheraTokens)) { return }
+    $registered = Get-TokenDataPath
+    if (!$registered) { return }
+    if (Test-SamePath $registered $data) { return }
+    if (Test-Path -LiteralPath $registered) { return }
+    if (!(@(Get-Voices).Count)) { return }
+    $answer = [Windows.Forms.MessageBox]::Show($form,
+        ("Your voices are registered against a folder that is no longer there:`n`n{0}`n`nThe speech data is here instead:`n`n{1}`n`nRegister the voices from that folder? Until this is done they will appear in every program's voice list and say nothing at all." -f $registered,$data),
+        'Panthera SAPI','YesNo','Warning')
+    if ($answer -ne 'Yes') { return }
+    $all = @($GenerationTable.Folder) -join ','
+    $arguments = '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -STA -File "{0}" -RegisterVoices -GenerationList {1} -DataRoot "{2}" -MirrorSettings "{3}"' -f $settingsScript,$all,$data,(Get-SettingsArgument)
+    try {
+        $process = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList $arguments -ErrorAction Stop
+    } catch {
+        return
+    }
+    if (!$process -or $process.ExitCode) {
+        [Windows.Forms.MessageBox]::Show($form,'The voices could not be registered from that folder. Use Register to try again.','Panthera SAPI','OK','Error') | Out-Null
+        return
+    }
+    Refresh-Voices
+    [Windows.Forms.MessageBox]::Show($form,
+        ('The voices are registered from {0} and will speak again.' -f $data),
+        'Panthera SAPI') | Out-Null
+}
+
 # --- extraction, off the UI thread --------------------------------------
 # The extractor prints "NN% message" lines as it works; running it inline
 # froze the window for the whole image and read as a hang.  It runs as a
@@ -791,4 +879,4 @@ $form.Add_FormClosing({
 # Migration first, registration second: moving the data re-registers the
 # tokens against the new root on its way out, so asking about registration
 # before the move would ask about a folder that is about to be left behind.
-Refresh-Voices; $form.Add_Shown({$list.Focus(); Offer-Migration; Offer-NewData}); [void]$form.ShowDialog()
+Refresh-Voices; $form.Add_Shown({$list.Focus(); Offer-Rebind; Offer-Migration; Offer-NewData}); [void]$form.ShowDialog()

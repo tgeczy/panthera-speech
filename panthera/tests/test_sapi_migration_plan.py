@@ -138,3 +138,99 @@ def test_no_machine_wide_folder_means_no_offer(tmp_path):
     root = _tree(os.path.join(appdata, "macintalk-data"))
     plan = _plan(root, appdata=appdata, programdata=None)
     assert plan["plan"] == "none"
+
+
+# ---------------------------------------------------------------------------
+# Where the tool *resolves* its data root, with nothing pinned.
+#
+# The tokens are the reason this matters more here than in the add-on.  The
+# add-on searches on every start; a SAPI token carries a DataPath written once,
+# at registration.  Move the folder and all 96 still name the old one -- SAPI
+# lists the voices, hands them text, and the engine renders nothing.  Measured
+# on Tomi's Rog from the sign-in screen: 24 utterances, each returning its
+# bookmark in 21-23 ms flat regardless of length, where working voices on the
+# same screen took 216 to 2164 ms.  A constant is not slow rendering, it is no
+# rendering, and no log line said so.
+#
+# So the tool has to be able to *find* the moved folder before it can offer to
+# re-register against it.
+# ---------------------------------------------------------------------------
+
+def _resolved(appdata, programdata, tmp_path):
+    """-> the root `settings.ps1` resolves with nothing pinned."""
+    plan = _plan_unpinned(appdata, programdata)
+    return plan["from"]
+
+
+def _requireNoChosenFolder():
+    """Skip when this machine has an HKCU DataPath that resolves.
+
+    These four cannot pass `-DataRoot`, because the resolution *is* what they
+    test -- so a remembered folder on the machine running them would win and
+    the assertion would be about that instead.  Skipping says so out loud
+    rather than failing mysteriously on somebody else's desk.
+    """
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Panthera SAPI") as key:
+            value, _kind = winreg.QueryValueEx(key, "DataPath")
+    except OSError:
+        return
+    if value and os.path.isdir(value):
+        pytest.skip("this machine has a chosen data folder: %s" % value)
+
+
+def _plan_unpinned(appdata, programdata):
+    _requireNoChosenFolder()
+    env = dict(os.environ)
+    for key in [k for k in env
+                if k.casefold() in ("appdata", "programdata", "allusersprofile")]:
+        del env[key]
+    env["APPDATA"] = appdata
+    env["ProgramData"] = programdata
+    out = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-STA",
+         "-File", _SETTINGS, "-ShowMigrationPlan"],
+        capture_output=True, text=True, env=env, timeout=120)
+    assert out.returncode == 0, out.stderr
+    plan = {}
+    for line in out.stdout.splitlines():
+        if ": " in line:
+            key, _, value = line.partition(": ")
+            plan[key.strip()] = value.strip()
+    return plan
+
+
+def test_nvdas_folder_moved_to_programdata_is_found(tmp_path):
+    """`%ProgramData%\macintalk` -- NVDA's folder name, machine-wide.
+
+    Not `macintalk-data`, which is the SAPI installer's name and the only one
+    this tool knew.  One word apart, and the voices went silent.
+    """
+    appdata = str(tmp_path / "roaming")
+    os.makedirs(appdata)
+    common = str(tmp_path / "common")
+    _tree(os.path.join(common, "macintalk"))
+    assert _resolved(appdata, common, tmp_path) == os.path.join(
+        common, "macintalk")
+
+
+def test_this_users_nvda_folder_still_wins_over_the_machines(tmp_path):
+    """A per-user NVDA folder is this person's own and outranks the shared one."""
+    appdata = str(tmp_path / "roaming")
+    _tree(os.path.join(appdata, "nvda", "macintalk"))
+    common = str(tmp_path / "common")
+    _tree(os.path.join(common, "macintalk"))
+    assert _resolved(appdata, common, tmp_path) == os.path.join(
+        appdata, "nvda", "macintalk")
+
+
+def test_the_sapi_folder_is_still_resolved_when_it_is_the_only_one(tmp_path):
+    """The name that already worked must keep working."""
+    appdata = str(tmp_path / "roaming")
+    os.makedirs(appdata)
+    common = str(tmp_path / "common")
+    _tree(os.path.join(common, "macintalk-data"))
+    assert _resolved(appdata, common, tmp_path) == os.path.join(
+        common, "macintalk-data")
