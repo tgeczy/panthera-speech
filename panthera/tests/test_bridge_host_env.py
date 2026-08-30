@@ -104,7 +104,20 @@ import importlib
 mod = importlib.import_module("synthDrivers." + module)
 driver = mod.SynthDriver()
 print("CONSTRUCTED")
-driver.terminate()
+try:
+    # **Exactly the calls `_bridge/components/services/synthDriver.py` makes,
+    # by the names it uses.**  Overriding `_get_availableVoices` and not
+    # `_getAvailableVoices` reads identically in NVDA, which goes through the
+    # caching property, and raises NotImplementedError through the bridge,
+    # which calls the underscore method straight.  That cost a whole trip to a
+    # sign-in screen after everything else was already right.
+    voices = driver._getAvailableVoices()
+    print("VOICES %d" % len(voices))
+    for setting in driver.supportedSettings:
+        getattr(driver, setting.id)
+    print("SETTINGS READ")
+finally:
+    driver.terminate()
 '''
 
 
@@ -147,6 +160,13 @@ def test_the_driver_survives_the_real_host_library(tmp_path, module):
     assert "CONSTRUCTED" in said, (
         "the driver would not start inside NVDA's own 32-bit host "
         "library:\n%s\n%s" % (said, why))
+    voices = [ln for ln in said.splitlines() if ln.startswith("VOICES ")]
+    assert voices and int(voices[0].split()[1]) > 0, (
+        "the bridge asks for the voice list by a name this driver does not "
+        "answer to:\n%s\n%s" % (said, why))
+    assert "SETTINGS READ" in said, (
+        "a setting could not be read the way the bridge reads it:\n%s\n%s"
+        % (said, why))
 
 
 def _python32():

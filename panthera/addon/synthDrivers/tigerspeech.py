@@ -1333,11 +1333,37 @@ class SynthDriver(SynthDriver):
     def _set_rate(self, value):
         self._rate = max(0, min(100, int(value)))
 
-    def _get_availableVoices(self):
+    def _getAvailableVoices(self):
+        """The voice list, under the name NVDA's own base class declares.
+
+        **There are two spellings of this and they are not interchangeable.**
+        `_getAvailableVoices` is the extension point -- `SynthDriver` defines
+        it and raises `NotImplementedError` -- while `_get_availableVoices` is
+        a wrapper around it that caches the result.  Overriding only the
+        wrapper works perfectly in NVDA itself, which reads the property, and
+        fails through the 32-bit bridge, whose service calls
+        `self._synth._getAvailableVoices()` directly and so reaches the base
+        class's refusal instead of us.
+
+        Measured on a sign-in screen: the driver loaded, every setting crossed
+        the bridge, the voice read back as "Alex", and then this raised
+        `NotImplementedError` with nothing else wrong.
+        """
         from collections import OrderedDict
         return OrderedDict(
             (bundle, VoiceInfo(bundle, display, "en"))
             for bundle, display, _engine in self._voices)
+
+    def _get_availableVoices(self):
+        """Kept, and deliberately not left to the base class's cache.
+
+        NVDA's wrapper remembers the first answer for the life of the driver.
+        Nothing here changes the voice list once it is running, so the cache
+        would be harmless -- but this is the accessor NVDA has always called,
+        and leaving it in place means the desktop path is not touched at all
+        by a change made for a screen it never uses.
+        """
+        return self._getAvailableVoices()
 
     def _get_voice(self):
         return self._voiceId
