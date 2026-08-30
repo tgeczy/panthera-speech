@@ -691,9 +691,6 @@ function Invoke-Migration {
 # same screen took 216 to 2164 ms.  A constant is not slow rendering, it is
 # no rendering, and nothing in any log said so.
 #
-# Only offered when the remembered folder is genuinely gone and a real one has
-# been found instead, so nobody is asked about a second copy they keep on
-# purpose.
 # Does a root actually hold voices?  **Not "is the folder there".**
 #
 # Moving the *contents* out leaves the folder standing, and an empty folder
@@ -703,25 +700,53 @@ function Invoke-Migration {
 # other.  Two separate guards, both satisfied, and the tool said nothing while
 # every voice on the machine was mute.  What makes a root good is that there
 # are voices in it, and that is the only thing worth asking.
+function Test-GenerationHasVoices([string]$root, [string]$generation) {
+    if (!$root) { return $false }
+    $folder = Join-Path $root "$generation\Speech\Voices"
+    if (!(Test-Path -LiteralPath $folder)) { return $false }
+    return @(Get-ChildItem -LiteralPath $folder -Directory -Filter '*.SpeechVoice' `
+             -ErrorAction SilentlyContinue).Count -gt 0
+}
+
 function Test-RootHasVoices([string]$root) {
     if (!$root -or !(Test-Path -LiteralPath $root)) { return $false }
     foreach ($generation in $GenerationTable) {
-        $folder = Join-Path $root "$($generation.Folder)\Speech\Voices"
-        if (Test-Path -LiteralPath $folder) {
-            $found = @(Get-ChildItem -LiteralPath $folder -Directory `
-                       -Filter '*.SpeechVoice' -ErrorAction SilentlyContinue)
-            if ($found.Count) { return $true }
-        }
+        if (Test-GenerationHasVoices $root $generation.Folder) { return $true }
     }
     return $false
 }
 
+# **Per generation, because "not installed" is a normal thing to be.**
+#
+# Plenty of people have Tiger and Leopard and nothing else, on purpose: they
+# own two discs.  A tool that saw four generations without data and concluded
+# somebody had moved the folder would be wrong about them every single time it
+# opened, and would nag them about engines they have never had and declined
+# being asked about.
+#
+# The registered voice tokens are what tell the two apart, and they are a
+# better witness than any marker file: **a token exists only because this data
+# was once there and somebody registered it.**  So a generation with tokens
+# and no data has lost something, and a generation with neither simply is not
+# installed -- which is what the list already says, correctly, and nothing to
+# warn about.  Somebody who declined a prompt never registered anything, so
+# they are never asked again by this.
 function Offer-Rebind {
-    if (!(Test-AnyPantheraTokens)) { return }
     $registered = Get-TokenDataPath
     if (!$registered) { return }
-    # The tokens are healthy exactly when their own folder still has voices.
-    if (Test-RootHasVoices $registered) { return }
+    $haveTokens = @(Get-RegisteredGenerations)
+    if (!$haveTokens.Count) { return }
+    $stale = @($haveTokens | Where-Object {
+        !(Test-GenerationHasVoices $registered $_) })
+    if (!$stale.Count) { return }
+    $labels = (@($GenerationTable | Where-Object { $_.Folder -in $stale } |
+                 ForEach-Object Label) -join ', ')
+    if (!$labels) { $labels = $stale -join ', ' }
+    # Recoverable when the *same* generations turn up wherever the data
+    # resolves to now.  Anything else and there is nothing to offer but a look
+    # around.
+    $found = @(Get-Voices | ForEach-Object Generation | Sort-Object -Unique)
+    $recoverable = @($stale | Where-Object { $_ -in $found })
     # **Nothing found anywhere is the loud case, not the quiet one.**
     #
     # Tomi moved his folder to C:\git for a laugh and the tool said nothing,
@@ -730,15 +755,15 @@ function Offer-Rebind {
     # folder was still standing and satisfied every "is it there" test in the
     # function.  The case with no fix to offer is the one where somebody most
     # needs telling.
-    if (!(@(Get-Voices).Count) -or (Test-SamePath $registered $data)) {
+    if (!$recoverable.Count -or (Test-SamePath $registered $data)) {
         $answer = [Windows.Forms.MessageBox]::Show($form,
-            ("Your voices are registered against a folder with no speech data in it:`n`n{0}`n`nNone was found in any of the usual places either, so every Panthera voice will appear in your programs and say nothing at all.`n`nFind the folder now?" -f $registered),
+            ("These voices are registered but their speech data is not where they expect it:`n`n{0}`n`nExpected in: {1}`n`nNone was found in any of the usual places either, so those voices will appear in your programs and say nothing at all.`n`nFind the folder now?" -f $labels,$registered),
             'Panthera SAPI','YesNo','Warning')
         if ($answer -eq 'Yes') { Invoke-ChooseRoot $false }
         return
     }
     $answer = [Windows.Forms.MessageBox]::Show($form,
-        ("Your voices are registered against a folder with no speech data in it:`n`n{0}`n`nThe speech data is here instead:`n`n{1}`n`nRegister the voices from that folder? Until this is done they will appear in every program's voice list and say nothing at all." -f $registered,$data),
+        ("These voices are registered but their speech data is not where they expect it:`n`n{0}`n`nExpected in: {1}`nFound in: {2}`n`nRegister them from the folder the data is actually in? Until this is done they will appear in every program's voice list and say nothing at all." -f $labels,$registered,$data),
         'Panthera SAPI','YesNo','Warning')
     if ($answer -ne 'Yes') { return }
     $all = @($GenerationTable.Folder) -join ','
