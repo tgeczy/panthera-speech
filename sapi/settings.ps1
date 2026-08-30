@@ -384,7 +384,22 @@ if ($MigrateData) {
         # One generation at a time rather than the folder whole, so a run
         # that stopped halfway -- a locked voice bank, a full disk -- is
         # finished by running it again instead of refused.
+        #
+        # **And only the generations that are ours.**  The shared macintalk
+        # folder holds outSPOKEN's engines beside these, under `outspoken`,
+        # and a mover that swept every child along would relocate another
+        # add-on's data to a place its released versions do not look --
+        # voices registered, listed, and silent, in somebody else's product.
+        # So the loop takes Tiger, Leopard, Snowleopard and Lion by name and
+        # leaves everything else standing where its owner put it; outSPOKEN's
+        # own tool moves its subtree the same way, the same week.
+        $ours = @($GenerationTable.Folder)
         foreach ($child in @(Get-ChildItem -LiteralPath $MigrateFrom -Force)) {
+            $mine = $false
+            foreach ($name in $ours) {
+                if ($child.Name -ieq $name) { $mine = $true; break }
+            }
+            if (-not $mine) { continue }
             $target = Join-Path $DataRoot $child.Name
             if (Test-Path -LiteralPath $target) { continue }
             Move-Item -LiteralPath $child.FullName -Destination $target -ErrorAction Stop
@@ -691,8 +706,19 @@ function Invoke-Migration {
         [Windows.Forms.MessageBox]::Show($form,$why,'Panthera SAPI','OK','Information') | Out-Null
         return
     }
+    $message = "Your MacinTalk speech data is in a folder only your Windows account can read:`n`n{0}`n`nMoving it to`n`n{1}`n`nlets every account on this machine use the voices, and leaves one copy instead of one per person. Nothing is re-extracted and the voices stay registered. Only the Tiger, Leopard, Snow Leopard and Lion folders move." -f $plan.From,$plan.To
+    # **The other add-on's data is not ours to move, and saying so beats
+    # being quietly careful.**  outSPOKEN keeps its engines under `outspoken`
+    # in the same shared folder, and its released versions look for them in
+    # per-user places only -- swept along, they would be registered, listed,
+    # and silent in somebody else's product.  The mover already takes our
+    # four generations by name; this line tells the person their other
+    # voices were considered rather than forgotten.
+    if (Test-Path -LiteralPath (Join-Path $plan.From 'outspoken')) {
+        $message += "`n`nYour outSPOKEN engines stay where they are - outSPOKEN's own settings tool is the place to move those."
+    }
     $answer = [Windows.Forms.MessageBox]::Show($form,
-        ("Your MacinTalk speech data is in a folder only your Windows account can read:`n`n{0}`n`nMoving it to`n`n{1}`n`nlets every account on this machine use the voices, and leaves one copy instead of one per person. Nothing is re-extracted and the voices stay registered.`n`nMove it now? (This needs administrator permission.)" -f $plan.From,$plan.To),
+        ($message + "`n`nMove it now? (This needs administrator permission.)"),
         'Panthera SAPI','YesNo','Question')
     if ($answer -ne 'Yes') { return }
     $arguments = '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -STA -File "{0}" -MigrateData -MigrateFrom "{1}" -DataRoot "{2}" -MirrorSettings "{3}"' -f $settingsScript,$plan.From,$plan.To,(Get-SettingsArgument)
