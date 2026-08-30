@@ -24,31 +24,48 @@ class _FakeKey(object):
         return False
 
 
-def _fake_winreg(datapath, machinePath=None):
+def _fake_winreg(datapath, machinePath=None, views=None):
     """A winreg holding `datapath` for this user and `machinePath` for the
     machine, under `Software\\Panthera SAPI`.
 
     Two hives, because the machine-wide one is the only one a secure screen
     can read: on the sign-in desktop NVDA runs as SYSTEM, whose HKCU is its
     own and holds nothing the signed-in person ever chose.
+
+    Two *views* as well.  Pass `views` as `{(hive, viewFlag): path}` to answer
+    differently depending on which one was asked for; by default both views
+    hold the same thing, which is what the settings tool arranges and what a
+    real machine therefore looks like.  Every call is recorded in `mod.asked`
+    so a test can show that both were tried rather than assuming it.
     """
     mod = types.ModuleType("winreg")
     mod.HKEY_CURRENT_USER = object()
     mod.HKEY_LOCAL_MACHINE = object()
     mod.REG_SZ = 1
+    #: The real values, so a flag that leaks into a comparison is the same
+    #: number a real winreg would have produced.
+    mod.KEY_READ = 0x20019
+    mod.KEY_WOW64_32KEY = 0x0200
+    mod.KEY_WOW64_64KEY = 0x0100
+    _VIEWS = mod.KEY_WOW64_32KEY | mod.KEY_WOW64_64KEY
     held = {mod.HKEY_CURRENT_USER: datapath,
             mod.HKEY_LOCAL_MACHINE: machinePath}
+    asked = []
 
-    def OpenKey(root, path):
-        if held.get(root) is None:
+    def OpenKey(root, path, reserved=0, access=0):
+        view = access & _VIEWS
+        asked.append((root, view))
+        value = views.get((root, view)) if views is not None else held.get(root)
+        if value is None:
             raise OSError("no such key")
-        return _FakeKey(held[root])
+        return _FakeKey(value)
 
     def QueryValueEx(key, name):
         return key.value, mod.REG_SZ
 
     mod.OpenKey = OpenKey
     mod.QueryValueEx = QueryValueEx
+    mod.asked = asked
     return mod
 
 
@@ -142,7 +159,7 @@ def test_a_winreg_without_the_machine_hive_is_not_fatal(monkeypatch):
     mod.HKEY_CURRENT_USER = object()
     mod.REG_SZ = 1
 
-    def OpenKey(root, path):
+    def OpenKey(root, path, reserved=0, access=0):
         raise OSError("no such key")
 
     mod.OpenKey = OpenKey
@@ -152,3 +169,47 @@ def test_a_winreg_without_the_machine_hive_is_not_fatal(monkeypatch):
     monkeypatch.setenv("ProgramData", r"C:\ProgramData")
     assert pantheratrees.sapi_roots("tiger") == [
         os.path.join(r"C:\ProgramData", "macintalk-data", "tiger")]
+
+
+# ---------------------------------------------------------------------------
+# Both registry views, because HKLM\Software is redirected under WOW64.
+#
+# NVDA is 32-bit, so an unqualified read sees `Wow6432Node` and nothing else.
+# The settings tool writes the machine-wide DataPath through both views to
+# meet this, but a value put there by a 64-bit tool -- or by hand in regedit,
+# which is 64-bit -- would otherwise be perfectly present and entirely
+# invisible.  HKCU never needed this: `HKCU\Software` is not redirected, which
+# is exactly why the trap arrives with the machine-wide key and not before.
+# ---------------------------------------------------------------------------
+
+def test_a_machine_folder_set_only_in_the_64_bit_view_is_still_found(
+        monkeypatch):
+    # Filled after construction, because the keys are the module's own hive
+    # objects: a second `_fake_winreg` would mint different ones and the view
+    # table would match nothing.
+    views = {}
+    mod = _fake_winreg(None, views=views)
+    views[(mod.HKEY_LOCAL_MACHINE, mod.KEY_WOW64_64KEY)] = r"D:\shared"
+    monkeypatch.setitem(sys.modules, "winreg", mod)
+    monkeypatch.delenv("APPDATA", raising=False)
+    _noCommonFolder(monkeypatch)
+    assert pantheratrees.sapi_roots("lion") == [
+        os.path.join(r"D:\shared", "lion")]
+
+
+def test_both_views_are_asked_and_one_answer_is_offered_once(monkeypatch):
+    """A folder in both views is one folder, not two.
+
+    The usual arrangement -- the settings tool writes through both -- must not
+    make every caller search the same tree twice.
+    """
+    mod = _fake_winreg(None, machinePath=r"D:\shared")
+    monkeypatch.setitem(sys.modules, "winreg", mod)
+    monkeypatch.delenv("APPDATA", raising=False)
+    _noCommonFolder(monkeypatch)
+    assert pantheratrees.sapi_roots("lion") == [
+        os.path.join(r"D:\shared", "lion")]
+    machine = [view for hive, view in mod.asked
+               if hive is mod.HKEY_LOCAL_MACHINE]
+    assert sorted(machine) == sorted([mod.KEY_WOW64_32KEY,
+                                      mod.KEY_WOW64_64KEY])

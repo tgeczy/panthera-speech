@@ -126,23 +126,40 @@ def sapi_roots(generation):
         winreg = None
 
     def _fromRegistry(hiveName):
-        """One hive's remembered folder, if there is one.
+        """One hive's remembered folder, from both registry views.
 
         The hive is fetched by name rather than referenced directly so that a
         `winreg` without it -- a stand-in, or a future Python -- is simply a
         hive with nothing in it rather than an `AttributeError` that takes the
         whole lookup down.
+
+        **Both views, because `HKLM\\Software` is redirected under WOW64 and
+        `HKCU\\Software` is not.**  NVDA is 32-bit and would otherwise see
+        `Wow6432Node` alone, so a machine-wide folder set by a 64-bit tool --
+        or by somebody in `regedit` -- would be invisible here while being
+        perfectly present.  The SAPI settings tool writes through both views
+        for the same reason; this is the reading half of that agreement, and
+        the same two-view dance `aac_available` already does below.
         """
         hive = getattr(winreg, hiveName, None)
         if hive is None:
             return
-        try:
-            with winreg.OpenKey(hive, r"Software\Panthera SAPI") as key:
-                value, kind = winreg.QueryValueEx(key, "DataPath")
-                if kind == winreg.REG_SZ and value:
-                    roots.append(os.path.join(value, generation))
-        except OSError:
-            pass
+        access = getattr(winreg, "KEY_READ", 0)
+        for view in (getattr(winreg, "KEY_WOW64_32KEY", 0),
+                     getattr(winreg, "KEY_WOW64_64KEY", 0)):
+            try:
+                with winreg.OpenKey(hive, r"Software\Panthera SAPI", 0,
+                                    access | view) as key:
+                    value, kind = winreg.QueryValueEx(key, "DataPath")
+            except OSError:
+                continue
+            if kind != winreg.REG_SZ or not value:
+                continue
+            candidate = os.path.join(value, generation)
+            # The two views usually answer the same thing, and a folder
+            # offered twice would have every caller looking in it twice.
+            if candidate not in roots:
+                roots.append(candidate)
 
     # The folder this user chose, then the one set for the machine.  Both are
     # explicit choices and outrank any default; the machine-wide one is the
