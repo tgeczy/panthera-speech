@@ -92,6 +92,62 @@ def is_tree(path):
     return bool(path) and os.path.isdir(os.path.join(path, "Speech", "Voices"))
 
 
+def common_base():
+    """-> the machine-wide place for speech data, or None.
+
+    `%ProgramData%`, named rather than hard-coded because a Windows install is
+    not obliged to put it on C:.
+    """
+    return os.environ.get("ProgramData") or os.environ.get("ALLUSERSPROFILE")
+
+
+def common_dir(config_dirname):
+    """-> the machine-wide twin of `config_dir()`, or None.
+
+    `%ProgramData%\\macintalk\\<generation>` -- the *same* folder name NVDA's
+    configuration directory uses, which is the whole point.  The SAPI world's
+    `macintalk-data` was already reachable through `sapi_roots`, and that near
+    miss is what made this worth writing: Tomi moved his `macintalk` folder to
+    `%ProgramData%`, restarted, and got "5 Macintosh speech engines are
+    missing" -- because the only machine-wide root anybody looked in was
+    spelled `macintalk-data`.  One folder name apart, and nothing said so.
+
+    **A tree here is readable from the sign-in screen without being copied
+    there.**  Data inside NVDA's configuration directory reaches the secure
+    desktop only because NVDA copies that whole directory into `systemConfig`
+    -- 1.6 GB of voice banks included, on every save.  An absolute path under
+    `%ProgramData%` is read by SYSTEM directly.  The trade is the portable
+    copy, which carries the configuration folder and nothing outside it.
+
+    **This folder must not be writable by ordinary accounts.**  What
+    `%ProgramData%` grants by inheritance is `BUILTIN\\Users:(CI)(WD,AD,...)`,
+    and the host *maps and executes* the Mach-O in a tree, as SYSTEM, on the
+    sign-in screen.  `sapi/settings.ps1` locks the ACL when it migrates; a
+    folder made by hand has not been locked, and should be.
+    """
+    base = common_base()
+    return os.path.join(base, config_dirname) if base else None
+
+
+def tree_candidates(root):
+    """-> `root` and its immediate subdirectories, for `is_tree` to sort out.
+
+    One level down as well, because dropping the extracted folder in whole is
+    what people actually do.  Absent or unreadable is an empty list rather
+    than an error: this is a search, and a place that is not there simply is
+    not one of the answers.
+    """
+    if not root:
+        return []
+    out = [root]
+    try:
+        out += [os.path.join(root, d) for d in sorted(os.listdir(root))
+                if os.path.isdir(os.path.join(root, d))]
+    except OSError:
+        pass
+    return out
+
+
 def sapi_roots(generation):
     """-> where the SAPI driver would keep `generation`'s tree, as candidates.
 

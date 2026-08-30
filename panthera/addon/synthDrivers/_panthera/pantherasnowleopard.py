@@ -136,6 +136,13 @@ def find_tree():
             except OSError:
                 pass
 
+    #: The machine-wide folder, spelled the way NVDA's own is: a tree at
+    #: `%ProgramData%\macintalk\snowleopard` is read by SYSTEM on the sign-in
+    #: screen without NVDA having to copy it into `systemConfig` first.  It
+    #: goes after this user's own places and before the SAPI world's.
+    cands += pantheratrees.tree_candidates(
+        pantheratrees.common_dir(CONFIG_DIRNAME))
+
     #: And the SAPI driver's world, so data extracted there is found here --
     #: the same courtesy that driver already pays this folder, both ways now.
     cands += pantheratrees.sapi_roots("snowleopard")

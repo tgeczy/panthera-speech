@@ -833,18 +833,40 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
         log.info("Panthera: %s engine %s\n  %s"
                  % (gen["key"], "ready" if ok else "NOT ready",
                     "\n  ".join(lines)))
+        folder = tree.config_dir()
+        #: **The README goes in whether or not the engine is ready.**  It was
+        #: written only on the way to the missing-engine dialog, below the
+        #: `if ok` -- so a generation that has always had data never got one.
+        #: Tomi found exactly that: Tiger and Leopard carried a README.txt
+        #: because they had each once been empty, Snow Leopard and Lion had
+        #: none because they never were.
+        #:
+        #: They stay one per generation rather than one shared file, because
+        #: each names the command-line extractor for *its own* disc; a single
+        #: README would have to name four and leave the reader working out
+        #: which paragraph is theirs.
+        #:
+        #: An existing folder only, when the engine is ready: a generation
+        #: whose tree lives somewhere else entirely -- `%ProgramData%`, or the
+        #: SAPI world -- should not have an empty folder conjured in NVDA's
+        #: configuration directory just to hold a note.
+        if not ok:
+            os.makedirs(folder, exist_ok=True)
+        if os.path.isdir(folder):
+            readme = os.path.join(folder, "README.txt")
+            if not os.path.exists(readme):
+                try:
+                    with open(readme, "w", encoding="utf-8") as f:
+                        f.write(gen["readme"])
+                except OSError:
+                    log.debugWarning("Panthera: could not write %s" % readme,
+                                     exc_info=True)
         if ok:
             return
-        folder = tree.config_dir()
         if os.path.exists(os.path.join(folder, _MARKER)):
             log.info("Panthera: not asking about %s, %s exists in %s"
                      % (gen["key"], _MARKER, folder))
             return
-        os.makedirs(folder, exist_ok=True)
-        readme = os.path.join(folder, "README.txt")
-        if not os.path.exists(readme):
-            with open(readme, "w", encoding="utf-8") as f:
-                f.write(gen["readme"])
         first = _register_missing({
             "label": gen["label"],
             "folder": folder,
