@@ -46,8 +46,9 @@ from logHandler import log
 # `leopardspeech` add-on installed alongside this one, their private folders
 # are on `sys.path` too -- both holding a `leopardtree`.  Nothing here is
 # reached that way any more, so the fight cannot start.
-from synthDrivers._panthera import (pantheraleopard, pantheralion,
-                                    pantherasnowleopard, pantheratiger)
+from synthDrivers._panthera import (diagnostics, pantheraleopard,
+                                    pantheralion, pantherasnowleopard,
+                                    pantheratiger)
 
 #: **One dialog covering every Macintosh speech add-on, not one each and not
 #: one that only mentions whichever add-on got there first.**
@@ -190,7 +191,13 @@ def _register_reporter(entry):
 
 
 def _engine_report():
-    """Every registered add-on's verdict, in one page. -> (lines, [missing])"""
+    """Every registered add-on's verdict, in one page. -> (lines, [missing])
+
+    Anything that failed recently is appended, because this field is the only
+    diagnostic channel a secure screen has: NVDA will not turn debug logging
+    on there and its log belongs to SYSTEM, but a read-only edit control can
+    be read back a line at a time by the person in front of it.
+    """
     lines, missing = [], []
     for r in globalVars.__dict__.get(_REPORTERS, []):
         try:
@@ -213,6 +220,7 @@ def _engine_report():
         if not ok:
             missing.append({"label": r["label"], "folder": folder,
                             "source": r["source"]})
+    lines.extend(diagnostics.lines())
     return lines, missing
 
 

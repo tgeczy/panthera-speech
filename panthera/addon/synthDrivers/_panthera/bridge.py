@@ -35,6 +35,8 @@ import os
 
 from logHandler import log
 
+from . import diagnostics
+
 
 def _proxyBase():
     """-> NVDA's 32-bit synth-driver proxy, or None if this NVDA has none.
@@ -144,6 +146,26 @@ def proxyFor(real, moduleName, path):
         return usable
 
     namespace["_get_supportedSettings"] = _get_supportedSettings
+
+    def __init__(self):
+        """Start the far side, and write down anything that stops it.
+
+        **The recording is the whole reason this method exists.**  NVDA says
+        no more than "could not load" when a synthesizer refuses, and on a
+        secure screen that is the end of the road: no debug logging, and a log
+        belonging to SYSTEM.  RPyC does carry the remote traceback, so what
+        actually failed inside the 32-bit host arrives here -- and this is the
+        only place it passes through code of ours before NVDA discards it.
+        """
+        try:
+            base.__init__(self)
+        except Exception as e:
+            diagnostics.record(
+                "%s could not start through NVDA's 32-bit bridge" % real.name,
+                e)
+            raise
+
+    namespace["__init__"] = __init__
 
     def check(cls):
         """Both halves have to be there: the bridge, and an engine to run."""

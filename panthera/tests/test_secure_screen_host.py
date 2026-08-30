@@ -124,7 +124,12 @@ def test_it_speaks_with_the_executable_removed(tmp_path, module, envName,
                  "LION_TREE"):
         env.pop(name, None)
 
-    out = subprocess.run(python32 + [PROBE, staged, module, envName, tree],
+    # `-u` so that a probe which dies without unwinding still leaves what it
+    # had already printed.  The engine ends the process outright when it gives
+    # up -- a C `exit()`, which does not flush Python's own buffers -- and that
+    # is how this failed twice with completely empty output on both streams.
+    out = subprocess.run(python32 + ["-u", PROBE, staged, module, envName,
+                                     tree],
                          capture_output=True, timeout=600, env=env)
     said = (out.stdout or b"").decode("utf-8", "replace")
     why = (out.stderr or b"").decode("utf-8", "replace")
