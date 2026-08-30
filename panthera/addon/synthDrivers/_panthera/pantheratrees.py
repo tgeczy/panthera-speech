@@ -233,6 +233,13 @@ def sapi_roots(generation):
 
     appdata = os.environ.get("APPDATA")
     if appdata:
+        #: **Bare `%APPDATA%\\macintalk`, with no `nvda` and no `-data`.**
+        #: A real arrangement rather than a hypothetical one: people keep the
+        #: tree there as part of a SAPI install instead of inside NVDA's
+        #: configuration folder, and Tomi's own machine had it there.  It was
+        #: the one place neither side looked, which is how a tool that lists
+        #: the "usual places" managed to miss a folder sitting in one.
+        roots.append(os.path.join(appdata, "macintalk", generation))
         roots.append(os.path.join(appdata, "macintalk-data", generation))
     return roots
 

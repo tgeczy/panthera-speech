@@ -94,56 +94,68 @@ function Set-MachineSettings([string]$pairs) {
     }
 }
 
+# Does anything under this root look like speech data?
+#
+# Generation-agnostic on purpose: it runs before $GenerationTable exists, and
+# what it is really asking is "would anything here ever speak".
+function Test-AnyVoicesUnder([string]$root) {
+    if (!$root -or !(Test-Path -LiteralPath $root)) { return $false }
+    $glob = Join-Path $root '*\Speech\Voices\*.SpeechVoice'
+    return @(Get-ChildItem -Path $glob -Directory -ErrorAction SilentlyContinue).Count -gt 0
+}
+
+# **The places speech data is kept, best first -- and a folder with voices in
+# it beats a folder that merely exists.**
+#
+# Two passes over one list, which is the whole point.  An emptied folder still
+# stands: Tomi had NVDA's `macintalk` holding nothing but a README and a
+# do-not-ask marker left by a declined prompt, and his real data sitting in
+# bare `%APPDATA%\macintalk` -- so a first-match-that-exists search picked the
+# empty one, reported no speech data, and told him none had been found in any
+# of the usual places while it was sitting in one of them.
+#
+# So: anything with voices in it, in order of preference; then anything that
+# exists at all, so an empty chosen folder is still what the messages name;
+# then the default for a machine with nothing yet.
 function Resolve-DataRoot {
     if ($DataRoot) { return $DataRoot }
+    $candidates = @()
     try {
         $saved = (Get-ItemProperty -Path $dataPrefKey -Name DataPath -ErrorAction Stop).DataPath
-        if ($saved -and (Test-Path -LiteralPath $saved)) { return $saved }
+        if ($saved) { $candidates += $saved }
     } catch {}
     $machine = Get-MachineDataPath
-    if ($machine -and (Test-Path -LiteralPath $machine)) { return $machine }
-    $perUser = $null
-    if ($env:APPDATA) {
-        $nvda = Join-Path $env:APPDATA 'nvda\macintalk'
-        if (Test-Path -LiteralPath $nvda) { return $nvda }
-    }
-    # **NVDA's folder name, machine-wide.**  `%ProgramData%\macintalk` rather
-    # than `macintalk-data`: the add-on looks there now, so somebody who moved
-    # NVDA's folder to %ProgramData% has their data in a place this tool could
-    # see and, until this line, did not -- one word apart, exactly the way the
-    # add-on's own `find_tree` missed it.
-    #
-    # It matters more here than there, because the add-on searches on every
-    # start and these tokens do not: each of the 96 carries a DataPath written
-    # once, at registration.  Move the folder by hand and every token still
-    # names the old one, SAPI dispatches into the engine, and the engine finds
-    # nothing -- which sounds exactly like silence and logs like success.
+    if ($machine) { $candidates += $machine }
+    if ($env:APPDATA) { $candidates += (Join-Path $env:APPDATA 'nvda\macintalk') }
+    #: NVDA's folder name, machine-wide -- `%ProgramData%\macintalk` rather
+    #: than `macintalk-data`, which the add-on now looks in as well.
     $commonNvda = if ($env:ProgramData) { Join-Path $env:ProgramData 'macintalk' }
                   elseif ($env:ALLUSERSPROFILE) { Join-Path $env:ALLUSERSPROFILE 'macintalk' }
-    if ($commonNvda -and (Test-Path -LiteralPath $commonNvda)) { return $commonNvda }
+    if ($commonNvda) { $candidates += $commonNvda }
+    $perUser = $null
     if ($env:APPDATA) {
+        #: Bare `%APPDATA%\macintalk`: no `nvda`, no `-data`.  A real
+        #: arrangement, kept beside a SAPI install rather than inside NVDA's
+        #: folder, and the one place neither side used to look.
+        $candidates += (Join-Path $env:APPDATA 'macintalk')
         $perUser = Join-Path $env:APPDATA 'macintalk-data'
-        if (Test-Path -LiteralPath $perUser) { return $perUser }
+        $candidates += $perUser
     }
     $common = Get-CommonRoot
-    if ($common -and (Test-Path -LiteralPath $common)) { return $common }
-    # Nothing exists yet, so this is a fresh install choosing where to put
-    # things -- and it chooses the *per-user* folder, not %ProgramData%.
-    #
-    # That looks backwards on the night ProgramData was added, and it is not.
-    # A standard user can create a folder under %ProgramData% and write into
-    # it, which is exactly what makes it the wrong place to extract to
-    # unelevated: the folder they create inherits
-    # `BUILTIN\Users:(CI)(WD,AD,WEA,WA)`, so every other account on the
-    # machine can write into a tree whose Mach-O this host maps and executes,
-    # and which NVDA reads as SYSTEM on the sign-in screen.
-    #
-    # The machine-wide folder is reached the one way that can lock it down on
-    # arrival: the migration offer, which is elevated and sets an explicit ACL.
-    # Anybody an administrator has already migrated finds it above, through
-    # HKLM, and shares it.
+    if ($common) { $candidates += $common }
+
+    foreach ($c in $candidates) { if (Test-AnyVoicesUnder $c) { return $c } }
+    foreach ($c in $candidates) { if (Test-Path -LiteralPath $c) { return $c } }
+
+    # Nothing anywhere, so this is a fresh install choosing where to put
+    # things -- and it chooses the *per-user* folder, not %ProgramData%.  A
+    # standard user can create a folder there without elevation, which is
+    # exactly what makes it the wrong place to extract to: it would inherit
+    # `BUILTIN\Users:(CI)(WD,AD,WEA,WA)`, and this host maps and executes the
+    # Mach-O in that tree, as SYSTEM, on the sign-in screen.  The machine-wide
+    # folder is reached through the migration button instead, which is
+    # elevated and locks the ACL on arrival.
     if ($perUser) { return $perUser }
-    $common = Get-CommonRoot
     if ($common) { return $common }
     $null
 }
@@ -212,13 +224,31 @@ function Get-MigrationPlan {
     if (Test-SamePath $data $common) {
         $plan.Action='done'; $plan.Reason='the data is already in the machine-wide folder'; return $plan
     }
+    # **Is there anything to move, before deciding whether we would move it.**
+    #
+    # This ran last, after the folder had been classified by its path, so an
+    # empty NVDA folder -- one holding nothing but the README and do-not-ask
+    # marker left behind by a declined prompt -- was told at length why NVDA's
+    # data is never moved.  True, and beside the point: there was no data.
+    if (!(Test-Path -LiteralPath $data) -or !(@(Get-Voices).Count)) {
+        $plan.Reason = if (Test-Path -LiteralPath $data) {
+            'there is no speech data in {0}' -f $data
+        } else { 'the speech data folder is not there: {0}' -f $data }
+        return $plan
+    }
     if ($env:APPDATA) {
         if (Test-SamePath $data (Join-Path $env:APPDATA 'nvda\macintalk')) {
             $plan.Action='nvda'
             $plan.Reason='the data belongs to NVDA and moving it would break speech on the sign-in screen'
             return $plan
         }
-        if (!(Test-SamePath $data (Join-Path $env:APPDATA 'macintalk-data'))) {
+        # Both per-user spellings are movable: `macintalk-data`, which the
+        # installer picks, and bare `macintalk`, which people keep beside a
+        # SAPI install.  Neither is NVDA's and neither is a folder somebody
+        # browsed to -- a folder they browsed to stays where they put it.
+        $perUserRoots = @((Join-Path $env:APPDATA 'macintalk-data'),
+                          (Join-Path $env:APPDATA 'macintalk'))
+        if (!(@($perUserRoots | Where-Object { Test-SamePath $data $_ }).Count)) {
             $plan.Action='chosen'; $plan.Reason='this folder was chosen deliberately'; return $plan
         }
     } else {
@@ -731,6 +761,38 @@ function Test-RootHasVoices([string]$root) {
 # installed -- which is what the list already says, correctly, and nothing to
 # warn about.  Somebody who declined a prompt never registered anything, so
 # they are never asked again by this.
+# **A voice that cannot speak should not stay in everybody's list.**
+#
+# Tomi's: "you said no, it's not like they'll work, so we are unregging it."
+# Right, and worth asking rather than doing, because removing them is a
+# registry write that needs elevation and because somebody may be about to
+# plug in the drive their data is on.  So it is a second question with a
+# plain answer, not a silent consequence of the first one.
+#
+# Deliberately does *not* mark the generations declined: the mark exists to
+# stop the tool nagging about data somebody has chosen not to install, and
+# these are voices that worked yesterday.  When the data comes back,
+# Offer-NewData should notice and offer to register them again -- which is
+# exactly what somebody in this situation wants.
+function Offer-Unregister([string[]]$generations, [string]$labels) {
+    $answer = [Windows.Forms.MessageBox]::Show($form,
+        ("Remove these voices for now?`n`n{0}`n`nThey will keep appearing in every program's voice list and saying nothing until their speech data is back. Removing them takes them out of those lists, and you can register them again from this window the moment the data is there.`n`nThis needs administrator permission." -f $labels),
+        'Panthera SAPI','YesNo','Question')
+    if ($answer -ne 'Yes') { return }
+    $arguments = '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -STA -File "{0}" -UnregisterVoices -GenerationList {1} -DataRoot "{2}"' -f $settingsScript,($generations -join ','),$data
+    try {
+        $process = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList $arguments -ErrorAction Stop
+    } catch { return }
+    if (!$process -or $process.ExitCode) {
+        [Windows.Forms.MessageBox]::Show($form,'Those voices could not be removed. Use Unregister to try again.','Panthera SAPI','OK','Error') | Out-Null
+        return
+    }
+    Refresh-Voices
+    [Windows.Forms.MessageBox]::Show($form,
+        'Those voices are no longer offered to your programs. Register them again once their speech data is back.',
+        'Panthera SAPI') | Out-Null
+}
+
 function Offer-Rebind {
     $registered = Get-TokenDataPath
     if (!$registered) { return }
@@ -760,12 +822,13 @@ function Offer-Rebind {
             ("These voices are registered but their speech data is not where they expect it:`n`n{0}`n`nExpected in: {1}`n`nNone was found in any of the usual places either, so those voices will appear in your programs and say nothing at all.`n`nFind the folder now?" -f $labels,$registered),
             'Panthera SAPI','YesNo','Warning')
         if ($answer -eq 'Yes') { Invoke-ChooseRoot $false }
+        else { Offer-Unregister $stale $labels }
         return
     }
     $answer = [Windows.Forms.MessageBox]::Show($form,
         ("These voices are registered but their speech data is not where they expect it:`n`n{0}`n`nExpected in: {1}`nFound in: {2}`n`nRegister them from the folder the data is actually in? Until this is done they will appear in every program's voice list and say nothing at all." -f $labels,$registered,$data),
         'Panthera SAPI','YesNo','Warning')
-    if ($answer -ne 'Yes') { return }
+    if ($answer -ne 'Yes') { Offer-Unregister $stale $labels; return }
     $all = @($GenerationTable.Folder) -join ','
     $arguments = '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -STA -File "{0}" -RegisterVoices -GenerationList {1} -DataRoot "{2}" -MirrorSettings "{3}"' -f $settingsScript,$all,$data,(Get-SettingsArgument)
     try {

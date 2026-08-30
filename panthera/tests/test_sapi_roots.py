@@ -81,7 +81,12 @@ def test_the_remembered_folder_comes_first(monkeypatch):
     _noCommonFolder(monkeypatch)
     roots = pantheratrees.sapi_roots("leopard")
     assert roots[0] == os.path.join(r"D:\my-voices", "leopard")
+    # Then the two per-user spellings, bare first: `%APPDATA%\macintalk` is
+    # where people keep it beside a SAPI install, and `macintalk-data` is the
+    # one the installer picks.
     assert roots[1] == os.path.join(
+        r"C:\Users\someone\AppData\Roaming", "macintalk", "leopard")
+    assert roots[2] == os.path.join(
         r"C:\Users\someone\AppData\Roaming", "macintalk-data", "leopard")
 
 
@@ -90,8 +95,12 @@ def test_the_standalone_default_is_found_without_a_choice(monkeypatch):
     monkeypatch.setenv("APPDATA", r"C:\Users\someone\AppData\Roaming")
     _noCommonFolder(monkeypatch)
     roots = pantheratrees.sapi_roots("tiger")
-    assert roots == [os.path.join(
-        r"C:\Users\someone\AppData\Roaming", "macintalk-data", "tiger")]
+    assert roots == [
+        os.path.join(r"C:\Users\someone\AppData\Roaming", "macintalk",
+                     "tiger"),
+        os.path.join(r"C:\Users\someone\AppData\Roaming", "macintalk-data",
+                     "tiger"),
+    ]
 
 
 def test_nothing_to_find_is_quietly_nothing(monkeypatch):
@@ -142,6 +151,8 @@ def test_a_chosen_folder_still_outranks_the_shared_ones(monkeypatch):
         os.path.join(r"D:\mine", "tiger"),
         os.path.join(r"D:\everyones", "tiger"),
         os.path.join(r"C:\ProgramData", "macintalk-data", "tiger"),
+        os.path.join(r"C:\Users\someone\AppData\Roaming", "macintalk",
+                     "tiger"),
         os.path.join(r"C:\Users\someone\AppData\Roaming", "macintalk-data",
                      "tiger"),
     ]
