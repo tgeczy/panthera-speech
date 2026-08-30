@@ -1047,12 +1047,40 @@ $extract.Add_Click({
 $register.Add_Click({
     $selected=@(); for($i=0;$i -lt $GenerationTable.Count;$i++){if($list.GetItemChecked($i)){$selected+=$GenerationTable[$i].Folder}}
     if(!$selected.Count){[Windows.Forms.MessageBox]::Show($form,'Check at least one engine.','Panthera SAPI');return}
+    # **Register what, exactly?**  A generation with no speech data has no
+    # voices to register, and this used to elevate anyway, register nothing,
+    # and report that Panthera voices had been registered.  The only honest
+    # thing about it was the list afterwards, which still said not installed.
+    #
+    # Checked here rather than in the elevated half so that a pointless
+    # registration costs no UAC prompt at all.
+    $present = @(Get-Voices | ForEach-Object Generation | Sort-Object -Unique)
+    $withData = @($selected | Where-Object { $_ -in $present })
+    $without = @($selected | Where-Object { $_ -notin $present })
+    $labelsFor = { param($keys) (@($GenerationTable |
+        Where-Object { $_.Folder -in $keys } | ForEach-Object Label) -join ', ') }
+    if (!$withData.Count) {
+        [Windows.Forms.MessageBox]::Show($form,
+            ("There is no speech data for:`n`n{0}`n`nNothing was registered. Use Extract from disc image to install it, or Data location if it is somewhere this tool has not looked." -f (& $labelsFor $selected)),
+            'Panthera SAPI','OK','Information') | Out-Null
+        return
+    }
+    # Everything checked still goes across: Add-VoiceTokens clears each
+    # selected generation's old tokens before adding what it finds, so a
+    # lineage with no data here comes off the list rather than lingering mute.
     $arguments='-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -STA -File "{0}" -RegisterVoices -GenerationList {1} -DataRoot "{2}" -MirrorSettings "{3}"' -f $settingsScript,($selected -join ','),$data,(Get-SettingsArgument)
     $process=Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList $arguments
-    if ($process.ExitCode) { [Windows.Forms.MessageBox]::Show($form,'Registration failed.','Panthera SAPI','OK','Error') } else {
+    if (!$process -or $process.ExitCode) { [Windows.Forms.MessageBox]::Show($form,'Registration failed.','Panthera SAPI','OK','Error') } else {
         # A deliberate registration lifts the never-ask-again mark.
         Set-DeclinedGenerations @(Get-DeclinedGenerations | Where-Object { $_ -notin $selected })
-        [Windows.Forms.MessageBox]::Show($form,'Panthera voices were registered for 32-bit and 64-bit SAPI.','Panthera SAPI')
+        $count = @(Get-Voices | Where-Object { $_.Generation -in $withData }).Count
+        $said = '{0} voice{1} registered for 32-bit and 64-bit SAPI: {2}.' -f `
+                $count,$(if ($count -eq 1) { '' } else { 's' }),(& $labelsFor $withData)
+        if ($without.Count) {
+            $said += "`n`nNothing was registered for {0}, because there is no speech data for it." -f (& $labelsFor $without)
+        }
+        [Windows.Forms.MessageBox]::Show($form,$said,'Panthera SAPI') | Out-Null
+        Refresh-Voices
     }
 })
 $unregister.Add_Click({
