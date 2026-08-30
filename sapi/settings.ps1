@@ -830,6 +830,25 @@ $selectAll.Add_Click({ for($i=0;$i -lt $list.Items.Count;$i++){$list.SetItemChec
 $deselectAll.Add_Click({ for($i=0;$i -lt $list.Items.Count;$i++){$list.SetItemChecked($i,$false)} })
 
 $chooseRoot.Add_Click({
+    # **Say what is wrong before asking them to fix it.**
+    #
+    # This is the third door into the same failure: a data folder that has
+    # been moved, deleted, or written into the registry by hand and never
+    # created.  The other two -- the voices going silent, and the tool's own
+    # start-up warning -- are downstream of it.  Somebody who opens this
+    # button because their voices stopped working deserves to be told the
+    # folder is gone rather than shown a browser opened at nowhere in
+    # particular, which is what happened before: `Test-Path` failed, the
+    # dialog quietly did not preselect, and nothing said why.
+    if (!(Test-Path -LiteralPath $data)) {
+        [Windows.Forms.MessageBox]::Show($form,
+            ("Your speech data folder is not there:`n`n{0}`n`nIf you moved it, choose where it is now and the voices will be registered from that folder." -f $data),
+            'Panthera SAPI','OK','Warning') | Out-Null
+    } elseif (!(@(Get-Voices).Count)) {
+        [Windows.Forms.MessageBox]::Show($form,
+            ("There is no speech data in:`n`n{0}`n`nThe generation folders (Tiger, Leopard, Snowleopard, Lion) go inside it. Choose another folder, or close this and use Extract from disc image." -f $data),
+            'Panthera SAPI','OK','Information') | Out-Null
+    }
     $browser = New-Object Windows.Forms.FolderBrowserDialog
     $browser.Description = 'Choose the folder that holds the MacinTalk speech data (the generation folders live inside it).'
     if (Test-Path -LiteralPath $data) { $browser.SelectedPath = $data }
