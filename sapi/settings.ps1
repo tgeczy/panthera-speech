@@ -561,17 +561,38 @@ $inflection.Add_ValueChanged({ Save-Setting 'Inflection' ([int]$inflection.Value
 $numberStyle.Add_SelectedIndexChanged({ if ($numberStyle.SelectedIndex -ge 0) { Save-Setting 'NumberStyle' $numberValues[$numberStyle.SelectedIndex] } })
 
 function Refresh-Voices {
+    # **"Not installed" and "data not found" are different things to be, and
+    # the list is where a screen reader meets them.**
+    #
+    # The list item is what focus lands on, so it is the status most people
+    # will ever hear -- the label below it has to be navigated to.  Saying
+    # "not installed" for a generation whose voices are registered and whose
+    # data has gone missing sends somebody off to install what they already
+    # have.  The registered tokens tell the two apart: a generation with
+    # tokens and no data lost something, one with neither is simply not
+    # installed.
+    #
+    # Rebuilt between BeginUpdate and EndUpdate so the control is not read
+    # halfway through being emptied and refilled, which is the likeliest
+    # explanation for the one time Tomi heard checkboxes with no status
+    # beside them at all.
+    $registeredGenerations = @(Get-RegisteredGenerations)
+    $list.BeginUpdate()
     $list.Items.Clear(); $voices = @(Get-Voices)
     foreach ($generation in $GenerationTable) {
         $count = @($voices | Where-Object Generation -eq $generation.Folder).Count
-        $state = if ($count) { "$count voices" } else { 'not installed' }
+        # Said out loud, so "1 voices" is not good enough.
+        $state = if ($count) { '{0} voice{1}' -f $count,$(if ($count -eq 1) { '' } else { 's' }) }
+                 elseif ($generation.Folder -in $registeredGenerations) { 'data not found' }
+                 else { 'not installed' }
         [void]$list.Items.Add(('{0} - {1}' -f $generation.Item,$state),$false)
     }
+    $list.EndUpdate()
     if ($list.Items.Count) { $list.SelectedIndex = 0 }
     # "0 voice(s) found in ..." is a true sentence that reads like a
     # working program.  Nothing found is the one state worth naming.
     $status.Text = if ($voices.Count) {
-        '{0} voice(s) found in {1}' -f $voices.Count,$data
+        '{0} voice{1} found in {2}' -f $voices.Count,$(if ($voices.Count -eq 1) { '' } else { 's' }),$data
     } elseif (Test-Path -LiteralPath $data) {
         'No speech data found in {0}' -f $data
     } else {
