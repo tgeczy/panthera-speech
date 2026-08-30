@@ -163,8 +163,41 @@ def _load(hostDll, name):
 #: Said once per host and several hundred lines long, so it belongs at debug.
 #: The same list as `host.py`'s, and for the same reason: a user's log filled
 #: with loader commentary buries the one line that matters.
-_ROUTINE = ("ready,", "session ready", "verbose logging on",
-            "reading engine parameters", "parameter ")
+_ROUTINE = (
+    "ready,",
+    "session ready",
+    "verbose logging on",
+    "reading engine parameters",
+    "parameter ",
+    # Said once per host, describing a setting the user chose.  It is not a
+    # complaint and it was reaching NVDA's log at warning level.
+    "abbreviation rules are off",
+    # Lion's deferred audio-graph stop, refused on purpose; the host says so
+    # because the refusal is load-bearing, not because anything is wrong.
+    "the engine's deferred audio-graph stop is disarmed",
+    # The GCD source narration, which only appears with verbose logging on
+    # and is several lines per utterance when it does.
+    "gcd source ",
+)
+
+
+def isRoutine(line):
+    """-> True if this host line is commentary rather than a complaint.
+
+    **One list, three readers.**  The executable's watcher, the library's
+    pump and Tiger's own watcher each used to decide this for themselves --
+    Tiger by not deciding at all, and logging every `tiger_host:` line at
+    warning.  Three answers to one question is three chances to disagree
+    about what a user's log should contain, and the log is the only thing
+    anybody can send us from a machine we do not have.
+
+    A line the host prefixes with its own name is meant for a person; the
+    rest is loader detail and belongs at debug, where several hundred lines
+    of it do no harm.
+    """
+    if not line.startswith("tiger_host:"):
+        return True
+    return line[11:].lstrip().startswith(_ROUTINE)
 
 
 def _pump(name):
@@ -179,9 +212,7 @@ def _pump(name):
             line = raw.decode("utf-8", "replace").rstrip()
             if not line:
                 continue
-            if not line.startswith("tiger_host:"):
-                log.debug("%s library: %s" % (name, line))
-            elif line[11:].lstrip().startswith(_ROUTINE):
+            if isRoutine(line):
                 log.debug("%s library: %s" % (name, line))
             else:
                 log.warning("%s library: %s" % (name, line))

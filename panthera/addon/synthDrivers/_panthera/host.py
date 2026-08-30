@@ -68,17 +68,6 @@ def _readExactly(stream, n):
     return out
 
 
-#: reason they were ever loud is that everything the host prefixes with its
-#: own name was treated as one.  A real complaint -- a voice that will not
-#: decode, a tree it cannot read -- is not in this list and stays at warning.
-_HOST_ROUTINE = (
-    "ready,",
-    "verbose logging on",
-    "reading engine parameters",
-    "parameter ",
-)
-
-
 class HostMixin(object):
     """The host process, and everything said down the pipe to it."""
 
@@ -594,15 +583,14 @@ class HostMixin(object):
                                 proc.pantheraReady.set()
                             except Exception:
                                 pass
-                    if not line.startswith("tiger_host:"):
-                        log.debug("%s host: " % self.name + "%s" % line)
-                    elif line[11:].lstrip().startswith(_HOST_ROUTINE):
-                        # Said once per host, and the host is started again
-                        # after every interruption, so at warning level this
-                        # is three or four lines per arrow key.  One real log
-                        # was nothing else: forty startups in ninety seconds,
-                        # burying the one line that mattered.  It is still
-                        # here at debug, where the rest of the startup is.
+                    # Routine commentary goes to debug.  It is said once per
+                    # host, and the host is started again after every
+                    # interruption, so at warning level it is three or four
+                    # lines per arrow key: one real log was nothing else,
+                    # forty startups in ninety seconds burying the one line
+                    # that mattered.  The rule itself is `dllhost.isRoutine`,
+                    # shared with the library's pump and Tiger's watcher.
+                    if dllhost.isRoutine(line):
                         log.debug("%s host: " % self.name + "%s" % line)
                     else:
                         log.warning("%s host: " % self.name + "%s" % line)

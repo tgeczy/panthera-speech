@@ -106,17 +106,58 @@ def sapi_roots(generation):
     settings tool can change it while NVDA is running.  Case of the
     generation folder does not matter on Windows, so the SAPI side's
     title-case folders match these lowercase names as they are.
+
+    **A machine-wide answer is what makes a secure screen work.**  On the
+    sign-in desktop NVDA runs as SYSTEM: `HKEY_CURRENT_USER` is SYSTEM's,
+    `%APPDATA%` is SYSTEM's, and a tree the signed-in person extracted under
+    their own profile is reachable through neither.  The SAPI side's voice
+    tokens are registered in `HKLM` already, so they are visible there -- it
+    is the *data* behind them that has not been.  A root under `%ProgramData%`
+    is readable by every account on the machine, which is the whole point of
+    putting one there.
+
+    The per-user answers stay, and keep working, for everybody who already has
+    a tree in one of them.
     """
     roots = []
     try:
         import winreg
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                            r"Software\Panthera SAPI") as key:
-            value, kind = winreg.QueryValueEx(key, "DataPath")
-            if kind == winreg.REG_SZ and value:
-                roots.append(os.path.join(value, generation))
-    except OSError:
-        pass
+    except ImportError:
+        winreg = None
+
+    def _fromRegistry(hiveName):
+        """One hive's remembered folder, if there is one.
+
+        The hive is fetched by name rather than referenced directly so that a
+        `winreg` without it -- a stand-in, or a future Python -- is simply a
+        hive with nothing in it rather than an `AttributeError` that takes the
+        whole lookup down.
+        """
+        hive = getattr(winreg, hiveName, None)
+        if hive is None:
+            return
+        try:
+            with winreg.OpenKey(hive, r"Software\Panthera SAPI") as key:
+                value, kind = winreg.QueryValueEx(key, "DataPath")
+                if kind == winreg.REG_SZ and value:
+                    roots.append(os.path.join(value, generation))
+        except OSError:
+            pass
+
+    # The folder this user chose, then the one set for the machine.  Both are
+    # explicit choices and outrank any default; the machine-wide one is the
+    # only one of the two a secure screen can read.
+    if winreg is not None:
+        _fromRegistry("HKEY_CURRENT_USER")
+        _fromRegistry("HKEY_LOCAL_MACHINE")
+
+    #: `%ProgramData%`, the standalone default that survives the account
+    #: changing underneath it.  Named rather than hard-coded because a Windows
+    #: install is not obliged to put it on C:.
+    common = os.environ.get("ProgramData") or os.environ.get("ALLUSERSPROFILE")
+    if common:
+        roots.append(os.path.join(common, "macintalk-data", generation))
+
     appdata = os.environ.get("APPDATA")
     if appdata:
         roots.append(os.path.join(appdata, "macintalk-data", generation))

@@ -697,10 +697,15 @@ class SynthDriver(SynthDriver):
                     # read with its own name.  Everything else is commentary
                     # and belongs at debug level, or a user's log fills with
                     # several hundred lines of loader detail.
-                    if line.startswith("tiger_host:"):
-                        log.warning("tiger-speech host: %s" % line)
-                    else:
+                    #
+                    # This warned on *every* prefixed line, which is several
+                    # per utterance and buries the ones that matter.  The rule
+                    # is `dllhost.isRoutine` now, shared with the other two
+                    # watchers: one answer to one question.
+                    if dllhost.isRoutine(line):
                         log.debug("tiger-speech host: %s" % line)
+                    else:
+                        log.warning("tiger-speech host: %s" % line)
             except Exception:
                 pass
             finally:
