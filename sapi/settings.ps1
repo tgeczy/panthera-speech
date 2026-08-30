@@ -535,7 +535,20 @@ function Offer-Migration {
         'Panthera SAPI','YesNo','Question')
     if ($answer -ne 'Yes') { Save-Setting 'DeclinedMigration' 1; return }
     $arguments = '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -STA -File "{0}" -MigrateData -MigrateFrom "{1}" -DataRoot "{2}" -MirrorSettings "{3}"' -f $settingsScript,$plan.From,$plan.To,(Get-SettingsArgument)
-    $process = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList $arguments
+    # **A cancelled elevation prompt is not a failure and not a success.**
+    # `-Verb RunAs` writes a *non-terminating* error when somebody says no, so
+    # without -ErrorAction Stop $process stays $null, `$null.ExitCode` is
+    # neither 5 nor truthy, and the whole thing falls into the success branch:
+    # HKCU repointed at an empty folder and a message saying the data now
+    # lives there, with 1.6 GB still where it was.  Returning without
+    # remembering a decline is right -- they did not decline, they backed out
+    # of the prompt, and the offer should come round again.
+    try {
+        $process = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList $arguments -ErrorAction Stop
+    } catch {
+        return
+    }
+    if (!$process) { return }
     if ($process.ExitCode -eq 5) {
         # The folder moved and the registry did not follow, so the voices are
         # registered against a folder that is now empty.  Choose data folder
