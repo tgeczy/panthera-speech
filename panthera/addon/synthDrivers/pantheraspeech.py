@@ -44,8 +44,8 @@ from synthDriverHandler import SynthDriver
 # every add-on shares one `sys.modules`, an older `tigerspeech` or
 # `leopardspeech` add-on may still be running beside this one, and a package
 # cannot collide in that namespace at all.
-from ._panthera import (pantheraleopard, pantheralion,
-                        pantherasnowleopard, pantheratiger)
+from ._panthera import (pantheraleopard, pantheralion, pantherasnowleopard,
+                        pantheratiger, pantheratrees)
 
 #: Where the global plugin leaves the callable that opens the speech data
 #: tool.  A string rather than an import: a synth driver reaching into a global
@@ -70,6 +70,32 @@ def _anythingUsable():
             log.debugWarning("pantheraspeech: %s could not be checked"
                              % tree.__name__, exc_info=True)
     return False
+
+
+def _dataFolderRefused():
+    """-> (path, why) for a declared data folder this account cannot open.
+
+    Every place a person can put speech data and then be unable to read it:
+    each generation's folder under NVDA's configuration directory, and each
+    folder the SAPI side was pointed at -- which is the one that actually
+    bites, because that folder can be anywhere, including inside somebody
+    else's profile.
+
+    Absence is not failure and is not reported: a machine with no data at all
+    is the ordinary first run, and this exists only to separate that from
+    data which is present and out of reach.
+    """
+    candidates = []
+    for tree in _GENERATIONS:
+        try:
+            candidates.append(tree.config_dir())
+            candidates.extend(
+                pantheratrees.sapi_roots(os.path.basename(
+                    tree.CONFIG_DIRNAME)))
+        except Exception:
+            log.debugWarning("pantheraspeech: could not list %s's folders"
+                             % tree.__name__, exc_info=True)
+    return pantheratrees.unreadable(candidates)
 
 
 def _offerTheTool():
@@ -140,6 +166,24 @@ class SynthDriver(SynthDriver):
         except Exception:
             log.debugWarning("pantheraspeech: could not offer the speech data "
                              "tool", exc_info=True)
+        #: **"Not installed" and "installed and out of reach" are different
+        #: problems and only one of them is the person's to fix by
+        #: installing.**  Deciding here rather than in `check()` on purpose:
+        #: the folder is touched once, when somebody has actually chosen this,
+        #: rather than on every build of the synthesizer list.
+        try:
+            path, why = _dataFolderRefused()
+        except Exception:
+            log.debugWarning("pantheraspeech: could not check the speech data "
+                             "folders", exc_info=True)
+            path = why = None
+        if path:
+            raise RuntimeError(
+                "the Mac OS X speech data folder cannot be opened: %s (%s). "
+                "Windows will not let this account read it -- move the data "
+                "somewhere every account can, such as "
+                "%%ProgramData%%\\macintalk-data, or into NVDA's own "
+                "configuration folder." % (path, why))
         raise RuntimeError("no Mac OS X speech data is installed yet")
 
     def terminate(self):

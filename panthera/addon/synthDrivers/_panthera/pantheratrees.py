@@ -181,6 +181,38 @@ def sapi_roots(generation):
     return roots
 
 
+def unreadable(paths):
+    """-> (path, why) for the first folder that is there and will not open.
+
+    A folder that exists and refuses to open is, everywhere else in this
+    add-on, indistinguishable from a folder that was never there: `is_tree`
+    asks `os.path.isdir` about `Speech\\Voices` inside it, and "access denied"
+    and "not there" both answer False.  The generation then hides itself, the
+    placeholder synthesizer stands in, and the person is told no speech data
+    is installed -- a confident, wrong and unactionable answer for somebody
+    whose data is sitting on the disk where they put it.
+
+    Getting told the truth instead is what lets them act: the folder can be
+    moved somewhere every account can read.  That is the one case Tomi
+    described where a person would otherwise be left with no speech and no
+    explanation, and it is reachable today by pointing the SAPI tool's data
+    location at a folder under another profile.
+
+    Absence stays silent, because absence is the ordinary case and this is
+    only interesting when it is *not* what happened.
+    """
+    for path in paths:
+        if not path:
+            continue
+        try:
+            os.listdir(path)
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        except OSError as e:
+            return path, (getattr(e, "strerror", None) or str(e))
+    return None, None
+
+
 def find_runtime(tree, names):
     """-> the first of `names` present at the root of `tree` or in usr/lib."""
     for sub in ("", os.path.join("usr", "lib")):

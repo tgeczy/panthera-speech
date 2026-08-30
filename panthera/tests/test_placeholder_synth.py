@@ -113,3 +113,52 @@ def test_a_generation_that_raises_still_leaves_the_placeholder(monkeypatch,
         "usable", boom)
     from synthDrivers import pantheraspeech
     assert pantheraspeech.SynthDriver.check() is True
+
+
+# ---------------------------------------------------------------------------
+# "Not installed" and "installed and out of reach" are different problems.
+#
+# `is_tree` asks `os.path.isdir` about `Speech\Voices` inside a folder, and
+# access denied and not-there both answer False -- so a folder somebody
+# pointed the SAPI tool at, inside a profile this account cannot read, hides
+# every generation and produces "no speech data is installed yet".  That is
+# confident, wrong, and leaves them nothing to do about it.  Reachable today,
+# and the one case Tomi identified where a person is left with no speech and
+# no explanation.
+# ---------------------------------------------------------------------------
+
+def test_a_folder_that_will_not_open_says_so(monkeypatch, usable):
+    """The refusal names the folder and what Windows said about it."""
+    import importlib
+    import os
+    usable()
+    trees = importlib.import_module("synthDrivers._panthera.pantheratrees")
+    real = os.listdir
+
+    def listdir(path):
+        if "macintalk" in str(path).lower():
+            raise PermissionError(13, "Access is denied")
+        return real(path)
+
+    monkeypatch.setattr(trees.os, "listdir", listdir)
+    from synthDrivers import pantheraspeech
+    with pytest.raises(RuntimeError) as raised:
+        pantheraspeech.SynthDriver()
+    message = str(raised.value)
+    assert "cannot be opened" in message
+    assert "Access is denied" in message
+    # And it points somewhere: a message that only says no is not a fix.
+    assert "ProgramData" in message
+
+
+def test_a_folder_that_is_simply_absent_stays_the_ordinary_message(usable):
+    """A first run has no data anywhere, and that is not a permission problem.
+
+    Reporting one as the other would send everybody who has not extracted
+    anything yet hunting for a permissions fault that is not there.
+    """
+    usable()
+    from synthDrivers import pantheraspeech
+    with pytest.raises(RuntimeError) as raised:
+        pantheraspeech.SynthDriver()
+    assert "no Mac OS X speech data is installed yet" in str(raised.value)
