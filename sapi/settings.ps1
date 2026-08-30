@@ -538,7 +538,15 @@ function Refresh-Voices {
         [void]$list.Items.Add(('{0} - {1}' -f $generation.Item,$state),$false)
     }
     if ($list.Items.Count) { $list.SelectedIndex = 0 }
-    $status.Text = '{0} voice(s) found in {1}' -f $voices.Count,$data
+    # "0 voice(s) found in ..." is a true sentence that reads like a
+    # working program.  Nothing found is the one state worth naming.
+    $status.Text = if ($voices.Count) {
+        '{0} voice(s) found in {1}' -f $voices.Count,$data
+    } elseif (Test-Path -LiteralPath $data) {
+        'No speech data found in {0}' -f $data
+    } else {
+        'Speech data folder is missing: {0}' -f $data
+    }
 }
 
 # --- new data offers itself ----------------------------------------------
@@ -692,7 +700,21 @@ function Offer-Rebind {
     if (!$registered) { return }
     if (Test-SamePath $registered $data) { return }
     if (Test-Path -LiteralPath $registered) { return }
-    if (!(@(Get-Voices).Count)) { return }
+    # **Nothing found anywhere is the loud case, not the quiet one.**
+    #
+    # This returned silently until Tomi moved his folder to C:\git for a
+    # laugh: the voices were registered against a folder that was gone, no
+    # data was found in any of the usual places, and the tool said nothing at
+    # all -- which is the exact situation the warning exists for.  The guard
+    # was written as "only speak up if I can offer a fix", and the case with
+    # no fix to offer is the one where somebody most needs telling.
+    if (!(@(Get-Voices).Count)) {
+        $answer = [Windows.Forms.MessageBox]::Show($form,
+            ("Your voices are registered against a folder that is not there any more:`n`n{0}`n`nNo speech data was found in any of the usual places either, so every Panthera voice will appear in your programs and say nothing.`n`nFind the folder now?" -f $registered),
+            'Panthera SAPI','YesNo','Warning')
+        if ($answer -eq 'Yes') { Invoke-ChooseRoot $false }
+        return
+    }
     $answer = [Windows.Forms.MessageBox]::Show($form,
         ("Your voices are registered against a folder that is no longer there:`n`n{0}`n`nThe speech data is here instead:`n`n{1}`n`nRegister the voices from that folder? Until this is done they will appear in every program's voice list and say nothing at all." -f $registered,$data),
         'Panthera SAPI','YesNo','Warning')
@@ -829,7 +851,10 @@ $close = New-Object Windows.Forms.Button; $close.Text = '&Close'; $close.Locatio
 $selectAll.Add_Click({ for($i=0;$i -lt $list.Items.Count;$i++){$list.SetItemChecked($i,$true)} })
 $deselectAll.Add_Click({ for($i=0;$i -lt $list.Items.Count;$i++){$list.SetItemChecked($i,$false)} })
 
-$chooseRoot.Add_Click({
+# Browsing to the data folder, from the button or from the start-up
+# warning.  `$explain` is false when the caller has already said what is
+# wrong, so nobody is told twice in two dialogs.
+function Invoke-ChooseRoot([bool]$explain = $true) {
     # **Say what is wrong before asking them to fix it.**
     #
     # This is the third door into the same failure: a data folder that has
@@ -840,11 +865,11 @@ $chooseRoot.Add_Click({
     # folder is gone rather than shown a browser opened at nowhere in
     # particular, which is what happened before: `Test-Path` failed, the
     # dialog quietly did not preselect, and nothing said why.
-    if (!(Test-Path -LiteralPath $data)) {
+    if ($explain -and !(Test-Path -LiteralPath $data)) {
         [Windows.Forms.MessageBox]::Show($form,
             ("Your speech data folder is not there:`n`n{0}`n`nIf you moved it, choose where it is now and the voices will be registered from that folder." -f $data),
             'Panthera SAPI','OK','Warning') | Out-Null
-    } elseif (!(@(Get-Voices).Count)) {
+    } elseif ($explain -and !(@(Get-Voices).Count)) {
         [Windows.Forms.MessageBox]::Show($form,
             ("There is no speech data in:`n`n{0}`n`nThe generation folders (Tiger, Leopard, Snowleopard, Lion) go inside it. Choose another folder, or close this and use Extract from disc image." -f $data),
             'Panthera SAPI','OK','Information') | Out-Null
@@ -878,7 +903,8 @@ $chooseRoot.Add_Click({
             Refresh-Voices
         }
     }
-})
+}
+$chooseRoot.Add_Click({ Invoke-ChooseRoot $true })
 
 $open.Add_Click({ New-Item -ItemType Directory -Force $data | Out-Null; Start-Process explorer.exe -ArgumentList ('"{0}"' -f $data) })
 $extract.Add_Click({
