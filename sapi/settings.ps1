@@ -418,7 +418,7 @@ if ($UnregisterVoices) {
 }
 
 $form = New-Object Windows.Forms.Form
-$form.Text = 'Panthera SAPI settings'; $form.Size = New-Object Drawing.Size(720,510)
+$form.Text = 'Panthera SAPI settings'; $form.Size = New-Object Drawing.Size(720,560)
 $form.StartPosition = 'CenterScreen'; $form.AutoScaleMode = 'Dpi'
 $label = New-Object Windows.Forms.Label
 $label.Text = 'Mac OS X speech voices:'; $label.AutoSize = $true; $label.Location = New-Object Drawing.Point(12,14)
@@ -594,18 +594,35 @@ function Offer-NewData {
     }
 }
 
-# The one-time offer to move the data somewhere every account can read.
-# Asked once and remembered, like the registration offer beside it: somebody
-# who says no is not asked again, and the Choose data folder button has
-# always been the way to move it by hand.
-function Offer-Migration {
-    if ([int](Load-Setting 'DeclinedMigration' 0)) { return }
+# **Moving the data is a button, not something that happens to you.**
+#
+# It was a one-time offer at start-up.  It is not any more, because the case
+# for it is weaker than it looked: `%APPDATA%\macintalk` is read perfectly
+# well from the sign-in screen -- Tomi's Rog proved it, SAPI speaking there
+# from his own profile -- since NVDA runs as SYSTEM there and SYSTEM can read
+# any profile on the machine.  So the machine-wide folder buys one copy shared
+# between accounts, which is worth offering and not worth interrupting anybody
+# to ask about.
+#
+# A press is consent, so nothing is remembered and nothing is declined; and
+# because somebody pressed it deliberately, every answer other than "yes, and
+# here is what will move" owes them a reason.
+function Invoke-Migration {
     $plan = Get-MigrationPlan
-    if ($plan.Action -ne 'migrate') { return }
+    if ($plan.Action -ne 'migrate') {
+        $why = switch ($plan.Action) {
+            'done'   { 'The speech data is already in {0}, where every account on this machine can read it.' -f $plan.To }
+            'nvda'   { "This data belongs to NVDA, in its own configuration folder.`n`nIt is not moved from there, because NVDA copies that folder to the Windows sign-in screen and carries it into a portable copy -- moving it out is what breaks both. NVDA reads it as the SYSTEM account on the sign-in screen already, so it is not shut out of anything by staying." }
+            'chosen' { "The speech data is in a folder you chose:`n`n{0}`n`nThat is left where you put it. Use Data location to point the voices somewhere else." -f $plan.From }
+            default  { 'There is no speech data to move: {0}' -f $plan.Reason }
+        }
+        [Windows.Forms.MessageBox]::Show($form,$why,'Panthera SAPI','OK','Information') | Out-Null
+        return
+    }
     $answer = [Windows.Forms.MessageBox]::Show($form,
         ("Your MacinTalk speech data is in a folder only your Windows account can read:`n`n{0}`n`nMoving it to`n`n{1}`n`nlets every account on this machine use the voices, and leaves one copy instead of one per person. Nothing is re-extracted and the voices stay registered.`n`nMove it now? (This needs administrator permission.)" -f $plan.From,$plan.To),
         'Panthera SAPI','YesNo','Question')
-    if ($answer -ne 'Yes') { Save-Setting 'DeclinedMigration' 1; return }
+    if ($answer -ne 'Yes') { return }
     $arguments = '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -STA -File "{0}" -MigrateData -MigrateFrom "{1}" -DataRoot "{2}" -MirrorSettings "{3}"' -f $settingsScript,$plan.From,$plan.To,(Get-SettingsArgument)
     # **A cancelled elevation prompt is not a failure and not a success.**
     # `-Verb RunAs` writes a *non-terminating* error when somebody says no, so
@@ -801,6 +818,12 @@ $open = New-Object Windows.Forms.Button; $open.Text = '&Open data folder'; $open
 $extract = New-Object Windows.Forms.Button; $extract.Text = '&Extract from disc image...'; $extract.Location = New-Object Drawing.Point(145,405); $extract.AutoSize=$true
 $register = New-Object Windows.Forms.Button; $register.Text = '&Register'; $register.Location = New-Object Drawing.Point(290,405); $register.AutoSize=$true
 $unregister = New-Object Windows.Forms.Button; $unregister.Text = '&Unregister'; $unregister.Location = New-Object Drawing.Point(390,405); $unregister.AutoSize=$true
+$migrate = New-Object Windows.Forms.Button
+$migrate.Text = 'Move voices for &all users...'
+$migrate.AccessibleName = 'Move voices for all users'
+$migrate.AccessibleDescription = 'Move the speech data to a folder every Windows account on this machine can read'
+$migrate.Location = New-Object Drawing.Point(12,440); $migrate.AutoSize = $true
+$migrate.Add_Click({ Invoke-Migration })
 $close = New-Object Windows.Forms.Button; $close.Text = '&Close'; $close.Location = New-Object Drawing.Point(505,405); $close.AutoSize=$true
 
 $selectAll.Add_Click({ for($i=0;$i -lt $list.Items.Count;$i++){$list.SetItemChecked($i,$true)} })
@@ -870,7 +893,7 @@ $unregister.Add_Click({
 })
 $close.Add_Click({$form.Close()})
 $form.AcceptButton=$register; $form.CancelButton=$close
-$form.Controls.AddRange(@($label,$list,$status,$progress,$acceptCommands,$pausesLabel,$pauses,$expandAbbrev,$rateBoost,$inflLabel,$inflection,$numLabel,$numberStyle,$selectAll,$deselectAll,$chooseRoot,$diagnostics,$open,$extract,$register,$unregister,$close))
+$form.Controls.AddRange(@($label,$list,$status,$progress,$acceptCommands,$pausesLabel,$pauses,$expandAbbrev,$rateBoost,$inflLabel,$inflection,$numLabel,$numberStyle,$selectAll,$deselectAll,$chooseRoot,$migrate,$diagnostics,$open,$extract,$register,$unregister,$close))
 $form.Add_FormClosing({
     if ($script:extractProc -and -not $script:extractProc.HasExited) {
         try { $script:extractProc.Kill() } catch {}
@@ -879,4 +902,4 @@ $form.Add_FormClosing({
 # Migration first, registration second: moving the data re-registers the
 # tokens against the new root on its way out, so asking about registration
 # before the move would ask about a folder that is about to be left behind.
-Refresh-Voices; $form.Add_Shown({$list.Focus(); Offer-Rebind; Offer-Migration; Offer-NewData}); [void]$form.ShowDialog()
+Refresh-Voices; $form.Add_Shown({$list.Focus(); Offer-Rebind; Offer-NewData}); [void]$form.ShowDialog()

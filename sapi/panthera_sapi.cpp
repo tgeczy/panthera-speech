@@ -446,7 +446,50 @@ public:
     }
     STDMETHODIMP_(ULONG) AddRef(){return InterlockedIncrement(&refs);}
     STDMETHODIMP_(ULONG) Release(){ULONG n=InterlockedDecrement(&refs);if(!n)delete this;return n;}
-    STDMETHODIMP SetObjectToken(ISpObjectToken *t){if(!t)return E_INVALIDARG;if(token)return E_UNEXPECTED;token=t;t->AddRef();return S_OK;}
+    /* **A voice whose data is not there must fail here, not go quiet later.**
+     *
+     * Each token carries a DataPath written once, at registration.  Move the
+     * folder afterwards -- by hand, or with an installer -- and every token
+     * still names the old one.  Until this check the engine took the voice
+     * anyway, accepted the text, rendered nothing and returned, so all
+     * ninety-six voices stayed in every program's list and every one of them
+     * was silent.  Measured from Tomi's sign-in screen: 24 utterances, each
+     * returning its bookmark in 21-23 ms flat whatever the words were, where
+     * a working voice on the same screen took 216 to 2164 ms.  A constant is
+     * not slow rendering, it is no rendering, and nothing said so.
+     *
+     * Failing the token is the honest answer: the caller is choosing a voice
+     * that cannot speak, and a screen reader told "no" falls back to one that
+     * can.  Silence is the one failure a screen reader cannot recover from.
+     *
+     * Only the engine binary is checked, and only for existence.  This runs
+     * on every voice selection, so it may not be expensive, and a tree that
+     * is present but broken is the host's business to report -- not a reason
+     * to make choosing the voice impossible. */
+    STDMETHODIMP SetObjectToken(ISpObjectToken *t){
+        if(!t)return E_INVALIDARG;
+        if(token)return E_UNEXPECTED;
+        token=t;t->AddRef();
+        std::wstring root=token_string(token,L"DataPath"),
+                     gen=token_string(token,L"Generation");
+        if(!root.empty()&&!gen.empty()){
+            std::wstring mt=root+L"\\"+gen+
+                L"\\Speech\\Synthesizers\\MacinTalk.SpeechSynthesizer"
+                L"\\Contents\\MacOS\\MacinTalk";
+            if(GetFileAttributesW(mt.c_str())==INVALID_FILE_ATTRIBUTES){
+                logline(L"voice refused: no engine at %.160s",mt.c_str());
+                token->Release();token=0;
+                /* Not an SPERR: the SAPI-specific codes for "this token
+                 * names something that is not there" are not all declared by
+                 * every SDK, and a build that fails on somebody else's
+                 * machine helps nobody.  0x80070002 says "the system cannot
+                 * find the file specified", which is both true and legible
+                 * wherever it surfaces. */
+                return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
+            }
+        }
+        return S_OK;
+    }
     STDMETHODIMP GetObjectToken(ISpObjectToken **t){if(!t)return E_POINTER;*t=token;if(token)token->AddRef();return token?S_OK:S_FALSE;}
     STDMETHODIMP GetOutputFormat(const GUID*,const WAVEFORMATEX*,GUID *id,WAVEFORMATEX **wf){
         if(!id||!wf)return E_POINTER; *id=PantheraWaveFormatEx;
