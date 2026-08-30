@@ -394,6 +394,9 @@ class SynthDriver(SynthDriver):
         return tree.usable()
 
     def __init__(self):
+        # Before `super()`; see `bridge.prepareHost` for what the 32-bit
+        # bridge host leaves out of `config` and why it is fatal here.
+        bridge.prepareHost()
         super().__init__()
         ok, lines = tree.explain()
         if not ok:

@@ -191,6 +191,7 @@ def _fullVolumeByDefault(setting):
 # Leopard's and Lion's are separate folders holding separate engines, and this
 # body serves both.  Each driver names its own as `TREE`, and everything here
 # reaches it through `self.TREE`.
+from . import bridge
 from . import pantheraabbrev
 from . import pantheranumbers
 from . import pantherastress
@@ -489,6 +490,11 @@ class PantheraDriver(HostMixin, SpeechPipelineMixin, SynthDriver):
         return True
 
     def __init__(self):
+        # Before `super()`, because `super()` is what falls over without it:
+        # NVDA's 32-bit bridge host ships a stub `config` with no
+        # `pre_configSave`, and `AutoSettings.__init__` registers against it.
+        # See `bridge.prepareHost`.
+        bridge.prepareHost()
         super().__init__()
         ok, lines = self.TREE.explain()
         if not ok:

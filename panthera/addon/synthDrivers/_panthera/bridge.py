@@ -65,6 +65,42 @@ def available():
         return False
 
 
+def prepareHost():
+    """Fill in the one thing NVDA's 32-bit host leaves out of `config`.
+
+    **Every driver dies on this, and it dies before any of its own code
+    runs.**  `AutoSettings.__init__` -- which `SynthDriver.__init__` reaches
+    through `driverHandler.Driver` -- ends with
+
+        config.pre_configSave.register(self.saveSettings)
+
+    and the host's `config` is a stub whose whole contents is a `conf` dict,
+    marked in NVDA's source with "fixme: this is a minimal config.conf dict to
+    allow synth drivers to initialize".  There is no `pre_configSave` on it, so
+    `super().__init__()` raises `AttributeError` and the synthesizer refuses to
+    load with nothing to say about why.  That is exactly what a real sign-in
+    screen did, on two machines, after everything else was right.
+
+    An `extensionPoints.Action` is what NVDA puts there itself, so this is the
+    real thing rather than a stand-in, and `_unregisterConfigSaveAction` --
+    which runs from `__del__` -- works against it too.  Outside the host the
+    attribute already exists and this does nothing at all.
+
+    Tomi's `eloquence-wrapper` carries the identical three lines, which is the
+    strongest evidence available that this is the host's gap and not ours.
+    """
+    try:
+        import config
+        if not hasattr(config, "pre_configSave"):
+            import extensionPoints
+            config.pre_configSave = extensionPoints.Action()
+    except Exception:
+        # Never fatal: without it the driver fails a moment later with a
+        # clearer message than anything raised from here would be.
+        log.debugWarning("panthera: could not prepare the host's config",
+                         exc_info=True)
+
+
 def _accessorsFor(settingId):
     """A `_get_`/`_set_` pair that asks the far side.
 
