@@ -89,7 +89,10 @@ def test_the_per_user_default_with_data_in_it_moves(tmp_path):
     root = _tree(os.path.join(appdata, "macintalk-data"))
     plan = _plan(root, appdata=appdata, programdata=str(tmp_path / "common"))
     assert plan["plan"] == "migrate"
-    assert plan["to"] == os.path.join(str(tmp_path / "common"), "macintalk-data")
+    # One name everywhere: the machine-wide folder is `macintalk`, not
+    # `macintalk-data`.  The suffix distinguished the standalone folder from
+    # NVDA's and there was never anything to distinguish.
+    assert plan["to"] == os.path.join(str(tmp_path / "common"), "macintalk")
 
 
 def test_nvdas_own_folder_is_never_moved(tmp_path):

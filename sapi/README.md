@@ -52,12 +52,24 @@ the "Data location" button (remembered per user), then a folder set for the
 whole machine (`HKLM\Software\Panthera SAPI\DataPath`), then NVDA's own shared
 folder at `%APPDATA%\nvda\macintalk` -- so an NVDA user registers SAPI voices
 from the data they already extracted, with nothing copied and nothing
-extracted twice -- then `%APPDATA%\macintalk-data`, where earlier versions put
-it, and finally `%ProgramData%\macintalk-data`, where a fresh install puts it
-now. Inside the root sit the generation folders (`tiger`, `leopard`,
+extracted twice -- then `%APPDATA%\macintalk`, then the two folders
+earlier versions used, `%APPDATA%\macintalk-data` and
+`%ProgramData%\macintalk-data`.  A fresh install now creates
+`%APPDATA%\macintalk`, and the move button puts it in `%ProgramData%\macintalk`:
+**one name everywhere.**  The `-data` suffix distinguished the standalone
+folder from NVDA's, and there was never anything to distinguish -- the two are
+different paths already -- so all it bought was a second name to learn.
+Folders already using it keep working and are searched first-class.
+
+Inside the root sit the generation folders (`tiger`, `leopard`,
 `snowleopard`, `lion`; case does not matter on Windows), each laid out exactly
 as the NVDA add-on lays them out. The tool never creates folders inside NVDA's
 tree; extraction is the only thing that writes.
+
+A folder that is merely *there* does not win: the search prefers one with
+voices in it, and only falls back to bare existence. An emptied folder still
+stands, and one holding nothing but a README and a declined-prompt marker used
+to beat the real data sitting next to it.
 
 **The SAPI data moves to `%ProgramData%` and NVDA's does not**, which reads as
 an inconsistency and is not one. A portable NVDA copy carries its own
@@ -66,12 +78,20 @@ outside it is silently lost -- and on the Windows sign-in screen NVDA reads a
 copy of that folder and nothing else. SAPI has no portable copy to protect,
 and every account on the machine should read one copy rather than each
 extracting their own. So the NVDA driver only *adds* `%ProgramData%` to the
-places it looks, while this tool offers, once, to move its own data there.
+places it looks, while this tool has a **Move voices for all users...**
+button.
 
-Exactly one arrangement is offered a move: the per-user default,
-`%APPDATA%\macintalk-data`. A folder you chose by hand stays where you put it,
-and NVDA's `macintalk` folder is moved by nothing, ever. Saying no is
-remembered, and "Data location" has always moved the folder by hand.
+It is a button and not a prompt on purpose. `%APPDATA%` is read perfectly well
+from the sign-in screen -- NVDA runs there as SYSTEM, and SYSTEM can read any
+profile on the machine -- so the machine-wide folder buys one copy shared
+between accounts, which is worth offering and not worth interrupting anybody
+to ask about.
+
+Only a per-user folder moves: `%APPDATA%\macintalk` or `%APPDATA%\macintalk-data`.
+A folder you chose by hand stays where you put it, and NVDA's `macintalk`
+folder is moved by nothing, ever -- moving it out of NVDA's configuration
+directory is exactly what breaks the sign-in screen and portable copies. The
+button says which of those applies rather than doing nothing quietly.
 
 The move also resets the folder's permissions to what `%ProgramData%` grants
 everybody. A folder moved within one volume keeps the security descriptor it

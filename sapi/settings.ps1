@@ -26,7 +26,20 @@ $machinePrefPath = 'Software\Panthera SAPI'
 
 #: %ProgramData%, named rather than hard-coded because a Windows install is
 #: not obliged to put it on C:.
+# **One name, `macintalk`, everywhere.**
+#
+# The `-data` suffix distinguished the standalone folder from NVDA's, and
+# there was never anything to distinguish: the per-user folder and the one
+# inside NVDA's configuration directory are different paths already.  All the
+# suffix bought was a second name to learn and a near miss to trip over --
+# which it duly did, twice in one night.  Folders already called
+# `macintalk-data` keep working and are searched first-class; only what a
+# fresh install *creates* changes.
 function Get-CommonRoot {
+    $common = if ($env:ProgramData) { $env:ProgramData } else { $env:ALLUSERSPROFILE }
+    if ($common) { Join-Path $common 'macintalk' } else { $null }
+}
+function Get-CommonRootLegacy {
     $common = if ($env:ProgramData) { $env:ProgramData } else { $env:ALLUSERSPROFILE }
     if ($common) { Join-Path $common 'macintalk-data' } else { $null }
 }
@@ -129,19 +142,18 @@ function Resolve-DataRoot {
     if ($env:APPDATA) { $candidates += (Join-Path $env:APPDATA 'nvda\macintalk') }
     #: NVDA's folder name, machine-wide -- `%ProgramData%\macintalk` rather
     #: than `macintalk-data`, which the add-on now looks in as well.
-    $commonNvda = if ($env:ProgramData) { Join-Path $env:ProgramData 'macintalk' }
-                  elseif ($env:ALLUSERSPROFILE) { Join-Path $env:ALLUSERSPROFILE 'macintalk' }
+    $commonNvda = Get-CommonRoot
     if ($commonNvda) { $candidates += $commonNvda }
     $perUser = $null
     if ($env:APPDATA) {
         #: Bare `%APPDATA%\macintalk`: no `nvda`, no `-data`.  A real
         #: arrangement, kept beside a SAPI install rather than inside NVDA's
         #: folder, and the one place neither side used to look.
-        $candidates += (Join-Path $env:APPDATA 'macintalk')
-        $perUser = Join-Path $env:APPDATA 'macintalk-data'
+        $perUser = Join-Path $env:APPDATA 'macintalk'
         $candidates += $perUser
+        $candidates += (Join-Path $env:APPDATA 'macintalk-data')
     }
-    $common = Get-CommonRoot
+    $common = Get-CommonRootLegacy
     if ($common) { $candidates += $common }
 
     foreach ($c in $candidates) { if (Test-AnyVoicesUnder $c) { return $c } }
@@ -156,7 +168,8 @@ function Resolve-DataRoot {
     # folder is reached through the migration button instead, which is
     # elevated and locks the ACL on arrival.
     if ($perUser) { return $perUser }
-    if ($common) { return $common }
+    $fresh = Get-CommonRoot
+    if ($fresh) { return $fresh }
     $null
 }
 $data = Resolve-DataRoot
@@ -221,7 +234,7 @@ function Get-MigrationPlan {
     if (!$common) {
         $plan.Reason = 'this machine has no ProgramData folder'; return $plan
     }
-    if (Test-SamePath $data $common) {
+    if ((Test-SamePath $data $common) -or (Test-SamePath $data (Get-CommonRootLegacy))) {
         $plan.Action='done'; $plan.Reason='the data is already in the machine-wide folder'; return $plan
     }
     # **Is there anything to move, before deciding whether we would move it.**
