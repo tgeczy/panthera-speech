@@ -110,13 +110,24 @@ function Resolve-DataRoot {
         if (Test-Path -LiteralPath $perUser) { return $perUser }
     }
     # Nothing exists yet, so this is a fresh install choosing where to put
-    # things.  %ProgramData% is the answer: every account on the machine can
-    # read it, and a standard user can create a folder there and write into
-    # it, so extraction needs no elevation.  The per-user folder remains the
-    # answer only where there is no %ProgramData% to speak of.
+    # things -- and it chooses the *per-user* folder, not %ProgramData%.
+    #
+    # That looks backwards on the night ProgramData was added, and it is not.
+    # A standard user can create a folder under %ProgramData% and write into
+    # it, which is exactly what makes it the wrong place to extract to
+    # unelevated: the folder they create inherits
+    # `BUILTIN\Users:(CI)(WD,AD,WEA,WA)`, so every other account on the
+    # machine can write into a tree whose Mach-O this host maps and executes,
+    # and which NVDA reads as SYSTEM on the sign-in screen.
+    #
+    # The machine-wide folder is reached the one way that can lock it down on
+    # arrival: the migration offer, which is elevated and sets an explicit ACL.
+    # Anybody an administrator has already migrated finds it above, through
+    # HKLM, and shares it.
+    if ($perUser) { return $perUser }
     $common = Get-CommonRoot
     if ($common) { return $common }
-    $perUser
+    $null
 }
 $data = Resolve-DataRoot
 
@@ -297,19 +308,36 @@ if ($MigrateData) {
         Write-Error ('Could not move the speech data: {0}' -f $_.Exception.Message)
         exit 4
     }
+    # **Readable by everybody, writable by nobody but an administrator.**
+    #
     # A same-volume move carries the source's security descriptor with it, so
     # data moved out of a profile arrives in ProgramData still readable by
-    # that one account -- machine-wide in name and not in fact, and a
-    # single-account test cannot tell the difference because SYSTEM reads it
-    # either way.  Reset, so the folder inherits what ProgramData grants
-    # everybody.
+    # that one account alone -- machine-wide in name and not in fact, and a
+    # single-account machine cannot tell the difference, because SYSTEM reads
+    # it either way.
+    #
+    # `icacls /reset` is the wrong repair.  What ProgramData grants by
+    # inheritance is `BUILTIN\Users:(CI)(WD,AD,WEA,WA)`: every standard
+    # account may create files and folders anywhere beneath it.  This tree is
+    # not documents.  The host *maps and executes* the Mach-O inside it, and
+    # NVDA reads this same root as SYSTEM on the sign-in screen -- so a folder
+    # any user can write to is a local privilege escalation needing no unsafe
+    # parsing at all: plant a generation folder, wait for the lock screen.
+    #
+    # Inheritance is cut and the three rights granted outright, by SID rather
+    # than by name, because `BUILTIN\Users` is localised and this has to hold
+    # on a Windows that does not speak English.
+    #
     # Past this line the data has moved, so a failure here is a different
     # failure and has its own exit code: "it did not move" and "it moved but
     # the registry did not follow" need different things said to the person,
     # and telling them nothing changed when 1.6 GB just did is the one answer
     # that sends them looking in the wrong place.
     try {
-        & "$env:SystemRoot\System32\icacls.exe" $DataRoot /reset /T /C /Q | Out-Null
+        & "$env:SystemRoot\System32\icacls.exe" $DataRoot /inheritance:r `
+            /grant '*S-1-5-18:(OI)(CI)F' `
+            /grant '*S-1-5-32-544:(OI)(CI)F' `
+            /grant '*S-1-5-32-545:(OI)(CI)RX' /T /C /Q | Out-Null
         Set-MachineDataPath $DataRoot
         Set-MachineSettings $MirrorSettings
         # Every registered token carries the old DataPath.  Follow the data,
