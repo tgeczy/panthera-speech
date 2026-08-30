@@ -694,29 +694,51 @@ function Invoke-Migration {
 # Only offered when the remembered folder is genuinely gone and a real one has
 # been found instead, so nobody is asked about a second copy they keep on
 # purpose.
+# Does a root actually hold voices?  **Not "is the folder there".**
+#
+# Moving the *contents* out leaves the folder standing, and an empty folder
+# passed every existence check this warning was built on: `Test-Path` said
+# yes, so the tokens looked healthy, and `Resolve-DataRoot` returned the same
+# empty folder, so the tokens and the resolved root even agreed with each
+# other.  Two separate guards, both satisfied, and the tool said nothing while
+# every voice on the machine was mute.  What makes a root good is that there
+# are voices in it, and that is the only thing worth asking.
+function Test-RootHasVoices([string]$root) {
+    if (!$root -or !(Test-Path -LiteralPath $root)) { return $false }
+    foreach ($generation in $GenerationTable) {
+        $folder = Join-Path $root "$($generation.Folder)\Speech\Voices"
+        if (Test-Path -LiteralPath $folder) {
+            $found = @(Get-ChildItem -LiteralPath $folder -Directory `
+                       -Filter '*.SpeechVoice' -ErrorAction SilentlyContinue)
+            if ($found.Count) { return $true }
+        }
+    }
+    return $false
+}
+
 function Offer-Rebind {
     if (!(Test-AnyPantheraTokens)) { return }
     $registered = Get-TokenDataPath
     if (!$registered) { return }
-    if (Test-SamePath $registered $data) { return }
-    if (Test-Path -LiteralPath $registered) { return }
+    # The tokens are healthy exactly when their own folder still has voices.
+    if (Test-RootHasVoices $registered) { return }
     # **Nothing found anywhere is the loud case, not the quiet one.**
     #
-    # This returned silently until Tomi moved his folder to C:\git for a
-    # laugh: the voices were registered against a folder that was gone, no
-    # data was found in any of the usual places, and the tool said nothing at
-    # all -- which is the exact situation the warning exists for.  The guard
-    # was written as "only speak up if I can offer a fix", and the case with
-    # no fix to offer is the one where somebody most needs telling.
-    if (!(@(Get-Voices).Count)) {
+    # Tomi moved his folder to C:\git for a laugh and the tool said nothing,
+    # twice over: first because the guard was written as "only speak up if I
+    # can offer a fix", and then -- with that fixed -- because the emptied
+    # folder was still standing and satisfied every "is it there" test in the
+    # function.  The case with no fix to offer is the one where somebody most
+    # needs telling.
+    if (!(@(Get-Voices).Count) -or (Test-SamePath $registered $data)) {
         $answer = [Windows.Forms.MessageBox]::Show($form,
-            ("Your voices are registered against a folder that is not there any more:`n`n{0}`n`nNo speech data was found in any of the usual places either, so every Panthera voice will appear in your programs and say nothing.`n`nFind the folder now?" -f $registered),
+            ("Your voices are registered against a folder with no speech data in it:`n`n{0}`n`nNone was found in any of the usual places either, so every Panthera voice will appear in your programs and say nothing at all.`n`nFind the folder now?" -f $registered),
             'Panthera SAPI','YesNo','Warning')
         if ($answer -eq 'Yes') { Invoke-ChooseRoot $false }
         return
     }
     $answer = [Windows.Forms.MessageBox]::Show($form,
-        ("Your voices are registered against a folder that is no longer there:`n`n{0}`n`nThe speech data is here instead:`n`n{1}`n`nRegister the voices from that folder? Until this is done they will appear in every program's voice list and say nothing at all." -f $registered,$data),
+        ("Your voices are registered against a folder with no speech data in it:`n`n{0}`n`nThe speech data is here instead:`n`n{1}`n`nRegister the voices from that folder? Until this is done they will appear in every program's voice list and say nothing at all." -f $registered,$data),
         'Panthera SAPI','YesNo','Warning')
     if ($answer -ne 'Yes') { return }
     $all = @($GenerationTable.Folder) -join ','
