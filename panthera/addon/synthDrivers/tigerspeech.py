@@ -62,6 +62,17 @@ add-on, each by breaking it and being told.  They apply here unchanged.
    the confirmation of it.
 """
 import codecs
+#: `logging.DEBUG`, never `log.DEBUG`.
+#:
+#: NVDA's own logger takes `DEBUG` into its class body with `from
+#: logging import DEBUG`, so the two are the same number -- but the
+#: logger inside NVDA's 32-bit bridge host is a plain
+#: `logging.getLogger()` with only `debugWarning` bolted onto it, and
+#: `log.DEBUG` raises `AttributeError` there.  Measured on a sign-in
+#: screen: the driver loaded, every setting and all 24 voices crossed
+#: the bridge, and then every single `speak` call raised before it
+#: reached the engine.
+import logging
 import os
 import re
 import struct
@@ -990,7 +1001,7 @@ class SynthDriver(SynthDriver):
         # sequence log is guesswork, and guessing is what has cost the time
         # here: this is the one thing that can be pasted straight into a
         # renderer to reproduce what somebody heard.
-        if log.isEnabledFor(log.DEBUG):
+        if log.isEnabledFor(logging.DEBUG):
             log.debug("tigerspeech: speaking %r" % (text,))
         # Indexes go in before the audio rather than after rendering it.  They
         # belonged at the head of this utterance already -- see the docstring
@@ -1030,7 +1041,7 @@ class SynthDriver(SynthDriver):
         # driver keeps getting and it was never possible to check from a log.
         # Both numbers, per utterance: a first sound that arrives late is a
         # different fault from an utterance that takes a long time in total.
-        if fed and log.isEnabledFor(log.DEBUG):
+        if fed and log.isEnabledFor(logging.DEBUG):
             done = time.perf_counter()
             frames = sum(fed) / 2.0
             log.debug("tigerspeech: %d chars -> %.2f s of audio in %d chunk(s);"
@@ -1124,7 +1135,7 @@ class SynthDriver(SynthDriver):
                             t0 = time.perf_counter()
                             self._player.feed(value)
                             ms = (time.perf_counter() - t0) * 1000.0
-                            if ms >= 20.0 and log.isEnabledFor(log.DEBUG):
+                            if ms >= 20.0 and log.isEnabledFor(logging.DEBUG):
                                 log.debug(
                                     "tigerspeech: the audio device took %.0f ms "
                                     "to start playing (%.0f ms of audio, after "
@@ -1164,7 +1175,7 @@ class SynthDriver(SynthDriver):
         # a sentence" so far has turned out to be about where the sequence was
         # divided, and that is invisible from this side without either a log or
         # a guess.  Two of those guesses were wrong.
-        if log.isEnabledFor(log.DEBUG):
+        if log.isEnabledFor(logging.DEBUG):
             shape = []
             for item in speechSequence:
                 if isinstance(item, str):

@@ -20,6 +20,17 @@ replaces that -- a DLL loaded in-process, NVDA's own 32-bit bridge -- rewrites
 this module and touches little else.  That was worth arranging before it was
 worth doing.
 """
+#: `logging.DEBUG`, never `log.DEBUG`.
+#:
+#: NVDA's own logger takes `DEBUG` into its class body with `from
+#: logging import DEBUG`, so the two are the same number -- but the
+#: logger inside NVDA's 32-bit bridge host is a plain
+#: `logging.getLogger()` with only `debugWarning` bolted onto it, and
+#: `log.DEBUG` raises `AttributeError` there.  Measured on a sign-in
+#: screen: the driver loaded, every setting and all 24 voices crossed
+#: the bridge, and then every single `speak` call raised before it
+#: reached the engine.
+import logging
 import os
 import struct
 import subprocess
@@ -445,7 +456,7 @@ class HostMixin(object):
                     # spare and the engine's own cancel is allowed to land.
                     # `ABANDON_GRACE` below is still the backstop for a host
                     # that really has stopped answering.
-                    if log.isEnabledFor(log.DEBUG):
+                    if log.isEnabledFor(logging.DEBUG):
                         log.debug(
                             "%s: render %d still holds the worker %.0f ms "
                             "after a cancel while newer speech waits; "

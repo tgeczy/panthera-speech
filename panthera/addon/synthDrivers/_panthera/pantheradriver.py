@@ -74,6 +74,17 @@ add-on, each by breaking it and being told.  They apply here unchanged.
    drains that queue, and NVDA cancels between changing a setting and speaking
    the confirmation of it.
 """
+#: `logging.DEBUG`, never `log.DEBUG`.
+#:
+#: NVDA's own logger takes `DEBUG` into its class body with `from
+#: logging import DEBUG`, so the two are the same number -- but the
+#: logger inside NVDA's 32-bit bridge host is a plain
+#: `logging.getLogger()` with only `debugWarning` bolted onto it, and
+#: `log.DEBUG` raises `AttributeError` there.  Measured on a sign-in
+#: screen: the driver loaded, every setting and all 24 voices crossed
+#: the bridge, and then every single `speak` call raised before it
+#: reached the engine.
+import logging
 import os
 import sys
 import threading
@@ -736,7 +747,7 @@ class PantheraDriver(HostMixin, SpeechPipelineMixin, SynthDriver):
         # of a sentence" so far has been about where the sequence was divided
         # or what was in it, and that is invisible from this side without
         # either a log or a guess.
-        if log.isEnabledFor(log.DEBUG):
+        if log.isEnabledFor(logging.DEBUG):
             shape = []
             for item in speechSequence:
                 if isinstance(item, str):

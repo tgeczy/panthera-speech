@@ -116,6 +116,22 @@ try:
     for setting in driver.supportedSettings:
         getattr(driver, setting.id)
     print("SETTINGS READ")
+
+    # **And speak, because everything above passed while every `speak` call
+    # raised.**  The host's logger is a plain `logging.getLogger()` with only
+    # `debugWarning` bolted on, so `log.DEBUG` -- which exists on NVDA's own
+    # Logger subclass -- is an `AttributeError` here.  It fired on the first
+    # line of `speak`, before the engine was ever asked for a sample, and the
+    # user simply got silence.  Constructing a driver and reading its settings
+    # cannot find that; only speaking can.
+    # Silent, because a test suite that talks at you is a test suite people
+    # stop running.  The fault this catches is raised on the first line of
+    # `speak`, long before a sample exists, so nothing is lost by muting.
+    import speech.commands
+    driver.volume = 0
+    driver.speak(["Bridge test.", speech.commands.IndexCommand(1)])
+    print("SPOKE")
+    driver.cancel()
 finally:
     driver.terminate()
 '''
@@ -166,6 +182,10 @@ def test_the_driver_survives_the_real_host_library(tmp_path, module):
         "answer to:\n%s\n%s" % (said, why))
     assert "SETTINGS READ" in said, (
         "a setting could not be read the way the bridge reads it:\n%s\n%s"
+        % (said, why))
+    assert "SPOKE" in said, (
+        "the driver loaded and configured cleanly and then could not speak, "
+        "which is exactly what a user hears as silence:\n%s\n%s"
         % (said, why))
 
 

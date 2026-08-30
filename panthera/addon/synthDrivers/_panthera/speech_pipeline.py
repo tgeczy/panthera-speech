@@ -22,6 +22,16 @@ and it can only be answered here.
 A plain mixin: nothing in it is a settings accessor, so NVDA's metaclass has
 no opinion about where it lives.
 """
+#: `logging.DEBUG`, never `log.DEBUG`.
+#:
+#: NVDA's own logger takes `DEBUG` into its class body with `from logging
+#: import DEBUG`, so the two are the same number -- but the logger inside
+#: NVDA's 32-bit bridge host is a plain `logging.getLogger()` with only
+#: `debugWarning` bolted onto it, and `log.DEBUG` raises `AttributeError`
+#: there.  Measured on a sign-in screen: the driver loaded, every setting and
+#: all 24 voices crossed the bridge, and then every `speak` call raised on its
+#: first line, which the user hears as silence.
+import logging
 import queue
 import time
 
@@ -387,7 +397,7 @@ class SpeechPipelineMixin(object):
         # sequence log is guesswork, and guessing is what has cost the time
         # here: this is the one thing that can be pasted straight into a
         # renderer to reproduce what somebody heard.
-        if log.isEnabledFor(log.DEBUG):
+        if log.isEnabledFor(logging.DEBUG):
             log.debug("%s: " % self.name + "speaking %r" % (text,))
         # Indexes go in before the audio rather than after rendering it.  They
         # belonged at the head of this utterance already -- see the docstring
@@ -479,7 +489,7 @@ class SpeechPipelineMixin(object):
         # different fault from an utterance that takes a long time in total,
         # and with Alex the second is expected -- he renders far more audio per
         # character than anything else here.
-        if fed and log.isEnabledFor(log.DEBUG):
+        if fed and log.isEnabledFor(logging.DEBUG):
             done = time.perf_counter()
             frames = sum(fed) / 2.0
             log.debug("%s: " % self.name + "%d chars in %d piece(s) -> %.2f s of "
@@ -588,7 +598,7 @@ class SpeechPipelineMixin(object):
                                 t0 = time.perf_counter()
                                 self._player.feed(piece)
                                 ms = (time.perf_counter() - t0) * 1000.0
-                                if ms >= 20.0 and log.isEnabledFor(log.DEBUG):
+                                if ms >= 20.0 and log.isEnabledFor(logging.DEBUG):
                                     log.debug(
                                         "%s: the audio device took " % self.name +
                                         "%.0f ms to start playing (%.0f ms of "
@@ -599,7 +609,7 @@ class SpeechPipelineMixin(object):
                                            if self._afterCancel
                                            else "the previous utterance ended"))
                                 if (self._afterCancel
-                                        and log.isEnabledFor(log.DEBUG)):
+                                        and log.isEnabledFor(logging.DEBUG)):
                                     #: The number a listener actually feels:
                                     #: their key, and the first sound after
                                     #: it.  Every stage of an interruption is
