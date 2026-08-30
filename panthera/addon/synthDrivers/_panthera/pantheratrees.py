@@ -25,21 +25,62 @@ all need these, and only one of those four is inside NVDA.
 import os
 
 
+def _config_from_own_path():
+    """-> the configuration directory this file is installed under, or None.
+
+    An add-on always lives at `<config>/addons/<name>/synthDrivers/_panthera/`,
+    so four levels up from here *is* the configuration directory in use --
+    whichever one that is, a portable copy and NVDA's `systemConfig` included.
+    `addonHandler` fixes that shape, so this is derived rather than guessed.
+
+    None unless the shape matches, so that running from the source tree or
+    from a command line falls through to the ordinary answer.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    parts = here.split(os.sep)
+    #        <config> / addons / <name> / synthDrivers / _panthera
+    if len(parts) < 5 or parts[-4].lower() != "addons":
+        return None
+    root = os.sep.join(parts[:-4])
+    return root if os.path.isdir(root) else None
+
+
 def config_base():
     """NVDA's user configuration directory, or a stand-in outside NVDA.
 
-    `globalVars.appArgs.configPath` is the only correct source. NVDA's own
-    `NVDAState.WritePaths.configDir` is a property wrapping exactly this value,
-    so it already accounts for a portable copy and for a config directory given
-    on the command line with `-c`. Expanding `%APPDATA%` ourselves would be
-    right on one machine and wrong on every portable one.
+    `globalVars.appArgs.configPath` is normally the only correct source. NVDA's
+    own `NVDAState.WritePaths.configDir` is a property wrapping exactly this
+    value, so it already accounts for a portable copy and for a configuration
+    directory given on the command line with `-c`. Expanding `%APPDATA%`
+    ourselves would be right on one machine and wrong on every portable one.
 
-    The fallback exists for running outside NVDA -- the tests, and anything
+    **Except inside NVDA's own 32-bit synth-driver host, where it is a lie.**
+    `_bridge/runtimes/synthDriverHost/globalVars.py` is a stub, and it says
+
+        appArgs.configPath = "."
+
+    -- the host process's working directory, under a comment reading "very
+    basic values to allow things to run". That host is how this add-on speaks
+    on a secure screen, so there every generation looked for its engine in
+    `./macintalk/<generation>`, found nothing, and reported that it had no
+    speech data. Which is exactly what the first real sign-in screen did: all
+    four synthesizers listed, and not one of them would load.
+
+    So an answer that is not an absolute path is not believed, and the
+    directory this add-on is installed in answers instead. `os.path.isabs(".")`
+    is False, which is the whole of the test.
+
+    The last fallback is for running outside NVDA -- the tests, and anything
     driven from a command line -- and for nothing else.
     """
     try:
         import globalVars
         path = globalVars.appArgs.configPath
+        if path and os.path.isabs(str(path)):
+            return str(path)
+        own = _config_from_own_path()
+        if own:
+            return own
         if path:
             return str(path)
     except Exception:

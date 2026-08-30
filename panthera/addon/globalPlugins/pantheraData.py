@@ -623,9 +623,22 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
         super().__init__()
         self._menuItem = None
         self._conflicts = []
-        if globalVars.appArgs.secure:
-            log.info("Panthera: secure mode, not checking for the engines")
-            return
+        #: On a secure screen, the menu item yes, the automatic check no.
+        #:
+        #: This used to return outright here, written when the add-on could not
+        #: speak on a secure screen at all -- and it is the whole reason there
+        #: was no "Mac OS speech data" entry under Tools there.  NVDA was not
+        #: withholding it; we were.  outSPOKEN does the same thing for the same
+        #: reason and wants the same repair.
+        #:
+        #: The two halves want opposite answers.  The **timer** must not run:
+        #: it exists to offer extraction to somebody who has just installed the
+        #: add-on, and a dialog appearing by itself in front of a password box
+        #: is the last thing anyone wants.  The **menu item** must be there: a
+        #: secure screen is precisely where speech fails for a reason nobody
+        #: can see, and this report is the only thing that says which folder
+        #: was looked in and what was missing.
+        secure = bool(globalVars.appArgs.secure)
 
         # The placeholder synthesizer's route to the tool.  Left here rather
         # than imported, so a driver never has to know whether this plugin has
@@ -668,6 +681,9 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
                 owner = True
         if owner:
             self._addMenuItem()
+        if secure:
+            log.info("Panthera: secure mode, so the engine check is not armed")
+            return
         log.info("Panthera: engine check armed")
         threading.Timer(6.0, self._check).start()
 

@@ -29,6 +29,14 @@ ROOT = os.path.dirname(HERE)
 ADDON = os.path.join(ROOT, "addon", "synthDrivers")
 PROBE = os.path.join(HERE, "secure_screen_probe.py")
 
+#: What each generation's pointer file is called in the config folder.
+POINTERS = {
+    "tigerspeech": "tigerspeech-data.txt",
+    "leopardspeech": "leopardspeech-data.txt",
+    "snowleopardspeech": "snowleopardspeech-data.txt",
+    "lionspeech": "lionspeech-data.txt",
+}
+
 #: One per generation: the driver module, the variable naming its tree, and
 #: the folder that tree lives in under `macintalk`.
 GENERATIONS = [
@@ -86,11 +94,24 @@ def test_it_speaks_with_the_executable_removed(tmp_path, module, envName,
         pytest.skip("no %s tree; set %s" % (folder, envName))
 
     # The staging NVDA does, minus the one thing it does differently.
-    staged = str(tmp_path / "synthDrivers")
+    #
+    # **The layout matters as much as the missing executable.**  An add-on
+    # lives at `<config>/addons/<name>/synthDrivers/`, and that shape is how
+    # the driver finds its way back to the configuration directory when the
+    # bridge hands it a placeholder one.  Copying the folder somewhere flat
+    # would test a situation that cannot occur and miss the one that does.
+    config = tmp_path / "config"
+    staged = str(config / "addons" / "pantheraspeech" / "synthDrivers")
     shutil.copytree(ADDON, staged,
                     ignore=shutil.ignore_patterns("__pycache__", "*.exe"))
     assert not os.path.isfile(os.path.join(staged, "_panthera",
                                            "panthera_host.exe"))
+
+    # The engine reached the way a user's is: a pointer file in the
+    # configuration directory, not an environment variable.  `find_tree`
+    # consults the variables first, so leaving one set would rescue this test
+    # from exactly the failure it exists to catch.
+    (config / POINTERS[module]).write_text(tree, encoding="utf-8")
 
     # A configuration folder of its own.  The probe imports this suite's
     # conftest to get the NVDA fakes, and conftest writes a tree pointer for
@@ -98,7 +119,10 @@ def test_it_speaks_with_the_executable_removed(tmp_path, module, envName,
     # That is not hypothetical: it repointed the Lion tree at one with no
     # Compact voices in it and failed an unrelated test three directories away.
     env = dict(os.environ)
-    env["PANTHERA_TEST_CONFIG"] = str(tmp_path / "config")
+    env["PANTHERA_TEST_CONFIG"] = str(tmp_path / "unused-config")
+    for name in ("TIGER_TREE", "LEOPARD_TREE", "SNOWLEOPARD_TREE",
+                 "LION_TREE"):
+        env.pop(name, None)
 
     out = subprocess.run(python32 + [PROBE, staged, module, envName, tree],
                          capture_output=True, timeout=600, env=env)
