@@ -1016,6 +1016,111 @@ $migrate.AccessibleName = 'Move voices for all users'
 $migrate.AccessibleDescription = 'Move the speech data to a folder every Windows account on this machine can read'
 $migrate.Location = New-Object Drawing.Point(12,440); $migrate.AutoSize = $true
 $migrate.Add_Click({ Invoke-Migration })
+
+# **Check for updates, the way the NVDA add-on's button does it**: fetch the
+# installer itself and run it, rather than sending somebody to a web page to
+# find the right file among a release's assets.  The installer's own UI --
+# and its UAC prompt -- are still the things that ask.  Pressing the button
+# is the consent to look; nothing here runs on its own.
+$updates = New-Object Windows.Forms.Button
+$updates.Text = 'Check for SAPI &updates...'
+$updates.AccessibleName = 'Check for SAPI updates'
+$updates.Location = New-Object Drawing.Point(200,440); $updates.AutoSize = $true
+
+#: What is installed, from the uninstall key this program's own installer
+#: writes -- both registry views, since the key follows the installer's
+#: bitness and this tool should not have to care which it was.
+function Get-InstalledSapiVersion {
+    foreach ($path in @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{8E1B0A4C-5A0D-4F2E-9C1B-7D64A2153F90}_is1',
+        'HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\{8E1B0A4C-5A0D-4F2E-9C1B-7D64A2153F90}_is1')) {
+        try {
+            $v = (Get-ItemProperty -Path $path -Name DisplayVersion -ErrorAction Stop).DisplayVersion
+            if ($v) { return $v }
+        } catch {}
+    }
+    $null
+}
+
+function Compare-Versions([string]$a, [string]$b) {
+    # -> 1 when $a is newer, -1 when older, 0 when the same; digits only, so
+    # a tag prefix or suffix never makes a version look newer.
+    $pa = @(); $pb = @()
+    if ($a -match '(\d+(?:\.\d+)*)') { $pa = @($matches[1] -split '\.') }
+    if ($b -match '(\d+(?:\.\d+)*)') { $pb = @($matches[1] -split '\.') }
+    if ((-not $pa.Length) -or (-not $pb.Length)) { return 0 }
+    $width = [Math]::Max($pa.Length, $pb.Length)
+    for ($i = 0; $i -lt $width; $i++) {
+        $x = 0; $y = 0
+        if ($i -lt $pa.Length) { $x = [int]$pa[$i] }
+        if ($i -lt $pb.Length) { $y = [int]$pb[$i] }
+        if ($x -gt $y) { return 1 }
+        if ($x -lt $y) { return -1 }
+    }
+    0
+}
+
+$updates.Add_Click({
+    $status.Text = 'Checking for updates...'
+    $form.Refresh()
+    # GitHub is TLS 1.2 or nothing; older .NET defaults to less.  Additive,
+    # and forgiven where the enum does not exist -- the check then fails
+    # with words rather than silence.
+    try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072 } catch {}
+    $tag = $null; $asset = $null; $problem = $null
+    try {
+        $wc = New-Object Net.WebClient
+        $wc.Headers['User-Agent'] = 'panthera-sapi-settings'
+        $json = $wc.DownloadString('https://api.github.com/repos/tgeczy/panthera-speech/releases/latest')
+        $release = $json | ConvertFrom-Json
+        $tag = $release.tag_name
+        foreach ($a in @($release.assets)) {
+            if ($a.name -like '*-setup.exe') { $asset = $a.browser_download_url; break }
+        }
+    } catch { $problem = $_.Exception.Message }
+    $status.Text = ''
+    if ($problem -or -not $tag) {
+        if (-not $problem) { $problem = 'the newest release could not be read' }
+        [Windows.Forms.MessageBox]::Show($form,("Could not check for updates:`n`n{0}" -f $problem),'Panthera SAPI','OK','Warning') | Out-Null
+        return
+    }
+    $installed = Get-InstalledSapiVersion
+    if (-not $installed) {
+        # Running from a development staging rather than an install; the
+        # honest answer is the version we cannot compare against.
+        [Windows.Forms.MessageBox]::Show($form,("The newest release is {0}. No installed copy was found to compare against." -f $tag),'Panthera SAPI','OK','Information') | Out-Null
+        return
+    }
+    if ((Compare-Versions $tag $installed) -le 0) {
+        [Windows.Forms.MessageBox]::Show($form,("You have the newest version, {0}." -f $installed),'Panthera SAPI','OK','Information') | Out-Null
+        return
+    }
+    if (-not $asset) {
+        [Windows.Forms.MessageBox]::Show($form,("A newer version exists ({0}), but its installer could not be found on the release. Visit the releases page to download it." -f $tag),'Panthera SAPI','OK','Warning') | Out-Null
+        return
+    }
+    $answer = [Windows.Forms.MessageBox]::Show($form,("A newer version is available: {0}. You have {1}.`n`nDownload and run the installer now? It will ask before changing anything." -f $tag,$installed),'Panthera SAPI','YesNo','Question')
+    if ($answer -ne 'Yes') { return }
+    $file = Join-Path $env:TEMP (($asset -split '/')[-1])
+    $status.Text = 'Downloading the update...'
+    $form.Refresh()
+    try {
+        # The old file goes first, so a half-written download from a failed
+        # attempt is never the thing that runs.
+        if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file -Force }
+        $wc = New-Object Net.WebClient
+        $wc.Headers['User-Agent'] = 'panthera-sapi-settings'
+        $wc.DownloadFile($asset, $file)
+    } catch {
+        $status.Text = ''
+        [Windows.Forms.MessageBox]::Show($form,("The update could not be downloaded:`n`n{0}" -f $_.Exception.Message),'Panthera SAPI','OK','Warning') | Out-Null
+        return
+    }
+    $status.Text = ''
+    try { Start-Process -FilePath $file } catch {
+        [Windows.Forms.MessageBox]::Show($form,("The update was downloaded but could not be started. It is saved at:`n`n{0}" -f $file),'Panthera SAPI','OK','Warning') | Out-Null
+    }
+})
 $close = New-Object Windows.Forms.Button; $close.Text = '&Close'; $close.Location = New-Object Drawing.Point(505,405); $close.AutoSize=$true
 
 $selectAll.Add_Click({ for($i=0;$i -lt $list.Items.Count;$i++){$list.SetItemChecked($i,$true)} })
@@ -1136,7 +1241,7 @@ $unregister.Add_Click({
 })
 $close.Add_Click({$form.Close()})
 $form.AcceptButton=$register; $form.CancelButton=$close
-$form.Controls.AddRange(@($label,$list,$status,$progress,$acceptCommands,$pausesLabel,$pauses,$expandAbbrev,$rateBoost,$inflLabel,$inflection,$numLabel,$numberStyle,$selectAll,$deselectAll,$chooseRoot,$migrate,$diagnostics,$open,$extract,$register,$unregister,$close))
+$form.Controls.AddRange(@($label,$list,$status,$progress,$acceptCommands,$pausesLabel,$pauses,$expandAbbrev,$rateBoost,$inflLabel,$inflection,$numLabel,$numberStyle,$selectAll,$deselectAll,$chooseRoot,$migrate,$updates,$diagnostics,$open,$extract,$register,$unregister,$close))
 $form.Add_FormClosing({
     if ($script:extractProc -and -not $script:extractProc.HasExited) {
         try { $script:extractProc.Kill() } catch {}
