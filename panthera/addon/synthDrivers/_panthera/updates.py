@@ -111,14 +111,21 @@ def _secure():
 
 
 def latest_release(timeout=10, opener=None):
-    """-> (versionString, pageUrl), or (None, reason).
+    """-> (versionString, pageUrl, addonUrl) -- or (None, reason, None).
+
+    `addonUrl` is the `.nvda-addon` asset itself, when the release carries
+    exactly the file NVDA installs; the caller downloads it and hands it to
+    NVDA, whose own install dialog is still the thing that asks.  Sending
+    somebody to a web page to find the right link themselves is homework a
+    screen reader user did not ask for -- Tomi's words were less polite --
+    so the page URL is only the fallback for a release with no such asset.
 
     `opener` exists for the tests: anything callable that takes a URL and
     returns bytes.  The default reaches the network, which is why it is the
     only part of this module that is not tested.
     """
     if _secure():
-        return None, "not while NVDA is on a secure screen"
+        return None, "not while NVDA is on a secure screen", None
     try:
         import json
         if opener is None:
@@ -136,8 +143,42 @@ def latest_release(timeout=10, opener=None):
 
         payload = json.loads(opener(LATEST_API).decode("utf-8"))
     except Exception as e:
-        return None, str(e) or e.__class__.__name__
+        return None, (str(e) or e.__class__.__name__), None
     tag = payload.get("tag_name") or payload.get("name")
     if not parse_version(tag):
-        return None, "the newest release does not name a version"
-    return tag, (payload.get("html_url") or LATEST_PAGE)
+        return None, "the newest release does not name a version", None
+    addon = None
+    for asset in payload.get("assets") or []:
+        name = asset.get("name") or ""
+        if name.endswith(".nvda-addon") and asset.get("browser_download_url"):
+            addon = asset["browser_download_url"]
+            break
+    return tag, (payload.get("html_url") or LATEST_PAGE), addon
+
+
+def fetch(url, timeout=60):
+    """Download `url` into %TEMP% and -> the file's path.
+
+    The old file of the same name goes first, so a half-written download
+    from a failed attempt is never the thing NVDA is handed.  Exceptions
+    propagate: the caller is on a worker thread and turns them into words.
+    """
+    import tempfile
+    import urllib.request
+
+    name = url.rsplit("/", 1)[-1]
+    if not name.endswith(".nvda-addon"):
+        name = "panthera-update.nvda-addon"
+    path = os.path.join(tempfile.gettempdir(), name)
+    try:
+        if os.path.isfile(path):
+            os.remove(path)
+    except OSError:
+        pass
+    request = urllib.request.Request(url, headers={
+        "User-Agent": "panthera-speech-addon"})
+    with urllib.request.urlopen(request, timeout=timeout) as r:
+        data = r.read()
+    with open(path, "wb") as f:
+        f.write(data)
+    return path

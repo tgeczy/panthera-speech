@@ -67,17 +67,40 @@ def test_the_running_version_is_found():
     assert updates.parse_version(updates.installed_version()) is not None
 
 
-def test_the_tag_and_page_come_back_from_the_payload():
+def test_the_tag_page_and_addon_come_back_from_the_payload():
     def opener(url):
         assert url == updates.LATEST_API
         return json.dumps({
             "tag_name": "pantheraspeech/v9.9.9",
             "html_url": "https://example.invalid/releases/tag/x",
+            "assets": [
+                {"name": "panthera-sapi-9.9.9-setup.exe",
+                 "browser_download_url": "https://example.invalid/setup.exe"},
+                {"name": "pantheraspeech-9.9.9.nvda-addon",
+                 "browser_download_url": "https://example.invalid/a.nvda-addon"},
+            ],
         }).encode("utf-8")
 
-    tag, url = updates.latest_release(opener=opener)
+    tag, url, addon = updates.latest_release(opener=opener)
     assert tag == "pantheraspeech/v9.9.9"
     assert url == "https://example.invalid/releases/tag/x"
+    # The installer exe is not what NVDA installs; the picker must step over
+    # it to the .nvda-addon, whatever order GitHub lists them in.
+    assert addon == "https://example.invalid/a.nvda-addon"
+
+
+def test_a_release_without_an_addon_asset_offers_the_page_alone():
+    def opener(url):
+        return json.dumps({
+            "tag_name": "pantheraspeech/v9.9.9",
+            "html_url": "https://example.invalid/releases/tag/x",
+            "assets": [{"name": "notes.txt",
+                        "browser_download_url": "https://example.invalid/n"}],
+        }).encode("utf-8")
+
+    tag, url, addon = updates.latest_release(opener=opener)
+    assert tag and url
+    assert addon is None
 
 
 def test_a_release_with_no_version_in_it_is_refused():
@@ -85,18 +108,20 @@ def test_a_release_with_no_version_in_it_is_refused():
     def opener(url):
         return json.dumps({"tag_name": "nightly"}).encode("utf-8")
 
-    tag, why = updates.latest_release(opener=opener)
+    tag, why, addon = updates.latest_release(opener=opener)
     assert tag is None
     assert "version" in why
+    assert addon is None
 
 
 def test_a_network_failure_is_a_reason_and_not_a_traceback():
     def opener(url):
         raise OSError("the network is unreachable")
 
-    tag, why = updates.latest_release(opener=opener)
+    tag, why, addon = updates.latest_release(opener=opener)
     assert tag is None
     assert "unreachable" in why
+    assert addon is None
 
 
 def test_nothing_is_fetched_on_a_secure_screen(monkeypatch):
@@ -114,7 +139,8 @@ def test_nothing_is_fetched_on_a_secure_screen(monkeypatch):
         return b"{}"
 
     monkeypatch.setattr(updates, "_secure", lambda: True)
-    tag, why = updates.latest_release(opener=opener)
+    tag, why, addon = updates.latest_release(opener=opener)
     assert tag is None
     assert "secure screen" in why
+    assert addon is None
     assert not reached
