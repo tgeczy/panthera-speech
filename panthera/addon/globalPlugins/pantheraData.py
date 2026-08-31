@@ -690,9 +690,9 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
         if owner:
             self._addMenuItem()
         if secure:
-            log.info("Panthera: secure mode, so the engine check is not armed")
+            log.debug("Panthera: secure mode, so the engine check is not armed")
             return
-        log.info("Panthera: engine check armed")
+        log.debug("Panthera: engine check armed")
         threading.Timer(6.0, self._check).start()
 
     def _covered(self, gen):
@@ -712,7 +712,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
             self._menuItem = sysTrayIcon.toolsMenu.Append(
                 wx.ID_ANY, self.MENU_LABEL, self.MENU_HELP)
             sysTrayIcon.Bind(wx.EVT_MENU, self._onMenu, self._menuItem)
-            log.info("Panthera: added the Tools menu item")
+            log.debug("Panthera: added the Tools menu item")
         except Exception:
             # Never fatal: the add-on still speaks without a menu entry, and
             # global plugins load while the GUI is still assembling itself.
@@ -830,9 +830,23 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
         """One generation: log the verdict, and join the dialog if it is bare."""
         tree = gen["tree"]
         ok, lines = tree.explain()
-        log.info("Panthera: %s engine %s\n  %s"
-                 % (gen["key"], "ready" if ok else "NOT ready",
-                    "\n  ".join(lines)))
+        #: **One line at INFO when it works; the whole report only when it
+        #: does not.**  Four generations times a ten-line report of paths,
+        #: folder listings and library locations, on every start, at the level
+        #: a stable NVDA shows by default, reads exactly like debugging left
+        #: on -- Andre said as much within a day of 2.0.1.  A working engine
+        #: earns one line naming what it found; the report stays available at
+        #: debug, and a generation that is NOT ready keeps it at INFO, because
+        #: that is the one time somebody will need it.
+        if ok:
+            found = [ln.strip() for ln in lines if ln.strip().startswith("voices:")]
+            log.info("Panthera: %s engine ready%s"
+                     % (gen["key"], (" -- " + found[0]) if found else ""))
+            log.debug("Panthera: %s engine report\n  %s"
+                      % (gen["key"], "\n  ".join(lines)))
+        else:
+            log.info("Panthera: %s engine NOT ready\n  %s"
+                     % (gen["key"], "\n  ".join(lines)))
         folder = tree.config_dir()
         #: **The README goes in whether or not the engine is ready.**  It was
         #: written only on the way to the missing-engine dialog, below the
