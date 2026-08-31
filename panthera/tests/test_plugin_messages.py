@@ -290,3 +290,51 @@ def test_an_existing_readme_is_never_overwritten(plugin, tmp_path):
     plugin.GlobalPlugin._checkOne(None, _gen(folder, True))
     with open(written, encoding="utf-8") as f:
         assert f.read() == "my own notes"
+
+
+# ---------------------------------------------------------------------------
+# The log stays quiet when everything works.
+#
+# From 2026-08-21 to 2.0.2, every start wrote a ten-line engine report per
+# generation at INFO -- the level a stable NVDA shows by default -- and forty
+# lines of paths and folder listings read exactly like debugging left on.
+# Andre said so within a day of 2.0.1; it had been there for ten days and
+# four releases.  A working generation gets one line at INFO, no more; the
+# report is DEBUG's.  This is the guard that makes "never again" mechanical.
+# ---------------------------------------------------------------------------
+
+class _RecordingLog(object):
+    def __init__(self):
+        self.calls = []
+
+    def __getattr__(self, level):
+        def record(message, *a, **k):
+            self.calls.append((level, message))
+        return record
+
+
+def test_a_ready_generation_logs_one_short_line_at_info(plugin, monkeypatch,
+                                                        tmp_path):
+    folder = str(tmp_path / "lion")
+    os.makedirs(folder)
+    rec = _RecordingLog()
+    monkeypatch.setattr(plugin, "log", rec)
+    plugin.GlobalPlugin._checkOne(None, _gen(folder, True))
+    infos = [m for level, m in rec.calls if level == "info"]
+    assert len(infos) == 1, infos
+    assert "\n" not in infos[0], "a multi-line report at INFO is the bug"
+    assert "ready" in infos[0]
+    # The report is not lost, only demoted.
+    assert any(level == "debug" and "\n" in m for level, m in rec.calls)
+
+
+def test_a_missing_generation_still_reports_in_full_at_info(plugin,
+                                                             monkeypatch,
+                                                             tmp_path):
+    """The one time the report is useful, it is where people will see it."""
+    folder = str(tmp_path / "made")
+    rec = _RecordingLog()
+    monkeypatch.setattr(plugin, "log", rec)
+    plugin.GlobalPlugin._checkOne(_JustEnoughSelf(), _gen(folder, False))
+    infos = [m for level, m in rec.calls if level == "info"]
+    assert any("NOT ready" in m and "\n" in m for m in infos)
