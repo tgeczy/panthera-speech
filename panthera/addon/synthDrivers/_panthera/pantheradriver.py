@@ -125,6 +125,7 @@ from .constants import (  # noqa: F401
 #: where a function is defined is not where it is read from.
 from .text import (  # noqa: F401
     COMMAND_RE,
+    rebuild_commands,
     COMMAND_SPLIT_RE,
     INPUT_MODE_RE,
     INPUT_MODE_CAPTURE_RE,
@@ -758,6 +759,10 @@ class PantheraDriver(HostMixin, SpeechPipelineMixin, SynthDriver):
         items = []
         for item in speechSequence:
             if isinstance(item, str):
+                # Put back the brackets NVDA's punctuation level took away,
+                # when the user asked for commands -- see text.rebuild_commands.
+                if self._acceptCommands:
+                    item = self._rebuildCommands(item)
                 items.append(("text", item))
             elif isinstance(item, speech.commands.IndexCommand):
                 items.append(("index", item.index))
@@ -905,6 +910,25 @@ class PantheraDriver(HostMixin, SpeechPipelineMixin, SynthDriver):
 
     def _set_volume(self, value):
         self._volume = max(0, min(100, int(value)))
+
+    def _rebuildCommands(self, text):
+        """`[[...]]` again, from whatever NVDA's symbol level made of it.
+
+        The bracket names are NVDA's own for the current language, asked for
+        each time because the user can change language mid-session; the
+        lookup is a dictionary read.  Anything failing here falls back to the
+        English pair rather than to leaving the command spoken aloud.
+        """
+        left, right = "left bracket", "right bracket"
+        try:
+            import characterProcessing
+            import speech
+            lang = speech.getCurrentLanguage()
+            left = characterProcessing.processSpeechSymbol(lang, "[") or left
+            right = characterProcessing.processSpeechSymbol(lang, "]") or right
+        except Exception:
+            pass
+        return rebuild_commands(text, left, right)
 
     def _get_acceptCommands(self):
         return self._acceptCommands

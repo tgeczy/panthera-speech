@@ -326,3 +326,40 @@ def _sentenceEnds(text):
     1 sentence -> 0 breaths, 2 -> 1, 3 -> 2, 6 -> 5.
     """
     return len(SENTENCE_END_RE.findall(text))
+
+
+# ---------------------------------------------------------------------------
+# NVDA speaks the brackets before we ever see them.
+#
+# At punctuation level "most" or "all", NVDA's `speak()` runs every string
+# through symbol processing *before* the synthesizer gets it, and `[` and `]`
+# are level "most" -- so `[[pbas 60]]` arrives here as
+#
+#     " left bracket  left bracket pbas 60 right bracket  right bracket "
+#
+# and the engine, quite reasonably, reads it out.  That is what "it actually
+# says the command" means, and it is why the same tag works for one person
+# and not the next: the default level is "some", where brackets pass through
+# untouched.  (Adison found it; the driver-level tests could not, because
+# they hand text to the engine directly.)
+#
+# So when commands are on, the driver puts the brackets back.  The names come
+# from NVDA's own symbol table for the current language, so this is not an
+# English-only trick; the English pair is the fallback for outside NVDA.
+# ---------------------------------------------------------------------------
+
+def rebuild_commands(text, left="left bracket", right="right bracket"):
+    """Turn spoken bracket pairs back into `[[...]]`.
+
+    Two of the left name, the command, two of the right name -- with any
+    amount of whitespace between, since NVDA pads each replacement with a
+    space on both sides.  Case-insensitive, because a locale's symbol name
+    may be capitalised and the engine's parser does not care.
+    """
+    if not text or not left or not right:
+        return text
+    pattern = re.compile(
+        r"\s*%s\s+%s\s+(.*?)\s+%s\s+%s\s*"
+        % (re.escape(left), re.escape(left), re.escape(right), re.escape(right)),
+        re.IGNORECASE)
+    return pattern.sub(lambda m: " [[%s]] " % m.group(1).strip(), text)
