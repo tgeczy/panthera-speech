@@ -84,6 +84,10 @@ typedef struct {
     unsigned      sessions;
     unsigned      prime_left;           /* priming still to drop this stream */
     int           ac_live;              /* an AudioConverter stream is open  */
+    unsigned      st_fed;               /* access units fed this stream      */
+    unsigned      st_given;             /* samples handed the engine, ditto  */
+    unsigned char *lastpkt;             /* the stream's newest access unit   */
+    unsigned      lastpkt_len, lastpkt_cap;
     unsigned      resets;               /* AudioConverterReset calls */
     unsigned      lost;                 /* access units the decoder refused */
     int           complained;
@@ -107,6 +111,8 @@ static unsigned g_pkts_fed, g_frames_out;
  * length and obvious in a transcript. */
 static int g_ac_trace = -1;
 static unsigned g_ac_silent_streams;
+/* TIGER_SIM_WIN7: pretend to be Windows 7's AAC decoder; see aac_end. */
+static int g_sim_win7 = -1;
 
 
 /* ---- AAC, through the decoder Windows already ships -------------------- */
@@ -512,9 +518,24 @@ static void aac_flush_delay(const unsigned char *last, unsigned lastlen)
 
 static void aac_end(void)
 {
+    unsigned before = g_sc.pcm_n;
     IMFTransform_ProcessMessage(g_aac, MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0);
     IMFTransform_ProcessMessage(g_aac, MFT_MESSAGE_COMMAND_DRAIN, 0);
     aac_drain();
+    /* TIGER_SIM_WIN7: behave like Windows 7's decoder, which withholds the
+     * newest frame even through COMMAND_DRAIN.  The frame it keeps is the
+     * newest one it was fed, which is the last frame this drain produced, so
+     * take that off again.  This is how the Windows 7 arithmetic -- one AAC
+     * frame short per stream, measured there once and written into
+     * aac_flush_delay's comment -- is reproduced on a machine that has no
+     * Windows 7: the `--aac-check` for the close path. */
+    if (g_sim_win7 < 0) g_sim_win7 = getenv("TIGER_SIM_WIN7") ? 1 : 0;
+    if (g_sim_win7) {
+        unsigned got = g_sc.pcm_n - before;
+        unsigned hold = AAC_FRAME * (g_sc.channels ? g_sc.channels : 1);
+        if (hold > got) hold = got;
+        g_sc.pcm_n -= hold;
+    }
 }
 
 static void aac_run_unit(const snd_data *in)
@@ -1044,6 +1065,9 @@ static int __cdecl sh_AudioConverterFillComplexBuffer_inner(void *conv,
                     g_sc.ac_live = 1;
                     g_sc.sessions++;
                     g_sc.prime_left = AAC_PRIMING;
+                    g_sc.st_fed = 0;
+                    g_sc.st_given = 0;
+                    g_sc.lastpkt_len = 0;
                 }
                 for (i = 0; i < packets; i++) {
                     if (descs[i].mStartOffset < 0 || !descs[i].mDataByteSize)
@@ -1055,17 +1079,39 @@ static int __cdecl sh_AudioConverterFillComplexBuffer_inner(void *conv,
                     if (!aac_feed(base + (unsigned)descs[i].mStartOffset,
                                   descs[i].mDataByteSize))
                         g_sc.lost++;
-                    else
+                    else {
                         g_pkts_fed++;
+                        g_sc.st_fed++;
+                        /* Kept so the close below can feed it once more.  A
+                         * copy, because the engine's buffer is its own and
+                         * gone by then. */
+                        if (descs[i].mDataByteSize > g_sc.lastpkt_cap) {
+                            unsigned char *grown = (unsigned char *)
+                                realloc(g_sc.lastpkt, descs[i].mDataByteSize);
+                            if (grown) {
+                                g_sc.lastpkt = grown;
+                                g_sc.lastpkt_cap = descs[i].mDataByteSize;
+                            }
+                        }
+                        if (g_sc.lastpkt_cap >= descs[i].mDataByteSize) {
+                            memcpy(g_sc.lastpkt,
+                                   base + (unsigned)descs[i].mStartOffset,
+                                   descs[i].mDataByteSize);
+                            g_sc.lastpkt_len = descs[i].mDataByteSize;
+                        } else
+                            g_sc.lastpkt_len = 0;
+                    }
                 }
                 /* Collect what is ready without ending the stream.
                  *
                  * Not aac_end(), which would drain *and* close, and not
                  * aac_flush_delay(), which re-feeds the last packet to shake
-                 * Windows 7's held frame loose: on a stream that duplicate is
-                 * harmless because it lands past the end, but here it would be
-                 * payload, and it was -- one packet arrived three times over
-                 * and the engine got the third copy.
+                 * Windows 7's held frame loose: mid-stream that duplicate
+                 * would be payload, and it was -- one packet arrived three
+                 * times over and the engine got the third copy.  The re-feed
+                 * now lives where it is safe, in the no-more-data close
+                 * below, fenced by arithmetic that cuts everything past the
+                 * stream's true end.
                  *
                  * The priming, though, does have to come off, and for a long
                  * time it did not.
@@ -1139,9 +1185,48 @@ static int __cdecl sh_AudioConverterFillComplexBuffer_inner(void *conv,
             } else {
                 /* The engine has no more compressed data: flush the decoder's
                  * tail and close the stream, so the next utterance starts
-                 * clean rather than with this one's overlap. */
+                 * clean rather than with this one's overlap.
+                 *
+                 * And shake loose the frame Windows 7's decoder holds back.
+                 * That decoder withholds its newest frame even through
+                 * COMMAND_DRAIN, so on Windows 7 every stream used to end one
+                 * AAC frame -- 46 ms -- short, and Lion opens twenty-five
+                 * streams to an utterance: the tails of words went missing
+                 * (issue #13).  The unit path has re-fed the last packet for
+                 * this since Tiger; here that was long unsafe, because
+                 * mid-stream the duplicate would be *payload* -- it once
+                 * arrived three times over.  At the close it is safe, because
+                 * the arithmetic below knows exactly where the stream ends:
+                 * fed access units say how many samples exist, and everything
+                 * past that is the duplicate, cut before the engine sees it.
+                 * A decoder that withheld nothing therefore loses only the
+                 * duplicate, and Windows 7 gets its real tail back. */
                 if (g_sc.ac_live) {
+                    unsigned expect, given, avail;
+                    int k;
+                    for (k = 0; k < 2 && g_sc.lastpkt_len; k++)
+                        aac_feed(g_sc.lastpkt, g_sc.lastpkt_len);
                     aac_end();
+                    /* The drains above bypassed the collection point, so the
+                     * codec delay of a stream this short comes off here --
+                     * without this, a two-packet stream would hand the engine
+                     * priming as payload and the clamp would then cut real
+                     * samples off its tail. */
+                    if (g_sc.prime_left && g_sc.pcm_n) {
+                        unsigned drop = g_sc.prime_left < g_sc.pcm_n
+                                      ? g_sc.prime_left : g_sc.pcm_n;
+                        memmove(g_sc.pcm, g_sc.pcm + drop,
+                                (g_sc.pcm_n - drop) * sizeof(short));
+                        g_sc.pcm_n      -= drop;
+                        g_sc.prime_left -= drop;
+                    }
+                    expect = g_sc.st_fed * AAC_FRAME;
+                    expect = expect > AAC_PRIMING ? expect - AAC_PRIMING : 0;
+                    given = g_sc.st_given;
+                    avail = g_sc.pcm_n - g_sc.pcm_pos;
+                    if (given + avail > expect)
+                        g_sc.pcm_n = g_sc.pcm_pos +
+                                     (expect > given ? expect - given : 0);
                     g_sc.ac_live = 0;
                 }
                 break;
@@ -1165,9 +1250,20 @@ static int __cdecl sh_AudioConverterFillComplexBuffer_inner(void *conv,
                g_sc.pcm + g_sc.pcm_pos, take * 2);
         g_sc.pcm_pos += take;
         g_frames_out += take;
+        g_sc.st_given += take;
         give += take;
     }
     }
+    /* A short fill is the honest answer at a stream's end -- but Lion's
+     * engine spends its whole request regardless of the count it is handed,
+     * so the frames past `give` are read whether or not anything was written
+     * there.  Left alone they are whatever the last fill put in this buffer,
+     * which the engine then plays: under the Windows 7 simulation that came
+     * out audibly, as a render that differed run to run.  Silence is what a
+     * short fill means, so write it down. */
+    if (give < want)
+        memset((unsigned char *)outdata->mBuffers[0].mData + give * 2, 0,
+               (want - give) * 2);
     outdata->mBuffers[0].mDataByteSize = give * 2;
     *iopackets = give;
     return 0;
