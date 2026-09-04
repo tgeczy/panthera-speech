@@ -43,7 +43,7 @@ static int __cdecl sh_AUGraphNewNode(void *g, const unsigned *desc,
     if (desc) {
         fourcc(t, desc[0]); fourcc(s, desc[1]); fourcc(m, desc[2]);
         if (g_verbose) printf("  [au] NewNode type='%s' subtype='%s' manuf='%s'\n", t, s, m);
-    } else printf("  [au] NewNode (no description)\n");
+    } else fprintf(stderr, "  [au] NewNode (no description)\n");
     if (node) *node = ++g_nunits;               /* 1-based node ids */
     return 0;
 }
@@ -543,9 +543,13 @@ static void take_slice(unsigned char *slice)
             static unsigned mismatches;
             if (n != frames && mismatches < 8) {
                 mismatches++;
-                printf("  [au] slice %u: buffer holds %u frames, slice says "
-                       "%u -- taking %u\n", g_slices, n, frames,
-                       frames < n ? frames : n);
+                /* stderr, not stdout: this fires mid-render, and in serve
+                 * mode stdout was the protocol until the stream learned to
+                 * defend itself.  A complaint that corrupts the thing it is
+                 * complaining about is how a game crashed. */
+                fprintf(stderr, "  [au] slice %u: buffer holds %u frames, "
+                        "slice says %u -- taking %u\n", g_slices, n, frames,
+                        frames < n ? frames : n);
             }
             if (frames < n) n = frames;
             /* Roughness of the engine's own float output, before anything of

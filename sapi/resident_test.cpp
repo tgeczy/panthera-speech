@@ -78,14 +78,16 @@ public:
 class FakeSite : public ISpTTSEngineSite {
     LONG refs;
 public:
-    std::vector<BYTE> audio; ULONG marks; DWORD abortAfter;
-    FakeSite(DWORD abortAfterBytes):refs(1),marks(0),abortAfter(abortAfterBytes){}
+    std::vector<BYTE> audio; ULONG marks; DWORD abortAfter; bool abortNow;
+    FakeSite(DWORD abortAfterBytes)
+        :refs(1),marks(0),abortAfter(abortAfterBytes),abortNow(false){}
     STDMETHODIMP QueryInterface(REFIID,void**p){*p=this;AddRef();return S_OK;}
     STDMETHODIMP_(ULONG) AddRef(){return ++refs;}
     STDMETHODIMP_(ULONG) Release(){return --refs;}
     STDMETHODIMP AddEvents(const SPEVENT*,ULONG n){marks+=n;return S_OK;}
     STDMETHODIMP GetEventInterest(ULONGLONG *i){*i=SPEI_TTS_BOOKMARK;return S_OK;}
     STDMETHODIMP_(DWORD) GetActions(){
+        if(abortNow)return SPVES_ABORT;
         return (abortAfter&&audio.size()>=abortAfter)?SPVES_ABORT:0;
     }
     STDMETHODIMP Write(const void *p,ULONG n,ULONG *w){
@@ -129,8 +131,181 @@ static void set_string(const wchar_t *name, const wchar_t *v) {
     }
 }
 
+/* ---- a host that misbehaves on purpose --------------------------------- */
+/*
+ * A game crashed, rarely, after hours of route announcements, and the chain
+ * ran: a stray print in the host landed in the protocol stream, the client
+ * read ASCII as a frame count in the billions, resize threw bad_alloc, and
+ * the exception sailed through the COM boundary into the application.  The
+ * host's stream is defended at its end now; these checks prove this end
+ * survives a rogue host anyway -- and that a silent or dead one costs an
+ * utterance, not the session.  None of them need speech data, so they run
+ * on every machine that builds.
+ */
+
+static HANDLE g_rogue_write;              /* test's end of the response pipe */
+static HANDLE g_rogue_sink;               /* keeps the request pipe writable */
+
+static void rogue_install(const std::wstring &tree, HANDLE proc) {
+    host_drop();
+    SECURITY_ATTRIBUTES sa={sizeof(sa),0,TRUE};
+    HANDLE inR=0,inW=0,outR=0,outW=0;
+    /* The read end stays open, held by the test: close it and the engine's
+     * *request write* fails with a broken pipe before the scripted response
+     * is ever read -- which quietly turned both Speak checks into tests of
+     * nothing, and was caught by the byte count below. */
+    CreatePipe(&inR,&inW,&sa,1<<20);      /* requests land here, unread */
+    CreatePipe(&outR,&outW,&sa,1<<20);    /* the test scripts responses */
+    g_rogue_sink=inR;
+    g_proc=proc; g_in=inW; g_out=outR; g_rogue_write=outW;
+    /* Match what speakInner will compute, so host_ensure reuses this host
+     * rather than spawning a real one.  The values mirror the settings the
+     * caller pins: Phrasing "fewest", expansion on. */
+    g_hostTree=tree;
+    g_hostParams=L"Boundaries.SilThreshold=-8";
+    g_hostAbbrev=L"";
+    g_inflSent=false;
+}
+static void rogue_teardown() {
+    if(g_rogue_write){CloseHandle(g_rogue_write);g_rogue_write=0;}
+    if(g_rogue_sink){CloseHandle(g_rogue_sink);g_rogue_sink=0;}
+    host_drop();
+}
+static HANDLE self_handle() {             /* real, waitable, never signaled */
+    HANDLE h=0;
+    /* Query and synchronize only, no PROCESS_TERMINATE: host_drop calls
+     * TerminateProcess on whatever it holds, and with this handle that call
+     * fails instead of killing the test. */
+    DuplicateHandle(GetCurrentProcess(),GetCurrentProcess(),
+                    GetCurrentProcess(),&h,PROCESS_QUERY_LIMITED_INFORMATION|SYNCHRONIZE,
+                    FALSE,0);
+    return h;
+}
+static void rogue_checks() {
+    printf("rogue host:\n");
+    /* A place SetObjectToken's existence probe will accept. */
+    wchar_t tmp[MAX_PATH];
+    GetEnvironmentVariableW(L"TEMP",tmp,MAX_PATH);
+    std::wstring root=std::wstring(tmp)+L"\\panthera_rogue";
+    std::wstring mt=root+L"\\tiger\\Speech\\Synthesizers"
+                    L"\\MacinTalk.SpeechSynthesizer\\Contents\\MacOS";
+    {   /* Creating a directory that exists fails harmlessly, so every
+         * prefix is simply attempted. */
+        size_t from=0;
+        for(;;){
+            size_t cut=mt.find(L'\\',from);
+            CreateDirectoryW(mt.substr(0,cut).c_str(),0);
+            if(cut==std::wstring::npos)break;
+            from=cut+1;
+        }
+        HANDLE f=CreateFileW((mt+L"\\MacinTalk").c_str(),GENERIC_WRITE,0,0,
+                             CREATE_ALWAYS,0,0);
+        if(f!=INVALID_HANDLE_VALUE)CloseHandle(f);
+    }
+    /* Pin the settings the fake host's identity depends on, and a short
+     * deadline so the wedge check is not a thirty-second wait. */
+    DWORD wasInfl=setting_dword(L"Inflection",50);
+    DWORD wasExpand=setting_dword(L"ExpandAbbreviations",1);
+    DWORD wasCommands=setting_dword(L"AcceptCommands",0);
+    DWORD wasTimeout=setting_dword(L"ReadTimeoutMs",30000);
+    std::wstring wasPhrasing=setting_string(L"Phrasing",L"fewest");
+    set_dword(L"Inflection",50); set_string(L"Phrasing",L"fewest");
+    set_dword(L"ExpandAbbreviations",1); set_dword(L"AcceptCommands",0);
+    set_dword(L"ReadTimeoutMs",1000);
+    std::wstring tree=root+L"\\tiger";
+
+    FakeToken tok(root,L"tiger",L"Fred");
+    Engine *e=new Engine;
+    check(SUCCEEDED(e->SetObjectToken(&tok)),"the rogue token is accepted");
+
+    /* 1. exact_wait alone: the four ways out that are not data. */
+    {
+        HANDLE alive=self_handle();
+        rogue_install(tree,alive);
+        BYTE b[4]; DWORD t0;
+        DWORD word=0x12345678; DWORD w=0;
+        WriteFile(g_rogue_write,&word,4,&w,0);
+        check(exact_wait(g_out,b,4,0)==RW_OK,"exact_wait reads data");
+        FakeSite site(0); site.abortNow=true;
+        check(exact_wait(g_out,b,4,&site)==RW_ABORT,
+              "an abort ends the wait early");
+        t0=GetTickCount();
+        check(exact_wait(g_out,b,4,0)==RW_FAIL,
+              "a silent host runs out of deadline");
+        check(GetTickCount()-t0>=800&&GetTickCount()-t0<8000,
+              "and the deadline is the configured one");
+        CloseHandle(g_rogue_write);g_rogue_write=0;   /* now a broken pipe */
+        check(exact_wait(g_out,b,4,0)==RW_FAIL,"a broken pipe fails at once");
+        rogue_teardown();
+    }
+    {   /* a dead host with an empty pipe fails without waiting */
+        STARTUPINFOW si={sizeof si};PROCESS_INFORMATION pi={};
+        wchar_t cmd[]=L"cmd.exe /c exit 0";
+        if(CreateProcessW(0,cmd,0,0,FALSE,CREATE_NO_WINDOW,0,0,&si,&pi)){
+            WaitForSingleObject(pi.hProcess,10000);CloseHandle(pi.hThread);
+            rogue_install(tree,pi.hProcess);
+            BYTE b[4];DWORD t0=GetTickCount();
+            check(exact_wait(g_out,b,4,0)==RW_FAIL,
+                  "a dead host fails the read");
+            check(GetTickCount()-t0<800,"without spending the deadline");
+            rogue_teardown();
+        }
+    }
+
+    /* 2. Through Speak: the counts that used to be a crash.  The host end
+     * of the stream is the load-bearing fix -- a *small* misread is
+     * arithmetic this side cannot detect -- so what is being promised here
+     * is only: whatever lands on the pipe, the application survives. */
+    {
+        rogue_install(tree,self_handle());
+        DWORD w=0; unsigned hdr[2]={RSP_MAGIC,0};
+        WriteFile(g_rogue_write,hdr,8,&w,0);
+        unsigned garbage=0x615b2020;              /* "  [a" read as a count */
+        WriteFile(g_rogue_write,&garbage,4,&w,0);
+        std::vector<BYTE> out;
+        HRESULT hr=say(e,L"route update",&out,0);
+        check(FAILED(hr),"a billion-frame count is refused, not allocated");
+        check(g_proc==0,"and the desynced host is dropped");
+        rogue_teardown();
+    }
+    {   /* the shape from the field: a good chunk, then a stray print */
+        rogue_install(tree,self_handle());
+        check(host_alive(),"the fake host reads as alive");
+        {
+            HANDLE beforeOut=g_out;
+            host_ensure(tree,L"x",L"x",L"x",
+                        L"Boundaries.SilThreshold=-8",L"");
+            check(g_out==beforeOut,"host_ensure reuses the fake");
+        }
+        DWORD w=0; unsigned hdr[2]={RSP_MAGIC,0};
+        WriteFile(g_rogue_write,hdr,8,&w,0);
+        unsigned frames=229;
+        WriteFile(g_rogue_write,&frames,4,&w,0);
+        std::vector<short> pcm(229,64);
+        WriteFile(g_rogue_write,pcm.data(),458,&w,0);
+        static const char stray[]="  [shim] first call: CFRunLoopAddTimer\n";
+        WriteFile(g_rogue_write,stray,(DWORD)strlen(stray),&w,0);
+        std::vector<BYTE> out;
+        HRESULT hr=say(e,L"route update",&out,0);
+        check(FAILED(hr),"a stray print mid-stream fails the utterance");
+        if(out.size()!=458)printf("  --    delivered %u byte(s), hr=%08lx\n",
+                                  (unsigned)out.size(),(unsigned long)hr);
+        check(out.size()==458,"after delivering the audio that was real");
+        check(g_proc==0,"and that host is dropped too");
+        rogue_teardown();
+    }
+
+    e->Release();
+    set_dword(L"Inflection",wasInfl);
+    set_dword(L"ExpandAbbreviations",wasExpand);
+    set_dword(L"AcceptCommands",wasCommands);
+    set_dword(L"ReadTimeoutMs",wasTimeout);
+    set_string(L"Phrasing",wasPhrasing.c_str());
+}
+
 int wmain(int argc, wchar_t **argv) {
     InitializeCriticalSection(&g_hostLock); g_lockReady=true;
+    rogue_checks();
     wchar_t appdata[MAX_PATH];
     if(!GetEnvironmentVariableW(L"APPDATA",appdata,MAX_PATH))return 0;
     g_root  = argc>1?argv[1]:(std::wstring(appdata)+L"\\nvda\\macintalk");
@@ -141,7 +316,8 @@ int wmain(int argc, wchar_t **argv) {
     if(GetFileAttributesW(probe.c_str())==INVALID_FILE_ATTRIBUTES){
         wprintf(L"no speech data at %s\nresident host tests skipped\n",
                 probe.c_str());
-        return 0;
+        /* The rogue checks above needed no data and their verdict stands. */
+        return g_fail?1:0;
     }
     wprintf(L"resident host: %s / %s\n",g_gen.c_str(),g_voice.c_str());
     /* A known state, so the run does not depend on this machine's settings. */

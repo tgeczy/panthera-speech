@@ -324,6 +324,38 @@ static int serve(image *mt, void *chan, const char *voicesdir)
     _setmode(_fileno(g_in), _O_BINARY);
     _setmode(_fileno(g_out), _O_BINARY);
 
+    /* **The protocol keeps the pipe; stdout stops being it.**
+     *
+     * Anything in the host that printf's while serving writes into the
+     * response stream, and the client reads whatever lands there as frame
+     * counts.  Most prints are behind g_verbose, but a handful of anomaly
+     * complaints were not -- a shim's first-call notice, a slice-size
+     * mismatch -- and one firing mid-utterance corrupted the stream: the
+     * SAPI DLL misread "  [s" as 1.9 billion frames, asked for that many
+     * bytes, and took the whole client application down with it.  Found
+     * from a game that crashed, rarely, after hours of route calls.
+     *
+     * So the protocol moves to a private duplicate of the pipe, and stdout
+     * is rebound to stderr -- which serve mode already points somewhere
+     * harmless -- so a stray print can never again reach the stream.  A
+     * client whose stderr is nothing at all (a GUI application's often is)
+     * gets NUL instead.  The complaints themselves now say stderr, where
+     * complaints belong; this is armor for the next one. */
+    if (g_out == stdout) {
+        int fd = _dup(_fileno(stdout));
+        if (fd != -1) {
+            FILE *pipe = _fdopen(fd, "wb");
+            if (pipe) {
+                _setmode(fd, _O_BINARY);
+                g_out = pipe;
+                fflush(stdout);
+                if (_get_osfhandle(_fileno(stderr)) == -1 ||
+                    _dup2(_fileno(stderr), _fileno(stdout)) != 0)
+                    freopen("NUL", "wb", stdout);
+            }
+        }
+    }
+
     for (;;) {
         unsigned magic, namelen, textlen, nframes, i;
         int wpm, pitch, err = 0, voicechanged;

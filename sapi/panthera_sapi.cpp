@@ -193,6 +193,55 @@ static bool host_alive() {
     if(!GetExitCodeProcess(g_proc,&code)||code!=STILL_ACTIVE){host_drop();return false;}
     return true;
 }
+
+/* The host streams audio in chunks it caps at 1024 frames (stream_chunk in
+ * tiger_host_serve.c); ten seconds is two hundred times that.  A count above
+ * this is not a large chunk, it is a desynced pipe being read as one -- and
+ * before this check, `audio.resize(frames*2)` on such a count threw
+ * bad_alloc straight through the COM boundary and took the client
+ * application down.  The host no longer lets stray output reach the stream,
+ * so this is armor rather than the fix: a *small* misread is arithmetic
+ * this side cannot detect at all, which is why the host's own redirect is
+ * the load-bearing half. */
+static const unsigned MAX_CHUNK_FRAMES = 22050u * 10u;
+
+static DWORD read_timeout_ms() {
+    DWORD t = setting_dword(L"ReadTimeoutMs", 30000);
+    return t < 1000 ? 1000 : t;
+}
+
+/* Read exactly `n` response bytes without ever trusting the host to answer.
+ *
+ * The old reads blocked in ReadFile with no way out: a host that wedged
+ * mid-render -- alive, silent -- held the client's speech thread forever,
+ * with the critical section in hand, and the session's speech died with it.
+ * Waiting is now a loop that watches four things: data (read it, and any
+ * progress resets the clock), the client's abort flag (the one wait SAPI
+ * can end early), the host's own death (an empty pipe under a dead host has
+ * said everything it ever will), and a deadline with no progress, after
+ * which a wedged host is treated as the dead one it is behaving like. */
+enum ReadWait { RW_OK, RW_FAIL, RW_ABORT };
+static ReadWait exact_wait(HANDLE h, void *p, DWORD n, ISpTTSEngineSite *site) {
+    BYTE *b=(BYTE*)p; DWORD done=0;
+    const DWORD budget=read_timeout_ms();
+    DWORD idle=GetTickCount();
+    while(done<n){
+        DWORD avail=0;
+        if(!PeekNamedPipe(h,0,0,0,&avail,0))return RW_FAIL;
+        if(avail){
+            DWORD want=n-done; if(want>avail)want=avail;
+            DWORD got=0;
+            if(!ReadFile(h,b+done,want,&got,0)||!got)return RW_FAIL;
+            done+=got; idle=GetTickCount();
+            continue;
+        }
+        if(site&&(site->GetActions()&SPVES_ABORT))return RW_ABORT;
+        if(!g_proc||WaitForSingleObject(g_proc,0)==WAIT_OBJECT_0)return RW_FAIL;
+        if(GetTickCount()-idle>=budget)return RW_FAIL;
+        Sleep(3);
+    }
+    return RW_OK;
+}
 /* The host's diagnostics need somewhere that cannot fill up.
  *
  * The NVDA driver hands the child a pipe and spends a thread draining it; a
@@ -234,8 +283,12 @@ static bool host_ensure(const std::wstring &tree, const std::wstring &mt,
     SetEnvironmentVariableW(L"TIGER_NO_ABBREV",abbrev.empty()?NULL:abbrev.c_str());
     std::wstring cmd=L"\""+module_dir()+L"\\panthera_host.exe\" --serve \""+mt+
                      L"\" \""+sd+L"\" \""+vd+L"\"";
+    /* A megabyte of buffer each way, where the default is four kilobytes: a
+     * request larger than the buffer would block the writer until the host
+     * read it, and the read side never again has to stall the host over a
+     * chunk the client has not collected yet. */
     SECURITY_ATTRIBUTES sa={sizeof(sa),0,TRUE}; HANDLE inR,inW,outR,outW;
-    if(!CreatePipe(&inR,&inW,&sa,0)||!CreatePipe(&outR,&outW,&sa,0))return false;
+    if(!CreatePipe(&inR,&inW,&sa,1<<20)||!CreatePipe(&outR,&outW,&sa,1<<20))return false;
     SetHandleInformation(inW,HANDLE_FLAG_INHERIT,0);SetHandleInformation(outR,HANDLE_FLAG_INHERIT,0);
     HANDLE err=host_stderr();
     STARTUPINFOW si={sizeof(si)};si.dwFlags=STARTF_USESTDHANDLES|STARTF_USESHOWWINDOW;si.wShowWindow=SW_HIDE;
@@ -433,6 +486,15 @@ static void despell(std::wstring &t) {
     }
 }
 
+/* Scoped, so that an exception unwinding out of the speak path releases the
+ * lock instead of abandoning it -- an abandoned critical section turns the
+ * next utterance into a deadlock, which reads as speech dying for good. */
+struct CsLock {
+    CRITICAL_SECTION *cs;
+    CsLock(CRITICAL_SECTION *c):cs(c){EnterCriticalSection(cs);}
+    ~CsLock(){LeaveCriticalSection(cs);}
+};
+
 class Engine : public ISpTTSEngine, public ISpObjectWithToken {
     LONG refs; ISpObjectToken *token;
 public:
@@ -497,6 +559,23 @@ public:
         *wf=(WAVEFORMATEX*)CoTaskMemAlloc(sizeof f);if(!*wf)return E_OUTOFMEMORY;**wf=f;return S_OK;
     }
     STDMETHODIMP Speak(DWORD,REFGUID,const WAVEFORMATEX*,const SPVTEXTFRAG *frags,ISpTTSEngineSite *site){
+        /* A COM method must never let an exception out: SAPI has no handler
+         * for one and the client application dies of it.  That is not
+         * hypothetical -- a desynced pipe once produced a frame count in the
+         * billions, the resize threw bad_alloc, and a game crashed.  The
+         * count is now clamped and the stream defended, but the guarantee
+         * belongs at the boundary, whatever the cause. */
+        try {
+            return speakInner(frags,site);
+        } catch(...) {
+            if(g_lockReady){
+                CsLock lock(&g_hostLock);
+                host_drop();       /* mid-protocol unwind = desynced pipe */
+            }
+            return E_FAIL;
+        }
+    }
+    HRESULT speakInner(const SPVTEXTFRAG *frags,ISpTTSEngineSite *site){
         if(!token||!site)return E_UNEXPECTED;
         std::wstring text;
         /* JAWS sends each word as its own SPVA_Speak fragment with an
@@ -593,7 +672,7 @@ public:
             pitch=(int)(pa*12);
         }
         unsigned request=REQ_MAGIC_STREAM,flags=0;
-        EnterCriticalSection(&g_hostLock);
+        CsLock lock(&g_hostLock);
         bool ok=true;int status=0;bool aborted=false;
         unsigned long long total=0;
         if(!text.empty()){
@@ -637,17 +716,48 @@ public:
             unsigned nv=(unsigned)v.size(),nt=(unsigned)u.size();
             ok=ok&&exact(g_in,&request,4,true)&&exact(g_in,&rate,4,true)&&exact(g_in,&pitch,4,true)&&exact(g_in,&flags,4,true)&&exact(g_in,&nv,4,true)&&exact(g_in,&nt,4,true)&&exact(g_in,(void*)v.data(),nv,true)&&exact(g_in,(void*)u.data(),nt,true);
             unsigned magic=0;status=-1;
-            ok=ok&&exact(g_out,&magic,4,false)&&exact(g_out,&status,4,false)&&magic==RSP_MAGIC;
+            /* Response reads wait rather than block: exact_wait watches the
+             * abort flag, the host's death and a no-progress deadline, so a
+             * wedged host costs one failed utterance instead of the session.
+             * An abort while waiting takes the same door as the mid-stream
+             * one below -- kill the host, boot the replacement. */
+            if(ok){
+                ReadWait r=exact_wait(g_out,&magic,4,site);
+                if(r==RW_OK)r=exact_wait(g_out,&status,4,site);
+                if(r==RW_ABORT){
+                    aborted=true;host_drop();
+                    host_ensure(tree,mt,sd,vd,params,noAbbrev);
+                }else if(r!=RW_OK||magic!=RSP_MAGIC)ok=false;
+            }
             std::vector<BYTE> audio;
             /* Not `while(ok&&!status)`: the host answers every request with
              * a terminator, an errored one included, and a resident pipe
              * that skips those four bytes is desynced for good. */
-            while(ok){
+            while(ok&&!aborted){
                 unsigned frames=0;
-                if(!exact(g_out,&frames,4,false)){ok=false;break;}
+                ReadWait r=exact_wait(g_out,&frames,4,site);
+                if(r==RW_ABORT){
+                    aborted=true;host_drop();
+                    host_ensure(tree,mt,sd,vd,params,noAbbrev);
+                    break;
+                }
+                if(r!=RW_OK){ok=false;break;}
                 if(!frames)break;
+                if(frames>MAX_CHUNK_FRAMES){
+                    /* Two hundred times the host's own chunk cap is not a
+                     * chunk, it is a desynced stream read as one; see the
+                     * constant.  The pipe is unusable from here. */
+                    logline(L"desync: frame count %u refused",frames);
+                    ok=false;break;
+                }
                 unsigned bytes=frames*2; audio.resize(bytes);
-                if(!exact(g_out,audio.data(),bytes,false)){ok=false;break;}
+                r=exact_wait(g_out,audio.data(),bytes,site);
+                if(r==RW_ABORT){
+                    aborted=true;host_drop();
+                    host_ensure(tree,mt,sd,vd,params,noAbbrev);
+                    break;
+                }
+                if(r!=RW_OK){ok=false;break;}
                 if(site->GetActions()&SPVES_ABORT){
                     /* An interruption still kills the host, and that is a
                      * measurement rather than an oversight.
@@ -713,7 +823,6 @@ public:
                     L"aborted=%d voice=%.24s",
                     (unsigned)text.size(),(unsigned)marks.size(),(unsigned)total,
                     ok?1:0,status,aborted?1:0,voice.c_str());
-        LeaveCriticalSection(&g_hostLock);
         return aborted||(ok&&status==0)?S_OK:E_FAIL;
     }
 };

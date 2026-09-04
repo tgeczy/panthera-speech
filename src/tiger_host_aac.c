@@ -182,8 +182,8 @@ static int aac_set_output(void)
         GUID sub;
         HRESULT ehr = IMFTransform_GetOutputAvailableType(g_aac, 0, i, &mt);
         if (FAILED(ehr) || !mt) {
-            if (!i) printf("  [aac] no output types offered (%08lx)\n",
-                           (unsigned long)ehr);
+            if (!i) fprintf(stderr, "  [aac] no output types offered (%08lx)\n",
+                            (unsigned long)ehr);
             break;
         }
         memset(&sub, 0, sizeof sub);
@@ -1296,7 +1296,7 @@ static int __cdecl sh_SoundConverterOpen(const unsigned char *in,
     p[0] = in; p[1] = out;
     for (k = 0; k < 2; k++) {
         char f[5];
-        if (!p[k]) { printf("  [snd] %s format: NULL\n", k ? "out" : "in"); continue; }
+        if (!p[k]) { fprintf(stderr, "  [snd] %s format: NULL\n", k ? "out" : "in"); continue; }
         fourcc(f, *(const unsigned *)(p[k] + 4));
         if (g_verbose) printf("  [snd] %-3s format '%s'  %d ch  %d bits  rate %.1f\n",
                k ? "out" : "in", f, *(const short *)(p[k] + 8),
@@ -1342,5 +1342,5 @@ static int __cdecl sh_SoundConverterSetInfo(void *sc, unsigned sel,
 }
 
 static int __cdecl sh_AudioUnitReset(void *u, unsigned s, unsigned e)
-{ (void)u; (void)s; (void)e; printf("  [au] Reset\n"); return 0; }
+{ (void)u; (void)s; (void)e; fprintf(stderr, "  [au] Reset\n"); return 0; }
 static int __cdecl sh_SpeechBusy(void) { return 0; }
