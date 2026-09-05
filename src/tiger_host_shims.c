@@ -571,23 +571,14 @@ static int __cdecl sh_mp_create_task(mp_taskproc entry, void *param,
     t->notify = notify; t->t1 = t1; t->t2 = t2;
     if (g_verbose) printf("  [mp] CreateTask entry=%p param=%p notify=%p\n",
            (void *)entry, param, (void *)notify);
-#ifdef TIGER_UC
-    /* One uc_engine cannot be driven from two host threads, so the worker is
-     * NOT spawned here (that would nest/race uc_emu_start).  The task is
-     * recorded and answered noErr; whether the engine can get through UseVoice
-     * without the worker actually running is the measurement.  When the render
-     * genuinely needs it (Milestone D), a per-thread uc_engine goes here. */
-    (void)mp_thunk;
-    if (g_uc_mp_ntasks < (int)(sizeof g_uc_mp_tasks / sizeof g_uc_mp_tasks[0]))
-        g_uc_mp_tasks[g_uc_mp_ntasks++] = t;
-    if (out) *out = t;
-    return 0;
-#else
+    /* Under TIGER_UC the worker runs the guest on its own thread; mp_thunk's
+     * first call_aligned lazily creates that thread's own uc_engine over the
+     * shared memory (see uc_ensure_engine).  So the native path is right for
+     * both builds. */
     t->thread = CreateThread(NULL, stacksize, mp_thunk, t, 0, NULL);
     if (!t->thread) { free(t); return -108; }
     if (out) *out = t;
     return 0;
-#endif
 }
 
 static int __cdecl sh_mp_terminate_task(mptask *t, int status)

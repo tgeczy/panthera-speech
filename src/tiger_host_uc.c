@@ -7,8 +7,8 @@
  * the process is x86 and so is the engine.  On ARM it can't, so the same engine
  * runs inside Unicorn (QEMU TCG) while the shims stay native ARM -- the hybrid
  * architecture measured in docs/android-phase0.md.  This file is the whole
- * difference between the two: six seam points, guarded by TIGER_UC, redirect to
- * the routines here, and nothing else in the loader changes.
+ * difference between the two: a handful of seam points, guarded by TIGER_UC,
+ * redirect to the routines here, and nothing else in the loader changes.
  *
  *   native call into guest        -> uc_call / uc_run_init  (uc_emu_start)
  *   native shim address in a slot -> a guest trampoline that traps to the shim
@@ -22,6 +22,13 @@
  * _RuneLocale, the fake FILEs -- all the state the two sides share -- keep their
  * layouts and their addresses.  This is why the build is 32-bit and not a
  * preference (see build_uc.sh).
+ *
+ * MacinTalk renders on its own MP worker task, and its ScheduledSoundPlayer
+ * ticks a completion proc on the pacer thread, so the engine is driven from
+ * more than one host thread.  One uc_engine cannot be shared across threads, so
+ * each thread gets its own -- all mapping the *same* host memory, so the
+ * trampolines, the arena and every image are common.  A per-thread engine is
+ * cheap: it is a uc_engine, its own stack, and a replay of the shared mappings.
  */
 
 #include <stdint.h>
@@ -29,23 +36,29 @@
 
 /* ---- guest address map (host == guest, identity) ----------------------- *
  * One contiguous block is reserved with VirtualAlloc(NULL) in uc_host_init --
- * before any image loads -- and carved into these regions.  A fixed base can
- * collide with the process's own low memory, so the base is chosen at runtime
- * and the region addresses are offsets from it; identity still holds because
- * each is uc_mem_map_ptr'd at its own host address.  A later image slide
- * (MacinTalk is based at 0) gets a different VirtualAlloc(NULL) region, and
- * SpeechDictionary's prebound 0x96d0c000 is far above this block. */
-#define UC_SCRATCH_SZ 0x00001000u   /* one page; 8 bytes used for FP returns    */
-#define UC_TRAMP_SZ   0x00010000u   /* 64 KB = 4096 trampoline slots            */
+ * before any image loads -- and carved into the trampoline table and the arena.
+ * A fixed base can collide with the process's own low memory, so the base is
+ * chosen at runtime; identity still holds because it is uc_mem_map_ptr'd at its
+ * own host address.  Guest stacks are allocated per-engine out of the arena. */
+#define UC_TRAMP_SZ     0x00010000u   /* 64 KB = 4096 trampoline slots          */
 #define UC_TRAMP_STRIDE 16u
-#define UC_STACK_SZ   0x00200000u   /* 2 MB guest stack                         */
-#define UC_ARENA_SZ   0x04000000u   /* 64 MB.  Fred needs little; Alex's bank   */
-                                    /* comes in through sh_mmap, not here.      */
-#define UC_BLOCK_SZ   (UC_SCRATCH_SZ + UC_TRAMP_SZ + UC_STACK_SZ + UC_ARENA_SZ)
-#define UC_RETMAGIC   0x00ff0000u   /* pushed as the return address; emu stops  */
+#define UC_ARENA_SZ     0x04000000u   /* 64 MB: arena + every engine's stack.   */
+                                      /* Alex's bank comes via sh_mmap, not here */
+#define UC_STACK_SZ     0x00100000u   /* 1 MB per guest stack                   */
+#define UC_BLOCK_SZ     (UC_TRAMP_SZ + UC_ARENA_SZ)
+#define UC_RETMAGIC     0x00ff0000u   /* pushed as the return address; emu stops */
 
-/* Region bases, resolved once the block is placed (see uc_host_init). */
-static unsigned g_uc_scratch, g_uc_tramp, g_uc_stack_top, g_uc_arena, g_uc_arena_end;
+/* Shared region bases, resolved once the block is placed (see uc_host_init). */
+static unsigned g_uc_tramp, g_uc_arena, g_uc_arena_end;
+
+/* Per-thread: each host thread drives its OWN engine over the shared memory.
+ * The MP worker and the pacer's completion proc are separate threads, and
+ * sharing one engine across threads is a data race.  Only the uc_engine, its
+ * stack and its re-entrancy flag are per thread; everything the engine touches
+ * is common host memory. */
+static __declspec(thread) uc_engine *t_uc;
+static __declspec(thread) unsigned   t_stack_top;
+static __declspec(thread) int        t_running;   /* guards non-nested re-entry */
 
 /* Return class of a shim.  Arguments never need a class: i386 cdecl passes
  * everything on the stack as words, so the trampoline copies stack words
@@ -56,17 +69,19 @@ enum { RC_INT = 0, RC_VOID, RC_I64, RC_DBL, RC_FLT };
 typedef struct { void *fn; const char *name; unsigned char rc; unsigned char missing; }
         uc_slot;
 
-static uc_engine *g_uc;
-static uc_hook    g_uc_hook;
-/* MP worker tasks recorded but not spawned (see sh_mp_create_task): one
- * uc_engine can't be driven from two host threads.  void* because the mptask
- * type is defined later in the translation unit. */
-static void      *g_uc_mp_tasks[8];
-static int        g_uc_mp_ntasks;
-static uc_slot    g_slots[UC_TRAMP_SZ / UC_TRAMP_STRIDE];
-static int        g_nslots;
-static int        g_uc_running;      /* guards against nesting uc_emu_start */
-static unsigned   g_arena_next;      /* next free guest byte (== host byte) */
+/* Shared, and safe to share: the trampoline table is populated at load time on
+ * one thread and only read during a render; the arena is a bump allocator under
+ * a lock; the region list is replayed into each new engine under a lock. */
+static uc_slot   g_slots[UC_TRAMP_SZ / UC_TRAMP_STRIDE];
+static int       g_nslots;
+static unsigned  g_arena_next;
+static CRITICAL_SECTION g_arena_cs;
+static struct { unsigned addr, size; } g_regions[512];
+static int       g_nregions;
+static uc_engine *g_engines[16];
+static int       g_nengines;
+static CRITICAL_SECTION g_map_cs;         /* guards g_regions and g_engines */
+static int       g_uc_cs_ready;
 
 static void die(const char *fmt, ...);   /* tiger_host.c */
 
@@ -80,20 +95,25 @@ static void uc_must(uc_err e, const char *what)
  * free is a no-op: a render has no teardown path here any more than the native
  * host does (see host_open), and one utterance never approaches 64 MB.  Because
  * the region is identity-mapped, the returned guest address is also a valid
- * host pointer, so a shim can fill it directly. */
+ * host pointer, so a shim can fill it directly.  Locked, because the worker and
+ * pacer engines allocate concurrently. */
 static void *arena_alloc(size_t n)
 {
     unsigned hdr, p;
+    void *ret = NULL;
     n = (n + 7u) & ~(size_t)7u;
-    if ((size_t)g_arena_next + 8 + n > g_uc_arena_end) {
-        fprintf(stderr, "tiger_host_uc: arena exhausted (+%u)\n", (unsigned)n);
-        return NULL;
+    if (g_uc_cs_ready) EnterCriticalSection(&g_arena_cs);
+    if ((size_t)g_arena_next + 8 + n <= g_uc_arena_end) {
+        hdr = g_arena_next;
+        p   = hdr + 8;
+        *(unsigned *)(uintptr_t)hdr = (unsigned)n;
+        g_arena_next = p + (unsigned)n;
+        ret = (void *)(uintptr_t)p;
     }
-    hdr = g_arena_next;
-    p   = hdr + 8;
-    *(unsigned *)(uintptr_t)hdr = (unsigned)n;
-    g_arena_next = p + (unsigned)n;
-    return (void *)(uintptr_t)p;
+    if (g_uc_cs_ready) LeaveCriticalSection(&g_arena_cs);
+    if (!ret) fprintf(stderr, "tiger_host_uc: arena exhausted (+%u)\n",
+                      (unsigned)n);
+    return ret;
 }
 
 static void * __cdecl sh_uc_malloc(size_t n)          { return arena_alloc(n); }
@@ -178,22 +198,22 @@ static unsigned char uc_rc_for(const char *nm)
  * When the engine calls it, the slot's first byte (a nop) is where the code
  * hook fires and does the real work; the slot's own `ret` (cdecl caller-cleans,
  * so bare) then returns to the engine.  An FP slot additionally holds
- * `fld qword [SCRATCH]`, executed after the hook has written the result there,
- * because writing ST(0) through Unicorn's register API is the fiddly path the
- * hook avoids. */
+ * `fld qword [esp-8]`, executed after the hook has written the result just below
+ * the guest's own stack top -- per-engine, so two engines never race on it, and
+ * avoiding Unicorn's fiddly x87 register API.  The slot bytes live in the shared
+ * block, so writing them through any one engine reaches every engine. */
 static void uc_write_slot(int idx, int fp)
 {
     unsigned char b[UC_TRAMP_STRIDE];
     unsigned at = g_uc_tramp + (unsigned)idx * UC_TRAMP_STRIDE;
     memset(b, 0x90, sizeof b);           /* nop fill; only the first is caught */
     if (fp) {
-        b[1] = 0xdd; b[2] = 0x05;        /* fld qword ptr [disp32] */
-        *(unsigned *)(b + 3) = g_uc_scratch;
-        b[7] = 0xc3;                     /* ret */
+        b[1] = 0xdd; b[2] = 0x44; b[3] = 0x24; b[4] = 0xf8; /* fld qword [esp-8] */
+        b[5] = 0xc3;                     /* ret */
     } else {
         b[1] = 0xc3;                     /* ret */
     }
-    uc_must(uc_mem_write(g_uc, at, b, sizeof b), "write trampoline");
+    uc_must(uc_mem_write(t_uc, at, b, sizeof b), "write trampoline");
 }
 
 static void *uc_tramp_make(void *fn, const char *nm, unsigned char rc, int missing)
@@ -245,6 +265,10 @@ typedef float    (__cdecl *fn_f)(unsigned,unsigned,unsigned,unsigned,unsigned,
 static int g_uc_missing_hits;   /* how many missing-shim calls, this session */
 static const char *g_uc_last_shim;   /* name of the last shim dispatched (debug) */
 
+/* Fires on whichever engine `u` executed the trampoline -- always the current
+ * thread's engine, since an engine only ever runs on its own thread.  Reads the
+ * cdecl args off that engine's stack, calls the native shim, and returns the
+ * result the way its class requires. */
 static void uc_dispatch(uc_engine *u, uint64_t address, uint32_t size,
                         void *user)
 {
@@ -281,11 +305,11 @@ static void uc_dispatch(uc_engine *u, uint64_t address, uint32_t size,
         break; }
     case RC_DBL: {
         double d = ((fn_d)s->fn)(UC_ARGS);
-        uc_mem_write(u, g_uc_scratch, &d, 8);
+        uc_mem_write(u, esp - 8, &d, 8);       /* the slot's `fld qword [esp-8]` */
         break; }
     case RC_FLT: {
         double d = (double)((fn_f)s->fn)(UC_ARGS);
-        uc_mem_write(u, g_uc_scratch, &d, 8);
+        uc_mem_write(u, esp - 8, &d, 8);
         break; }
     }
 }
@@ -308,12 +332,9 @@ static bool uc_on_badmem(uc_engine *u, uc_mem_type type, uint64_t address,
     return false;
 }
 
-/* A report-only host exception handler.  A genuine host crash (a shim
- * dereferencing something bad, or TCG itself) never reaches uc_emu_start's
- * error return, so without this it is a silent SIGSEGV.  This prints the fault
- * and returns CONTINUE_SEARCH, so Unicorn's own handler still gets recoverable
- * guest faults -- it only observes, never intercepts. */
-static unsigned g_uc_block_ring[8];   /* last basic blocks entered (debug) */
+/* Debug: remember the last basic blocks, to place a host crash.  Off unless
+ * TIGER_UC_TRACE is set (it runs on every block). */
+static unsigned g_uc_block_ring[8];
 static int      g_uc_block_i;
 
 static void uc_trace_block(uc_engine *u, uint64_t address, uint32_t size,
@@ -323,6 +344,11 @@ static void uc_trace_block(uc_engine *u, uint64_t address, uint32_t size,
     g_uc_block_ring[g_uc_block_i++ & 7] = (unsigned)address;
 }
 
+/* A report-only host exception handler.  A genuine host crash (a shim
+ * dereferencing something bad, or TCG itself) never reaches uc_emu_start's
+ * error return, so without this it is a silent SIGSEGV.  This prints the fault
+ * and returns CONTINUE_SEARCH, so Unicorn's own handler still gets recoverable
+ * guest faults -- it only observes, never intercepts. */
 static LONG CALLBACK uc_veh(EXCEPTION_POINTERS *ep)
 {
     EXCEPTION_RECORD *er = ep->ExceptionRecord;
@@ -341,65 +367,125 @@ static LONG CALLBACK uc_veh(EXCEPTION_POINTERS *ep)
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
-/* ---- mapping and calling ---------------------------------------------- */
+/* ---- engines and mapping ---------------------------------------------- */
 
-/* Called from map_image after a segment is committed and copied: give the
- * guest the very same bytes at the very same address. */
-static void uc_map_segment(void *at, unsigned vmsize)
+/* Every guest region is recorded here and replayed into each new engine, so a
+ * worker created after the images loaded still sees them.  Identity mapping
+ * makes the replay trivial: the host pointer is the guest address.  Called on
+ * whatever thread does the mapping (sh_mmap may run on a worker), so it locks. */
+static void uc_add_region(unsigned addr, unsigned size)
 {
-    unsigned sz = (vmsize + 0xfffu) & ~0xfffu;
-    uc_must(uc_mem_map_ptr(g_uc, (uint64_t)(uintptr_t)at, sz, UC_PROT_ALL, at),
-            "map segment");
+    int i;
+    if (!size) return;
+    EnterCriticalSection(&g_map_cs);
+    if (g_nregions < (int)(sizeof g_regions / sizeof g_regions[0])) {
+        g_regions[g_nregions].addr = addr;
+        g_regions[g_nregions].size = size;
+        g_nregions++;
+    } else die("too many guest regions");
+    for (i = 0; i < g_nengines; i++)
+        uc_must(uc_mem_map_ptr(g_engines[i], addr, size, UC_PROT_ALL,
+                (void *)(uintptr_t)addr), "map region into engine");
+    LeaveCriticalSection(&g_map_cs);
 }
 
-/* Called from sh_mmap: the engine memory-maps its dictionary and voice files,
- * and the returned view has to be visible to the guest that reads it.  The base
- * is 64 KB-aligned (MapViewOfFile), so page alignment is free; the size is
- * rounded to a page.  This is the seam that carries Alex's demand-paged bank on
- * a device -- TCG faults the pages in transparently. */
+/* map_image: give the guest the very same bytes at the very same address. */
+static void uc_map_segment(void *at, unsigned vmsize)
+{
+    uc_add_region((unsigned)(uintptr_t)at, (vmsize + 0xfffu) & ~0xfffu);
+}
+
+/* sh_mmap: the engine memory-maps its dictionary and voice files, and the view
+ * (64 KB-aligned) has to be visible to the guest that reads it.  This is the
+ * seam that carries Alex's demand-paged bank on a device -- TCG faults the
+ * pages in transparently. */
 static void uc_map_extern(void *base, unsigned len)
 {
-    unsigned sz = (len + 0xfffu) & ~0xfffu;
-    if (!sz) return;
-    uc_must(uc_mem_map_ptr(g_uc, (uint64_t)(uintptr_t)base, sz, UC_PROT_ALL, base),
-            "map mapped file");
+    uc_add_region((unsigned)(uintptr_t)base, (len + 0xfffu) & ~0xfffu);
 }
 static void uc_unmap_extern(void *base, unsigned len)
 {
-    unsigned sz = (len + 0xfffu) & ~0xfffu;
-    if (sz) uc_mem_unmap(g_uc, (uint64_t)(uintptr_t)base, sz);
+    unsigned addr = (unsigned)(uintptr_t)base, sz = (len + 0xfffu) & ~0xfffu;
+    int i, j;
+    if (!sz) return;
+    EnterCriticalSection(&g_map_cs);
+    for (i = 0; i < g_nengines; i++)
+        uc_mem_unmap(g_engines[i], addr, sz);
+    for (j = 0; j < g_nregions; j++)
+        if (g_regions[j].addr == addr) { g_regions[j] = g_regions[--g_nregions]; break; }
+    LeaveCriticalSection(&g_map_cs);
+}
+
+/* A fresh engine for the current thread, mapping the same host memory as every
+ * other and carrying the same trampolines.  The region replay and the engine
+ * registration happen under one lock so a region added concurrently either is
+ * replayed here or maps into this engine there, never neither. */
+static uc_engine *uc_new_engine(void)
+{
+    uc_engine *u;
+    uc_hook hd, hm, hb;
+    int i;
+    uc_must(uc_open(UC_ARCH_X86, UC_MODE_32, &u), "uc_open");
+    EnterCriticalSection(&g_map_cs);
+    for (i = 0; i < g_nregions; i++)
+        uc_must(uc_mem_map_ptr(u, g_regions[i].addr, g_regions[i].size,
+                UC_PROT_ALL, (void *)(uintptr_t)g_regions[i].addr),
+                "replay region");
+    if (g_nengines < (int)(sizeof g_engines / sizeof g_engines[0]))
+        g_engines[g_nengines++] = u;
+    else die("too many engines");
+    LeaveCriticalSection(&g_map_cs);
+    uc_must(uc_hook_add(u, &hd, UC_HOOK_CODE, (void *)uc_dispatch, NULL,
+            g_uc_tramp, g_uc_tramp + UC_TRAMP_SZ - 1), "dispatch hook");
+    uc_hook_add(u, &hm, UC_HOOK_MEM_READ_UNMAPPED | UC_HOOK_MEM_WRITE_UNMAPPED |
+            UC_HOOK_MEM_FETCH_UNMAPPED, (void *)uc_on_badmem, NULL, 1, 0);
+    if (getenv("TIGER_UC_TRACE"))
+        uc_hook_add(u, &hb, UC_HOOK_BLOCK, (void *)uc_trace_block, NULL, 1, 0);
+    return u;
+}
+
+/* This thread's engine, created on first use with its own stack.  The pacer
+ * thread reaches this the first time the completion proc calls back into the
+ * guest -- no special case needed. */
+static void uc_ensure_engine(void)
+{
+    void *stk;
+    if (t_uc) return;
+    t_uc = uc_new_engine();
+    stk = arena_alloc(UC_STACK_SZ);
+    if (!stk) die("no arena for a guest stack");
+    t_stack_top = ((unsigned)(uintptr_t)stk + UC_STACK_SZ) & ~15u;
 }
 
 /* Call a guest function as if from a `call` that pushed UC_RETMAGIC, and stop
  * when it returns there.  Darwin i386 wants ESP 16-aligned at the call, i.e.
  * ESP % 16 == 12 at the callee's first instruction; the base is chosen for it.
- * Returns EAX (callers that want a wider result read the registers/scratch
- * themselves; none do yet). */
+ * Returns EAX (callers wanting a wider result read the registers themselves). */
 static int uc_call(void *fn, int argc, const unsigned *argv)
 {
-    unsigned base = (g_uc_stack_top - 256u) & ~15u;  /* 16-aligned arg base */
-    unsigned sp   = base - 4u;                       /* retaddr sits below  */
-    unsigned magic = UC_RETMAGIC, eax = 0;
+    unsigned base, sp, magic = UC_RETMAGIC, eax = 0;
     uc_err e;
-
-    if (g_uc_running)
-        die("uc_call re-entered on the shared engine -- a shim called back "
-            "into the guest (per-thread uc_engine not built yet)");
+    uc_ensure_engine();
+    if (t_running)
+        die("uc_call re-entered on one thread's engine without nesting -- a "
+            "shim called back into the guest via the wrong path");
+    base = (t_stack_top - 256u) & ~15u;
+    sp   = base - 4u;
     if (argc > 0)
-        uc_must(uc_mem_write(g_uc, base, argv, (size_t)argc * 4), "push args");
-    uc_must(uc_mem_write(g_uc, sp, &magic, 4), "push retaddr");
-    uc_must(uc_reg_write(g_uc, UC_X86_REG_ESP, &sp), "set esp");
+        uc_must(uc_mem_write(t_uc, base, argv, (size_t)argc * 4), "push args");
+    uc_must(uc_mem_write(t_uc, sp, &magic, 4), "push retaddr");
+    uc_must(uc_reg_write(t_uc, UC_X86_REG_ESP, &sp), "set esp");
 
-    g_uc_running = 1;
-    e = uc_emu_start(g_uc, (uint64_t)(uintptr_t)fn, UC_RETMAGIC, 0, 0);
-    g_uc_running = 0;
+    t_running = 1;
+    e = uc_emu_start(t_uc, (uint64_t)(uintptr_t)fn, UC_RETMAGIC, 0, 0);
+    t_running = 0;
     if (e != UC_ERR_OK) {
         unsigned eip = 0;
-        uc_reg_read(g_uc, UC_X86_REG_EIP, &eip);
+        uc_reg_read(t_uc, UC_X86_REG_EIP, &eip);
         die("guest fault: %s at eip=%08x (entry %08x)",
             uc_strerror(e), eip, (unsigned)(uintptr_t)fn);
     }
-    uc_reg_read(g_uc, UC_X86_REG_EAX, &eax);
+    uc_reg_read(t_uc, UC_X86_REG_EAX, &eax);
     return (int)eax;
 }
 
@@ -409,28 +495,28 @@ static void uc_run_init(void *fn) { uc_call(fn, 0, NULL); }
 /* A SYNCHRONOUS host->guest callback from inside a shim -- pthread_once's init
  * routine is the first -- which must run on the guest now, while the outer
  * uc_emu_start is suspended in the dispatch hook.  The full CPU context is saved
- * and restored around a re-entrant uc_emu_start; the callback runs on a fresh
- * frame just below the current guest stack (a normal nested call would), so the
- * suspended outer frames are untouched.  This is deliberate nesting on the one
- * engine -- distinct from the asynchronous MP worker, which gets its own engine
- * on its own thread; here there is only one logical thread. */
+ * and restored around a re-entrant uc_emu_start on this thread's engine; the
+ * callback runs on a fresh frame just below the current guest stack (a normal
+ * nested call would), so the suspended outer frames are untouched.  This is the
+ * synchronous, same-thread cousin of the MP worker, which instead gets its own
+ * engine on its own thread. */
 static void uc_call_nested(void *fn)
 {
     uc_context *ctx;
     unsigned esp, sp, magic = UC_RETMAGIC;
     uc_err e;
-    uc_must(uc_context_alloc(g_uc, &ctx), "context alloc");
-    uc_must(uc_context_save(g_uc, ctx), "context save");
-    uc_reg_read(g_uc, UC_X86_REG_ESP, &esp);
+    uc_must(uc_context_alloc(t_uc, &ctx), "context alloc");
+    uc_must(uc_context_save(t_uc, ctx), "context save");
+    uc_reg_read(t_uc, UC_X86_REG_ESP, &esp);
     sp = ((esp - 512u) & ~15u) - 4u;             /* 16-aligned at the call */
-    uc_must(uc_mem_write(g_uc, sp, &magic, 4), "nested retaddr");
-    uc_must(uc_reg_write(g_uc, UC_X86_REG_ESP, &sp), "nested esp");
-    e = uc_emu_start(g_uc, (uint64_t)(uintptr_t)fn, UC_RETMAGIC, 0, 0);
-    uc_must(uc_context_restore(g_uc, ctx), "context restore");
+    uc_must(uc_mem_write(t_uc, sp, &magic, 4), "nested retaddr");
+    uc_must(uc_reg_write(t_uc, UC_X86_REG_ESP, &sp), "nested esp");
+    e = uc_emu_start(t_uc, (uint64_t)(uintptr_t)fn, UC_RETMAGIC, 0, 0);
+    uc_must(uc_context_restore(t_uc, ctx), "context restore");
     uc_context_free(ctx);
     if (e != UC_ERR_OK) {
         unsigned eip = 0;
-        uc_reg_read(g_uc, UC_X86_REG_EIP, &eip);
+        uc_reg_read(t_uc, UC_X86_REG_EIP, &eip);
         die("nested guest fault: %s at eip=%08x (entry %08x)",
             uc_strerror(e), eip, (unsigned)(uintptr_t)fn);
     }
@@ -467,16 +553,18 @@ static int uc_call4(void *fn, void *a, void *b, void *c, void *d)
   return uc_call(fn,4,v); }
 
 /* ---- bring-up ---------------------------------------------------------- *
- * Reserve one contiguous block for every guest region, in this process, before
- * a single image loads, and map it into the guest at its own address.  uc_open
- * first so uc_mem_write into the trampoline page works from the moment bind()
- * runs. */
+ * Reserve one contiguous block for the trampolines and the arena, in this
+ * process, before a single image loads, and register it so the main engine (and
+ * every later one) maps it.  The main engine is created here; the worker and
+ * pacer engines create themselves lazily on their own threads. */
 static void uc_host_init(void)
 {
     unsigned char *blk;
     unsigned base;
 
-    uc_must(uc_open(UC_ARCH_X86, UC_MODE_32, &g_uc), "uc_open");
+    InitializeCriticalSection(&g_arena_cs);
+    InitializeCriticalSection(&g_map_cs);
+    g_uc_cs_ready = 1;
 
     blk = (unsigned char *)VirtualAlloc(NULL, UC_BLOCK_SZ,
                                         MEM_RESERVE | MEM_COMMIT,
@@ -484,32 +572,15 @@ static void uc_host_init(void)
     if (!blk) die("cannot reserve %u bytes for the guest regions", UC_BLOCK_SZ);
     base = (unsigned)(uintptr_t)blk;
 
-    g_uc_scratch   = base;
-    g_uc_tramp     = g_uc_scratch + UC_SCRATCH_SZ;
-    g_uc_stack_top = g_uc_tramp + UC_TRAMP_SZ + UC_STACK_SZ;   /* stack grows down */
-    g_uc_arena     = g_uc_stack_top;
+    g_uc_tramp     = base;
+    g_uc_arena     = base + UC_TRAMP_SZ;
     g_uc_arena_end = g_uc_arena + UC_ARENA_SZ;
     g_arena_next   = g_uc_arena;
 
-    uc_must(uc_mem_map_ptr(g_uc, base, UC_BLOCK_SZ, UC_PROT_ALL, blk),
-            "map guest regions");
-    uc_must(uc_hook_add(g_uc, &g_uc_hook, UC_HOOK_CODE, (void *)uc_dispatch,
-                        NULL, g_uc_tramp, g_uc_tramp + UC_TRAMP_SZ - 1),
-            "install dispatch hook");
-    {   /* diagnostics: name any unmapped access before the emu error surfaces */
-        static uc_hook h;
-        uc_hook_add(g_uc, &h, UC_HOOK_MEM_READ_UNMAPPED |
-                    UC_HOOK_MEM_WRITE_UNMAPPED | UC_HOOK_MEM_FETCH_UNMAPPED,
-                    (void *)uc_on_badmem, NULL, 1, 0);
-    }
-    AddVectoredExceptionHandler(1, uc_veh);   /* report-only; see uc_veh */
-    if (getenv("TIGER_UC_TRACE")) {
-        /* Per-block tracing to place a host crash; off by default (it runs a
-         * hook on every basic block).  The last blocks print from uc_veh. */
-        static uc_hook hb;
-        uc_hook_add(g_uc, &hb, UC_HOOK_BLOCK, (void *)uc_trace_block,
-                    NULL, 1, 0);
-    }
+    AddVectoredExceptionHandler(1, uc_veh);   /* process-wide; report-only */
+    uc_add_region(base, UC_BLOCK_SZ);         /* records; no engine yet */
+    uc_ensure_engine();                       /* the main thread's engine */
+
     if (g_verbose)
         fprintf(stderr, "tiger_host_uc: Unicorn x86-32 up; block at %08x, "
                         "arena %u MB at %08x, trampolines at %08x\n",
