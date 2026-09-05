@@ -421,15 +421,24 @@ static int g_nthunks;
 
 static void *make_thunk(const char *name)
 {
-    unsigned char *t = g_thunks + (size_t)g_nthunks * THUNK_SZ;
     int idx = g_nmissing;
     if (g_nmissing >= MAX_MISSING) die("too many missing symbols");
     g_missing[g_nmissing++] = name;
-    t[0] = 0x68; *(int *)(t + 1) = idx;                       /* push idx   */
-    t[5] = 0xe8;
-    *(int *)(t + 6) = (int)((unsigned char *)shim_missing - (t + 10));
-    t[10] = 0x83; t[11] = 0xc4; t[12] = 0x04;                 /* add esp,4  */
-    t[13] = 0xc3;                                             /* ret        */
-    g_nthunks++;
-    return t;
+#ifdef TIGER_UC
+    /* No host code runs in guest space: hand back a guest trampoline that
+     * records the miss and answers 0, the way the native thunk does. */
+    (void)idx;
+    return uc_missing_tramp(name);
+#else
+    {
+        unsigned char *t = g_thunks + (size_t)g_nthunks * THUNK_SZ;
+        t[0] = 0x68; *(int *)(t + 1) = idx;                   /* push idx   */
+        t[5] = 0xe8;
+        *(int *)(t + 6) = (int)((unsigned char *)shim_missing - (t + 10));
+        t[10] = 0x83; t[11] = 0xc4; t[12] = 0x04;             /* add esp,4  */
+        t[13] = 0xc3;                                         /* ret        */
+        g_nthunks++;
+        return t;
+    }
+#endif
 }

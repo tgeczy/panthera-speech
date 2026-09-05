@@ -429,6 +429,17 @@ typedef struct {
  * Tiger's engine never showed this.  That is not evidence that it was safe --
  * only that one compiler declined to vectorise one function.
  */
+#ifdef TIGER_UC
+/* Under emulation there is no host stack to align: every entry into the guest
+ * goes through uc_call, which sets up the guest stack and runs to RET_MAGIC.
+ * See tiger_host_uc.c. */
+static int call_aligned1(void *fn, void *a) { return uc_call1(fn, a); }
+static int call_aligned2(void *fn, void *a, void *b) { return uc_call2(fn, a, b); }
+static int call_aligned3(void *fn, void *a, void *b, void *c)
+{ return uc_call3(fn, a, b, c); }
+static int call_aligned4(void *fn, void *a, void *b, void *c, void *d)
+{ return uc_call4(fn, a, b, c, d); }
+#else
 static __declspec(naked) int call_aligned1(void *fn, void *a)
 {
     __asm {
@@ -527,6 +538,7 @@ static __declspec(naked) int call_aligned4(void *fn, void *a, void *b, void *c,
         ret
     }
 }
+#endif  /* TIGER_UC */
 
 /* CreateThread wants __stdcall; the engine's entry point is Mach-O i386 and so
  * is __cdecl.  This trampoline is the whole reason it exists -- and the place

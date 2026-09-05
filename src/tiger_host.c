@@ -199,6 +199,12 @@ static unsigned bswap(unsigned v)
  * state and splitting them into real objects would mean publishing all of
  * it.  This way the files are readable and the compiler still sees exactly
  * what it saw when every one of these lines was debugged. */
+#ifdef TIGER_UC
+/* The Unicorn seam, first so its uc_* helpers are visible to every seam point
+ * below -- call_aligned in the shims, the arena rows in the shim table, the
+ * trampolines and uc_run_init in the Mach-O loader. */
+#include "tiger_host_uc.c"
+#endif
 #include "tiger_host_shims.c"
 #include "tiger_host_cf.c"
 #include "tiger_host_files.c"
@@ -272,6 +278,12 @@ static int host_open(const char *mtpath, const char *sdpath)
     /* Unbuffered stderr: this program's other job is to crash informatively,
      * and buffered output is discarded when it does. */
     setvbuf(stderr, NULL, _IONBF, 0);
+#ifdef TIGER_UC
+    /* Bring the emulator up before a single image loads: it reserves the guest
+     * regions at their own addresses, which a later image slide must never be
+     * handed. */
+    uc_host_init();
+#endif
     if (getenv("TIGER_CF_LOG")) g_cflog = 1;
     { const char *e = getenv("TIGER_SPEED");
       if (e && atof(e) > 0.0) g_speed = atof(e);

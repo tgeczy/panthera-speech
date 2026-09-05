@@ -397,6 +397,10 @@ static void * __cdecl sh_mmap(void *addr, unsigned len, int prot, int flags,
     if (g_verbose)
         printf("  [mmap] %u bytes of fd %d at offset %llu mapped -> %p\n",
                len, fd, (unsigned long long)off, (void *)(view + slack));
+#ifdef TIGER_UC
+    /* The whole 64 KB-aligned view, so the guest can read from view+slack on. */
+    uc_map_extern(view, len + slack);
+#endif
     return view + slack;
 
 fallback:
@@ -426,6 +430,11 @@ static int __cdecl sh_munmap(void *p, unsigned len)
     (void)len;
     for (i = 0; i < g_nmaps; i++) {
         if (g_maps[i].ptr == p) {
+#ifdef TIGER_UC
+            uc_unmap_extern(g_maps[i].base, g_maps[i].len +
+                            (unsigned)((unsigned char *)g_maps[i].ptr -
+                                       (unsigned char *)g_maps[i].base));
+#endif
             UnmapViewOfFile(g_maps[i].base);
             g_maps[i] = g_maps[--g_nmaps];
             return 0;

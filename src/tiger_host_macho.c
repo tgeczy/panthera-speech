@@ -117,6 +117,11 @@ static void map_image(image *im)
                         im->path, sc->segname, at);
                 if (sc->filesize)
                     memcpy(at, im->slice + sc->fileoff, sc->filesize);
+#ifdef TIGER_UC
+                /* Give the guest the very same bytes at the very same
+                 * address; the engine runs out of this memory under Unicorn. */
+                uc_map_segment(at, sc->vmsize);
+#endif
             }
             /* Unfiltered, and in load-command order: this is the list the
              * dyld info streams index by. */
@@ -394,6 +399,9 @@ static void bind(image *im, image *dep)
                 if (isym >= im->nsyms) continue;
                 nm = im->strs + im->syms[isym].n_strx;
                 fn = lookup_shim(nm);
+#ifdef TIGER_UC
+                if (fn) fn = uc_bind_target(nm, fn);  /* host shim -> trampoline */
+#endif
                 if (!fn) fn = lookup_in(im, nm);
                 if (!fn) { fn = lookup_loaded(im, nm); if (fn) fromdep++; }
                 if (fn) { bound++; stubs++; }
@@ -425,6 +433,9 @@ static void bind(image *im, image *dep)
             if (isym >= im->nsyms) continue;
             nm = im->strs + im->syms[isym].n_strx;
             fn = lookup_shim(nm);
+#ifdef TIGER_UC
+            if (fn) fn = uc_bind_target(nm, fn);  /* host shim -> trampoline/arena */
+#endif
             /* An image resolves against ITSELF first.  PIC code calls its own
              * functions through __picsymbolstub2 so they can be interposed, so
              * a large share of these slots are intra-image -- and binding
@@ -461,7 +472,11 @@ static void run_initializers(image *im)
             void **fns = (void **)(s->addr + im->slide);
             for (j = 0; j < n; j++) {
                 if (g_verbose) printf("  initializer %u -> %p\n", j, fns[j]);
+#ifdef TIGER_UC
+                uc_run_init(fns[j]);
+#else
                 ((void (__cdecl *)(void))fns[j])();
+#endif
             }
         }
     }

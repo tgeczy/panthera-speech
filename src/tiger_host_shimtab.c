@@ -5,8 +5,17 @@
 
 typedef struct { const char *name; void *fn; } shim;
 static const shim g_shims[] = {
+#ifdef TIGER_UC
+    /* Under emulation these must return memory the guest can dereference, so
+     * they route to the guest arena (tiger_host_uc.c) rather than the host
+     * heap.  Everything built on them -- every cfobj and its string -- then
+     * lands in guest space for free. */
+    { "_malloc",    (void *)sh_uc_malloc  }, { "_free",    (void *)sh_uc_free    },
+    { "_calloc",    (void *)sh_uc_calloc  }, { "_realloc", (void *)sh_uc_realloc },
+#else
     { "_malloc",    (void *)malloc  }, { "_free",    (void *)free    },
     { "_calloc",    (void *)calloc  }, { "_realloc", (void *)realloc },
+#endif
     { "_memset",    (void *)memset  }, { "_memmove", (void *)sh_memmove },
     { "_memchr",    (void *)memchr  }, { "_strcmp",  (void *)strcmp  },
     { "_strchr",    (void *)strchr  }, { "_atoi",    (void *)atoi    },
