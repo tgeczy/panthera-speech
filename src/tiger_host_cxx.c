@@ -21,13 +21,26 @@
  * load Leopard's own libstdc++ as a third image, the way SpeechDictionary is
  * already loaded.
  */
+/* operator new returns memory the guest CONSTRUCTS OBJECTS IN and dereferences
+ * (unlike a cfobj, which the guest holds opaquely), so under emulation it must
+ * come from the guest arena, not the host heap.  Tiger never reached here -- its
+ * operator new is internal to MacinTalk and already routes through the guest's
+ * own _malloc -- but Leopard imports libstdc++'s __Znwm, which lands on this. */
 static void * __cdecl sh_cxx_new(unsigned n)
 {
+#ifdef TIGER_UC
+    void *p = sh_uc_malloc(n ? n : 1);
+#else
     void *p = malloc(n ? n : 1);
+#endif
     if (!p) die("out of memory: the engine asked for %u bytes", n);
     return p;
 }
+#ifdef TIGER_UC
+static void __cdecl sh_cxx_delete(void *p) { sh_uc_free(p); }
+#else
 static void __cdecl sh_cxx_delete(void *p) { free(p); }
+#endif
 
 /* std::_List_node_base is two pointers, {next, prev}, and its members are the
  * plain linked-list splices.  Written out rather than thunked because a list
