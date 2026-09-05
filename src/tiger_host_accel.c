@@ -143,6 +143,10 @@ static void __cdecl sh_vDSP_vmsb(const float *A, vdsp_stride IA,
  * Eleven arguments; the call at MacinTalk + 0x56f65 fills [esp] through
  * [esp+0x28]. This is the cross-fade: the tail of one window multiplied by a
  * falling ramp, plus the head of the next by a rising one. */
+/* Defined below; used here.  MSVC's C accepts the forward reference implicitly,
+ * clang does not. */
+static int wsola_variant(void);
+
 static void __cdecl sh_vDSP_vmma(const float *A, vdsp_stride IA,
                                  const float *B, vdsp_stride IB,
                                  const float *C, vdsp_stride IC,

@@ -72,6 +72,15 @@ static const char *engine_symbol(void *addr)
     return buf;
 }
 
+/* Everything from here to the thunks is the crash reporter and the survivable
+ * divide-by-zero, and it is Windows-x86 to the bone: SEH (__try/__except),
+ * the i386 CONTEXT, IsBadReadPtr, GetModuleHandleEx.  Under emulation the
+ * engine's faults surface through uc_emu_start, not the host's exception
+ * machinery, and clang for Android has no SEH -- so this whole block is
+ * Windows-only.  A host SIGSEGV handler here would fight Unicorn's own, the
+ * very VEH-priority trap already learned once; the right POSIX answer is to
+ * install nothing. */
+#ifdef _WIN32
 /* ---- surviving the engine's own divide by zero ------------------------- */
 /*
  * MacinTalk 3 divides by (index2 - index1) when interpolating segment
@@ -404,6 +413,7 @@ static LONG CALLBACK on_fault(EXCEPTION_POINTERS *ep)
     ExitProcess(3);
     return EXCEPTION_CONTINUE_SEARCH;
 }
+#endif /* _WIN32 */
 
 /* ---- thunks ------------------------------------------------------------ */
 /*

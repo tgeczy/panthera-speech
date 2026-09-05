@@ -348,7 +348,12 @@ static void uc_trace_block(uc_engine *u, uint64_t address, uint32_t size,
  * dereferencing something bad, or TCG itself) never reaches uc_emu_start's
  * error return, so without this it is a silent SIGSEGV.  This prints the fault
  * and returns CONTINUE_SEARCH, so Unicorn's own handler still gets recoverable
- * guest faults -- it only observes, never intercepts. */
+ * guest faults -- it only observes, never intercepts.
+ *
+ * Windows-only: it is a vectored handler reading an i386 CONTEXT.  On Android a
+ * host sigaction would fight Unicorn's own signal handler, so none is installed
+ * and a host crash is left to the default disposition. */
+#ifdef _WIN32
 static LONG CALLBACK uc_veh(EXCEPTION_POINTERS *ep)
 {
     EXCEPTION_RECORD *er = ep->ExceptionRecord;
@@ -366,6 +371,7 @@ static LONG CALLBACK uc_veh(EXCEPTION_POINTERS *ep)
     }
     return EXCEPTION_CONTINUE_SEARCH;
 }
+#endif /* _WIN32 */
 
 /* ---- engines and mapping ---------------------------------------------- */
 
@@ -577,7 +583,9 @@ static void uc_host_init(void)
     g_uc_arena_end = g_uc_arena + UC_ARENA_SZ;
     g_arena_next   = g_uc_arena;
 
+#ifdef _WIN32
     AddVectoredExceptionHandler(1, uc_veh);   /* process-wide; report-only */
+#endif
     uc_add_region(base, UC_BLOCK_SZ);         /* records; no engine yet */
     uc_ensure_engine();                       /* the main thread's engine */
 

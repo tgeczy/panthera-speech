@@ -24,16 +24,9 @@
  * asks dyld for anything.
  */
 #define WIN32_LEAN_AND_MEAN
+#ifdef _WIN32
 #include <windows.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <stdarg.h>
-#include <string.h>
-#include <math.h>
 #include <io.h>
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <ctype.h>
 #include <mmsystem.h>
 
 /* Media Foundation, for the one thing this host cannot do itself: Vicki's
@@ -47,6 +40,22 @@
 #include <mftransform.h>
 #include <mferror.h>
 #include <wmcodecdsp.h>
+#else
+/* Not Windows: the POSIX platform seam maps the Win32 names this host is
+ * written in onto pthreads, mmap, dlopen and clock_gettime, so the same source
+ * cross-compiles for the Android NDK.  It must come before the printf redirect
+ * below.  Media Foundation is Windows-only; the AAC path is the stub
+ * (TIGER_NO_AAC) here, or the system decoder later. */
+#include "tiger_plat.h"
+#endif
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdarg.h>
+#include <string.h>
+#include <math.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <ctype.h>
 
 /* Every diagnostic in this file goes to stderr, without exception: in serve
  * mode stdout carries raw PCM to the driver, and one stray character would
@@ -199,6 +208,12 @@ static unsigned bswap(unsigned v)
  * state and splitting them into real objects would mean publishing all of
  * it.  This way the files are readable and the compiler still sees exactly
  * what it saw when every one of these lines was debugged. */
+#ifndef _WIN32
+/* The platform floor: Win32 names on pthreads/mmap.  First of all, so every
+ * seam file below sees the same VirtualAlloc, CreateThread and CRITICAL_SECTION
+ * it would on Windows. */
+#include "tiger_plat_posix.c"
+#endif
 #ifdef TIGER_UC
 /* The Unicorn seam, first so its uc_* helpers are visible to every seam point
  * below -- call_aligned in the shims, the arena rows in the shim table, the
@@ -221,7 +236,11 @@ static unsigned bswap(unsigned v)
 #include "tiger_host_cf.c"
 #include "tiger_host_files.c"
 #include "tiger_host_audio.c"
+#ifdef TIGER_NO_AAC
+#include "tiger_host_aac_stub.c"
+#else
 #include "tiger_host_aac.c"
+#endif
 #include "tiger_host_gcd.c"
 #include "tiger_host_cxx.c"
 #include "tiger_host_accel.c"
