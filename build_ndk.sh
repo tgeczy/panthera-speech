@@ -33,11 +33,15 @@ API="${ANDROID_API:-26}"
 TARGET="armv7-none-linux-androideabi${API}"
 CLANG="$NDK/toolchains/llvm/prebuilt/windows-x86_64/bin/clang.exe"
 
-# Unicorn: the ARM static lib for linking, and headers for compiling.  The
-# headers are architecture-independent, so a compile-only pass can borrow them
-# from the 32-bit Windows wheel before the ARM library is built.
+# Unicorn: the ARM static libs for linking, and headers for compiling.  The
+# static build produces three archives with circular references between them
+# (the API, the x86 TCG backend, and QEMU's common util), so they link inside a
+# --start-group.  The headers are architecture-independent, so a compile-only
+# pass can borrow them from the 32-bit Windows wheel before the libs are built.
 UC_ARM="$ROOT/android/harness/unicorn/build-armeabi-v7a"
-UC_LIB="$(ls "$UC_ARM"/libunicorn.a "$UC_ARM"/*/libunicorn.a 2>/dev/null | head -1 || true)"
+UC_STATIC="$UC_ARM/libunicorn-static.a"
+UC_SOFTMMU="$UC_ARM/libx86_64-softmmu.a"
+UC_COMMON="$UC_ARM/libunicorn-common.a"
 if [ -d "$ROOT/android/harness/unicorn/include" ]; then
     UC_INC="$ROOT/android/harness/unicorn/include"
 else
@@ -55,14 +59,15 @@ mkdir -p "$OUT"
 CFLAGS="-O2 -fPIC -DTIGER_UC -DTIGER_NO_AAC -Wno-macro-redefined -I\"$UC_INC\""
 
 if [ "$DOLINK" = build ]; then
-    [ -n "$UC_LIB" ] && [ -f "$UC_LIB" ] || {
+    [ -f "$UC_STATIC" ] || {
         echo "no cross-built Unicorn yet; run:"
         echo "  android/harness/build_unicorn_cyg.sh armeabi-v7a build"
         echo "(under Cygwin, see that script's header), then retry"; exit 1; }
-    echo "uc lib: $UC_LIB"
+    echo "uc libs: $UC_ARM/{libunicorn-static,libx86_64-softmmu,libunicorn-common}.a"
     eval "\"$CLANG\" --target=$TARGET $CFLAGS -fPIE -pie \
         \"$ROOT/src/tiger_host.c\" -o \"$OUT/tiger_host\" \
-        \"$UC_LIB\" -lm -ldl -llog" \
+        -Wl,--start-group \"$UC_STATIC\" \"$UC_SOFTMMU\" \"$UC_COMMON\" -Wl,--end-group \
+        -lm -ldl -llog" \
         > "$OUT/build.log" 2>&1 || { echo "link failed:"; tail -60 "$OUT/build.log"; exit 1; }
     echo "  -> build/ndk/tiger_host (armeabi-v7a)"
 else
