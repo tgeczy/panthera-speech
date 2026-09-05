@@ -20,13 +20,14 @@ microbenchmarks and running them on three devices.
 | Device | SoC | Cores | RAM | ABI |
 |---|---|---|---|---|
 | Fossil Gen 6 | SDW4100-class | 4× A53 @ 2.0 GHz (in-order) | 1.0 GB | armeabi-v7a (32-bit) |
+| Pixel Watch 2 | SW5 Gen 1 "monaco" | 4× A53-class @ 1.71 GHz (in-order) | 1.8 GB | armeabi-v7a (32-bit) |
 | Wear "elite" (SM-L350) | "vienna" | 1× A78 @ 2.1 + 4× A55 | 1.7 GB | armeabi-v7a (32-bit) |
 | Galaxy S22 (SM-S901U1) | SD 8 Gen 1 | 1× X2 @ 3.0 + 3× A710 @ 2.5 + 4× A510 | 7.4 GB | arm64-v8a |
 
-Note both watches ship a **32-bit userspace** even on 64-bit-capable silicon —
+Note all three watches ship a **32-bit userspace** even on 64-bit-capable silicon —
 the port must build `armeabi-v7a`, not assume `arm64`.
 
-## Gate 1 — can it JIT?  YES, on all three
+## Gate 1 — can it JIT?  YES, on all four
 
 `jitprobe` maps freshly written native code two ways (RWX, and the W^X
 `RW→mprotect(R+X)` dance TCG uses) and runs it. **Both modes succeeded on every
@@ -44,13 +45,17 @@ The engine memory-maps its voice data read-only (`tiger_host_files.c`), so a
 | Device | peak resident | zram swap-out | notes |
 |---|---|---|---|
 | Fossil Gen 6 (1 GB) | **258 MB** | 5,269 pages | clean pages evicted; no OOM |
+| Pixel Watch 2 (1.8 GB) | **169 MB** | 37,965 pages | more RAM spent on zram headroom, not resident |
 | Wear elite (1.7 GB) | 319 MB | **0** | full headroom |
 | Galaxy S22 (7.4 GB) | 703 MB (fully resident) | 0 | plenty of RAM |
 
 On the **1 GB** watch, touching all 700 MB peaked at ~¼ GB resident — clean
 file pages evict under pressure instead of accumulating, so the bank never has to
-be RAM-resident. The 700-MB-vs-1-GB fear is simply not a wall. The residual cost
-is flash major-faults in the speech path, which warm out with locality.
+be RAM-resident. The 700-MB-vs-1-GB fear is simply not a wall. The 2 GB Pixel
+Watch 2 makes the point sharper: it kept *less* resident (169 MB) than the 1 GB
+Gen 6 and spent its extra memory as zram headroom — more RAM buys safety margin,
+not resident footprint. The residual cost is flash major-faults in the speech
+path, which warm out with locality.
 
 ## The emulation speed curve — and the one finding that matters
 
@@ -64,6 +69,7 @@ All produced the identical result word, confirming the emulation is faithful.
 | S22 A710 | out-of-order mid | 2.5 GHz | **5.0** | 19× |
 | Elite A78 | out-of-order big | 2.1 GHz | **2.9** | 33× |
 | Gen 6 A53 | **in-order** | 2.0 GHz | **1.4** | 68× |
+| Pixel Watch 2 | **in-order** A53-class | 1.71 GHz | **1.0** | 96× |
 | S22 A510 | **in-order** little | 1.79 GHz | **1.0** | 96× |
 
 *Reference: desktop x86 native 95.6 Msteps/s, desktop Unicorn 23.5 (TCG penalty
@@ -75,8 +81,9 @@ floor.
 near-identical clocks the out-of-order A78 (2.9) doubles the in-order A53 (1.4),
 and the A710 (5.0) is five times the A510 (1.0) — because out-of-order execution
 hides exactly the branchy dispatch TCG is built on. Every out-of-order core clears
-Alex-class emulation with realtime margin; every in-order core sits near
-1 Msteps/s no matter its GHz.
+Alex-class emulation with realtime margin; the four in-order cores measured — across
+three clock points and three vendors (A53, A55, A510, Kryo-silver) — all cluster at
+1.0–1.4 Msteps/s, no matter their GHz.
 
 ## What that means for the voices
 
