@@ -213,8 +213,13 @@ typedef struct { DWORD dwLowDateTime; DWORD dwHighDateTime; } FILETIME;
 #define _fdopen     fdopen
 #define _setmode(fd, mode)  (0)
 
-/* Yield the CPU (Win32 SwitchToThread). */
-#define SwitchToThread()    (sched_yield() == 0 ? 1 : 0)
+/* Win32 SwitchToThread yielded to a ready thread; with the pacer's 1 ms timer
+ * that behaved like a brief sleep.  On bionic sched_yield returns at once when
+ * nothing else is runnable, so an idle-yield path would spin a whole core --
+ * and on a two-core watch starve the TCG worker that is actually rendering,
+ * which comes out as short slices and a wrong frame count.  A real 1 ms sleep
+ * is what Windows effectively delivered.  (Sleep is declared below.) */
+#define SwitchToThread()    (Sleep(1), 1)
 
 /* timeBeginPeriod/timeEndPeriod raise the scheduler's tick resolution on
  * Windows; POSIX nanosleep already means what it says, so these are no-ops. */

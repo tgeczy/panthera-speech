@@ -52,8 +52,13 @@ echo "== push =="
 "$ADB" push "$FV/." "$DEV/Fred.SpeechVoice" | tail -1
 "$ADB" shell "chmod 755 $DEV/tiger_host"
 
-echo "== render Fred on device =="
-"$ADB" shell "cd $DEV && ./tiger_host ./MacinTalk ./SpeechDictionary ./Fred.SpeechVoice > run.log 2>&1; echo exit=\$?"
+echo "== render Fred on device (TIGER_SPEED=1, honest realtime) =="
+# Speed 1 is true real time: it separates "is the emulation correct" from "can
+# the watch keep up", which are the two different questions.  The desktop
+# oracle is byte-identical at speed 1 and 128, so the byte-diff below is valid
+# at speed 1.  Re-run without TIGER_SPEED (defaults to 128) afterwards for the
+# perf number -- how much faster than real time this watch renders Fred.
+"$ADB" shell "cd $DEV && TIGER_SPEED=1 ./tiger_host ./MacinTalk ./SpeechDictionary ./Fred.SpeechVoice > run.log 2>&1; echo exit=\$?"
 echo "  --- last lines of on-device log ---"
 "$ADB" shell "tail -6 $DEV/run.log" | sed 's/^/  /'
 

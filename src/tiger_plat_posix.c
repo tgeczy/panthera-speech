@@ -382,8 +382,13 @@ BOOL CloseHandle(HANDLE ho)
         if (h->close_fd) close(h->fd);
         h_free(h);
         return TRUE;
-    default:                              /* event, semaphore */
-        h_free(h);
+    default:
+        /* Events and semaphores.  Freeing one, or destroying its cond/mutex,
+         * while a thread is blocked inside it is undefined and hangs at exit --
+         * which would be misread later as a render bug.  There are only a
+         * handful per process, so the safe thing is not to free them at all;
+         * leak the struct.  (Fred never reaches this -- the MP semaphore lives
+         * for the whole process and only Lion's GCD closes an event.) */
         return TRUE;
     }
 }
