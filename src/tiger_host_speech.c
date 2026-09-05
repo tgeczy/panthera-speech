@@ -132,7 +132,8 @@ static int set_param(const speech_api *a, void *chan, int which, unsigned fx)
     }
     if (a->setinfo)
         return call_aligned3((void *)a->setinfo, chan,
-                             (void *)PARAMS[which].sel, &fx);
+                             (void *)PARAMS[which].sel,
+                             UC_IN(&fx, sizeof fx));
     return -231;                                /* siUnknownInfoType */
 }
 
@@ -151,9 +152,15 @@ static int get_param(const speech_api *a, void *chan, int which, unsigned *out)
         *out = (unsigned)(f * 65536.0f);
         return 1;
     }
-    if (a->getinfo)
-        return call_aligned3((void *)a->getinfo, chan,
-                             (void *)PARAMS[which].sel, out) == 0;
+    if (a->getinfo) {
+        /* out-parameter: the engine writes the value through the pointer, so
+         * under emulation it must be a guest slot, read back after. */
+        unsigned *slot = (unsigned *)UC_OUT(*out);
+        int ok = call_aligned3((void *)a->getinfo, chan,
+                               (void *)PARAMS[which].sel, slot) == 0;
+        UC_OUT_GET(slot, *out);
+        return ok;
+    }
     return 0;
 }
 
@@ -174,7 +181,7 @@ static int speak_text(const speech_api *a, void *chan,
                       const char *text, size_t len)
 {
     if (a->buffer)
-        return call_aligned4((void *)a->buffer, chan, (void *)text,
+        return call_aligned4((void *)a->buffer, chan, UC_IN_STR(text, len),
                              (void *)len, (void *)0);
     {
         /* Not freed: the engine keeps the text for the length of the

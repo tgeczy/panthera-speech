@@ -204,6 +204,18 @@ static unsigned bswap(unsigned v)
  * below -- call_aligned in the shims, the arena rows in the shim table, the
  * trampolines and uc_run_init in the Mach-O loader. */
 #include "tiger_host_uc.c"
+/* Marshalling a host buffer into the guest for an engine call.  In the emulated
+ * build these place the buffer in the guest arena; in the native build they are
+ * identities, so a call site reads the same in both. */
+#define UC_IN(host, n)        uc_in((host), (n))
+#define UC_IN_STR(s, n)       uc_in_str((s), (n))
+#define UC_OUT(var)           uc_out(sizeof(var))
+#define UC_OUT_GET(slot, var) ((var) = *(slot))
+#else
+#define UC_IN(host, n)        ((void *)(host))
+#define UC_IN_STR(s, n)       ((void *)(s))
+#define UC_OUT(var)           (&(var))
+#define UC_OUT_GET(slot, var) ((void)0)
 #endif
 #include "tiger_host_shims.c"
 #include "tiger_host_cf.c"
@@ -317,7 +329,14 @@ static int host_open(const char *mtpath, const char *sdpath)
     if (g_no_abbrev)
         fprintf(stderr, "tiger_host: abbreviation rules are off\n");
 
+#ifndef TIGER_UC
+    /* Not under emulation: Unicorn/TCG runs the guest in JIT-generated host code
+     * and installs its own handler to turn a guest memory fault into a clean
+     * uc_emu_start error.  A first-priority host handler here would intercept
+     * that fault first and report a host crash for what is really a guest one --
+     * so the guest's faults surface through uc (and uc_on_badmem) instead. */
     AddVectoredExceptionHandler(1, on_fault);
+#endif
 
     /* The optional runtime images, loaded before the engines so their
      * initializers run before anything calls into them.
@@ -400,8 +419,14 @@ static int host_open(const char *mtpath, const char *sdpath)
 
     /* Every entry into the engine goes through an aligning trampoline:
      * Darwin i386 guarantees ESP is 16-byte aligned at each call and
-     * Leopard's engine spends that guarantee on movapd. */
-    err = call_aligned1((void *)open_chan, &g_chan);
+     * Leopard's engine spends that guarantee on movapd.  The channel is an
+     * out-parameter: the engine writes it through the pointer we pass, which
+     * under emulation must be a guest address (UC_OUT), read back after. */
+    {
+        void **slot = (void **)UC_OUT(g_chan);
+        err = call_aligned1((void *)open_chan, slot);
+        UC_OUT_GET(slot, g_chan);
+    }
     if (g_verbose) printf("  -> OSErr %d, channel %p\n", err, g_chan);
     /* A zero OSErr with a null channel has never been seen, but everything
      * downstream dereferences it, so it is refused here as an error rather
@@ -539,7 +564,8 @@ int main(int argc, char **argv)
         printf("\nSEUseVoice at %p, spec {'%c%c%c%c', %d}\n  bundle %s\n",
                (void *)use, (creator >> 24) & 0xff, (creator >> 16) & 0xff,
                (creator >> 8) & 0xff, creator & 0xff, voiceid, voicedir);
-        err = call_aligned3((void *)use, g_chan, &spec, bundle);
+        err = call_aligned3((void *)use, g_chan, UC_IN(&spec, sizeof spec),
+                            bundle);
         printf("  -> OSErr %d\n", err);
         if (err) goto report;
     }
@@ -574,7 +600,8 @@ int main(int argc, char **argv)
                 unsigned fixed = (unsigned)atoi(rt) << 16;   /* Fixed 16.16 */
                 if (setinfo) {
                     int r = call_aligned3((void *)setinfo, g_chan,
-                                          (void *)0x72617465u, &fixed);
+                                          (void *)0x72617465u,
+                                          UC_IN(&fixed, sizeof fixed));
                     printf("\nSESetSpeechInfo 'rate' %d wpm -> OSErr %d\n",
                            atoi(rt), r);
                 }

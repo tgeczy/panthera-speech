@@ -58,6 +58,11 @@ typedef struct { void *fn; const char *name; unsigned char rc; unsigned char mis
 
 static uc_engine *g_uc;
 static uc_hook    g_uc_hook;
+/* MP worker tasks recorded but not spawned (see sh_mp_create_task): one
+ * uc_engine can't be driven from two host threads.  void* because the mptask
+ * type is defined later in the translation unit. */
+static void      *g_uc_mp_tasks[8];
+static int        g_uc_mp_ntasks;
 static uc_slot    g_slots[UC_TRAMP_SZ / UC_TRAMP_STRIDE];
 static int        g_nslots;
 static int        g_uc_running;      /* guards against nesting uc_emu_start */
@@ -238,6 +243,7 @@ typedef float    (__cdecl *fn_f)(unsigned,unsigned,unsigned,unsigned,unsigned,
 #define UC_ARGS a[0],a[1],a[2],a[3],a[4],a[5],a[6],a[7],a[8],a[9],a[10],a[11]
 
 static int g_uc_missing_hits;   /* how many missing-shim calls, this session */
+static const char *g_uc_last_shim;   /* name of the last shim dispatched (debug) */
 
 static void uc_dispatch(uc_engine *u, uint64_t address, uint32_t size,
                         void *user)
@@ -252,6 +258,7 @@ static void uc_dispatch(uc_engine *u, uint64_t address, uint32_t size,
     uc_reg_read(u, UC_X86_REG_ESP, &esp);
     uc_mem_read(u, esp + 4, a, sizeof a);      /* args: cdecl, above the retaddr */
 
+    g_uc_last_shim = s->name;
     if (s->missing) {
         unsigned zero = 0;
         g_uc_missing_hits++;
@@ -299,6 +306,39 @@ static bool uc_on_badmem(uc_engine *u, uc_mem_type type, uint64_t address,
     fprintf(stderr, "  [uc] BAD %s addr=%08x size=%d value=%08x eip=%08x\n",
             k, (unsigned)address, size, (unsigned)value, eip);
     return false;
+}
+
+/* A report-only host exception handler.  A genuine host crash (a shim
+ * dereferencing something bad, or TCG itself) never reaches uc_emu_start's
+ * error return, so without this it is a silent SIGSEGV.  This prints the fault
+ * and returns CONTINUE_SEARCH, so Unicorn's own handler still gets recoverable
+ * guest faults -- it only observes, never intercepts. */
+static unsigned g_uc_block_ring[8];   /* last basic blocks entered (debug) */
+static int      g_uc_block_i;
+
+static void uc_trace_block(uc_engine *u, uint64_t address, uint32_t size,
+                           void *user)
+{
+    (void)u; (void)size; (void)user;
+    g_uc_block_ring[g_uc_block_i++ & 7] = (unsigned)address;
+}
+
+static LONG CALLBACK uc_veh(EXCEPTION_POINTERS *ep)
+{
+    EXCEPTION_RECORD *er = ep->ExceptionRecord;
+    if (er->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
+        int i;
+        fprintf(stderr, "  [uc] HOST AV eip=%08x %s addr=%08x\n",
+                (unsigned)ep->ContextRecord->Eip,
+                er->ExceptionInformation[0] ? "write" : "read",
+                (unsigned)er->ExceptionInformation[1]);
+        fprintf(stderr, "  [uc] last guest blocks (oldest first):");
+        for (i = 0; i < 8; i++)
+            fprintf(stderr, " %08x", g_uc_block_ring[(g_uc_block_i + i) & 7]);
+        fprintf(stderr, "\n  [uc] last shim dispatched: %s\n",
+                g_uc_last_shim ? g_uc_last_shim : "(none)");
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
 }
 
 /* ---- mapping and calling ---------------------------------------------- */
@@ -366,6 +406,52 @@ static int uc_call(void *fn, int argc, const unsigned *argv)
 /* run_initializers' replacement for `((void(__cdecl*)(void))fn)()`. */
 static void uc_run_init(void *fn) { uc_call(fn, 0, NULL); }
 
+/* A SYNCHRONOUS host->guest callback from inside a shim -- pthread_once's init
+ * routine is the first -- which must run on the guest now, while the outer
+ * uc_emu_start is suspended in the dispatch hook.  The full CPU context is saved
+ * and restored around a re-entrant uc_emu_start; the callback runs on a fresh
+ * frame just below the current guest stack (a normal nested call would), so the
+ * suspended outer frames are untouched.  This is deliberate nesting on the one
+ * engine -- distinct from the asynchronous MP worker, which gets its own engine
+ * on its own thread; here there is only one logical thread. */
+static void uc_call_nested(void *fn)
+{
+    uc_context *ctx;
+    unsigned esp, sp, magic = UC_RETMAGIC;
+    uc_err e;
+    uc_must(uc_context_alloc(g_uc, &ctx), "context alloc");
+    uc_must(uc_context_save(g_uc, ctx), "context save");
+    uc_reg_read(g_uc, UC_X86_REG_ESP, &esp);
+    sp = ((esp - 512u) & ~15u) - 4u;             /* 16-aligned at the call */
+    uc_must(uc_mem_write(g_uc, sp, &magic, 4), "nested retaddr");
+    uc_must(uc_reg_write(g_uc, UC_X86_REG_ESP, &sp), "nested esp");
+    e = uc_emu_start(g_uc, (uint64_t)(uintptr_t)fn, UC_RETMAGIC, 0, 0);
+    uc_must(uc_context_restore(g_uc, ctx), "context restore");
+    uc_context_free(ctx);
+    if (e != UC_ERR_OK) {
+        unsigned eip = 0;
+        uc_reg_read(g_uc, UC_X86_REG_EIP, &eip);
+        die("nested guest fault: %s at eip=%08x (entry %08x)",
+            uc_strerror(e), eip, (unsigned)(uintptr_t)fn);
+    }
+}
+
+/* ---- argument marshalling ---------------------------------------------- *
+ * The engine dereferences the pointers it is handed, so a host buffer passed to
+ * it has to have a guest home.  The arena is identity-mapped and never freed, so
+ * a guest slot is also a valid host pointer -- an out-parameter can just be read
+ * back with `*slot` after the call, no copy-back list.  The call sites use these
+ * through the UC_IN/UC_OUT macros (tiger_host.c), which are identities in the
+ * native build so each site is written once for both.  Direction and size are
+ * known at the site, which is exactly what a general auto-bounce would have to
+ * guess -- and guessing an integer for a pointer would corrupt host state. */
+static void *uc_in(const void *host, size_t n)
+{ void *g = arena_alloc(n); if (g) memcpy(g, host, n); return g; }
+static void *uc_in_str(const char *s, size_t n)
+{ char *g = (char *)arena_alloc(n + 1); if (g) { memcpy(g, s, n); g[n] = 0; } return g; }
+static void *uc_out(size_t n)
+{ void *g = arena_alloc(n); if (g) memset(g, 0, n); return g; }
+
 /* call_aligned1..4's replacements (tiger_host_shims.c routes to these). */
 static int uc_call1(void *fn, void *a)
 { unsigned v[1]; v[0]=(unsigned)(uintptr_t)a; return uc_call(fn,1,v); }
@@ -415,6 +501,14 @@ static void uc_host_init(void)
         uc_hook_add(g_uc, &h, UC_HOOK_MEM_READ_UNMAPPED |
                     UC_HOOK_MEM_WRITE_UNMAPPED | UC_HOOK_MEM_FETCH_UNMAPPED,
                     (void *)uc_on_badmem, NULL, 1, 0);
+    }
+    AddVectoredExceptionHandler(1, uc_veh);   /* report-only; see uc_veh */
+    if (getenv("TIGER_UC_TRACE")) {
+        /* Per-block tracing to place a host crash; off by default (it runs a
+         * hook on every basic block).  The last blocks print from uc_veh. */
+        static uc_hook hb;
+        uc_hook_add(g_uc, &hb, UC_HOOK_BLOCK, (void *)uc_trace_block,
+                    NULL, 1, 0);
     }
     if (g_verbose)
         fprintf(stderr, "tiger_host_uc: Unicorn x86-32 up; block at %08x, "
