@@ -140,6 +140,10 @@ object PantheraEngine {
 
     fun isOpen(): Boolean = synchronized(lock) { opened }
 
+    /** Load the engine ahead of the first utterance (the images take a few
+     * seconds to map), so a screen reader's first request is not gated on it. */
+    fun warmUp(ctx: Context) { synchronized(lock) { open(ctx) } }
+
     /** Render one utterance to PCM, or null on failure. Serialised. */
     fun render(ctx: Context, voice: VoiceInfo, text: String, wpm: Int): ShortArray? {
         synchronized(lock) {
@@ -150,7 +154,25 @@ object PantheraEngine {
         }
     }
 
-    /** Interrupt the render in progress. NOT under [lock] -- render holds it. */
+    /** Begin an utterance for the streaming path. Serialised (does the one-time
+     * open + selects the voice); the pull that follows is lock-free. Returns 0
+     * or an error. */
+    fun speakStart(ctx: Context, voice: VoiceInfo, text: String, wpm: Int): Int {
+        synchronized(lock) {
+            if (!open(ctx)) return -1
+            return try {
+                PantheraNative.nativeSpeakStart(voice.dir, voice.creator, voice.voiceId, text, wpm)
+            } catch (e: Throwable) { -1 }
+        }
+    }
+
+    /** Drain the utterance: fills [out], returns sample count (0 = finished).
+     * Not under [lock] -- it only reads the worker's output buffer, and a
+     * concurrent stop must be able to interrupt it. */
+    fun pull(out: ShortArray): Int =
+        try { PantheraNative.nativePull(out) } catch (e: Throwable) { 0 }
+
+    /** Interrupt the utterance in progress. NOT under [lock]. */
     fun stop() {
         try { PantheraNative.nativeStop() } catch (e: Throwable) { /* nothing to stop */ }
     }

@@ -48,6 +48,33 @@ Java_com_pantheraspeech_tts_PantheraNative_nativeRender(
     return arr;
 }
 
+JNIEXPORT jint JNICALL
+Java_com_pantheraspeech_tts_PantheraNative_nativeSpeakStart(
+        JNIEnv *env, jclass, jstring jvoice, jint creator, jint voiceId,
+        jstring jtext, jint wpm) {
+    const char *voice = env->GetStringUTFChars(jvoice, nullptr);
+    const char *text  = env->GetStringUTFChars(jtext, nullptr);
+    int rc = (voice && text)
+        ? panthera_speak_start(voice, (unsigned)creator, (int)voiceId, text, (int)wpm)
+        : -1;
+    if (voice) env->ReleaseStringUTFChars(jvoice, voice);
+    if (text)  env->ReleaseStringUTFChars(jtext, text);
+    return rc;
+}
+
+// Fills `out` with up to out.length int16 samples; returns the count (0 = the
+// utterance is finished). Blocks briefly waiting for the worker to produce more.
+JNIEXPORT jint JNICALL
+Java_com_pantheraspeech_tts_PantheraNative_nativePull(
+        JNIEnv *env, jclass, jshortArray out) {
+    jsize cap = env->GetArrayLength(out);
+    jshort *buf = env->GetShortArrayElements(out, nullptr);
+    if (!buf) return 0;
+    int n = panthera_pull(reinterpret_cast<short *>(buf), (int)cap);
+    env->ReleaseShortArrayElements(out, buf, 0);   // copy back to Kotlin
+    return n;
+}
+
 JNIEXPORT void JNICALL
 Java_com_pantheraspeech_tts_PantheraNative_nativeStop(JNIEnv *, jclass) {
     panthera_stop();

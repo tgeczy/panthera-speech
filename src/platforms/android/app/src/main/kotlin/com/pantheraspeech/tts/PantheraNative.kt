@@ -20,8 +20,18 @@ object PantheraNative {
         voiceDir: String, creator: Int, voiceId: Int, text: String, wpm: Int
     ): ShortArray?
 
+    /** Begin an utterance for the streaming (low-latency) path; returns 0 or an
+     * OSErr.  Synthesis then runs on the engine's worker -- drain it with
+     * nativePull. */
+    external fun nativeSpeakStart(
+        voiceDir: String, creator: Int, voiceId: Int, text: String, wpm: Int): Int
+
+    /** Fill [out] with up to out.size int16 samples produced so far; returns the
+     * count (0 when the utterance is finished).  Blocks briefly for more. */
+    external fun nativePull(out: ShortArray): Int
+
     /** Ask the engine to stop the utterance in progress; makes a blocked
-     * nativeRender return early.  Safe to call from another thread. */
+     * nativeRender / nativePull return early.  Safe from another thread. */
     external fun nativeStop()
 
     /** PCM sample rate nativeRender produces, in Hz. */

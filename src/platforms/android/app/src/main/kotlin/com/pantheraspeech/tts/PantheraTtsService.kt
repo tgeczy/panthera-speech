@@ -11,11 +11,20 @@ import android.speech.tts.SynthesisRequest
 import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
 import android.speech.tts.Voice
+import android.util.Log
 import java.util.Locale
 
 class PantheraTtsService : TextToSpeechService() {
 
     @Volatile private var stopRequested = false
+
+    override fun onCreate() {
+        super.onCreate()
+        // Warm the engine when the service binds, so the first utterance isn't
+        // gated on the few-second image load -- a screen reader's first request
+        // must not wait that long.
+        Thread { try { PantheraEngine.warmUp(applicationContext) } catch (e: Throwable) {} }.start()
+    }
 
     // Every Mac voice at least speaks English; a few also carry other locales,
     // but v1 reports en-US, which is what Fred and the core Tiger voices are.
@@ -70,40 +79,50 @@ class PantheraTtsService : TextToSpeechService() {
     override fun onSynthesizeText(request: SynthesisRequest, callback: SynthesisCallback) {
         stopRequested = false
 
+        val text = request.charSequenceText?.toString() ?: ""
+        Log.i("PantheraTts", "synth: voice=${request.voiceName} lang=${request.language} " +
+            "rate=${request.speechRate} verified=${PantheraEngine.verified(this)} textLen=${text.length}")
+
         if (!PantheraEngine.verified(this)) {
-            callback.error(TextToSpeech.ERROR_SERVICE)
-            return
+            Log.w("PantheraTts", "not verified -> error"); callback.error(TextToSpeech.ERROR_SERVICE); return
         }
 
         val voice = PantheraEngine.voiceById(this, request.voiceName)
             ?: PantheraEngine.voiceById(this, onGetDefaultVoiceNameFor(null, null, null))
-            ?: run { callback.error(TextToSpeech.ERROR_SERVICE); return }
-
-        val text = request.charSequenceText?.toString() ?: ""
-        if (text.isBlank()) { callback.start(PantheraEngine.sampleRate(),
-            AudioFormat.ENCODING_PCM_16BIT, 1); callback.done(); return }
-
-        val pcm = PantheraEngine.render(this, voice, text, wpmFor(request.speechRate))
-        if (pcm == null) { callback.error(TextToSpeech.ERROR_SYNTHESIS); return }
+            ?: run { Log.w("PantheraTts", "no voice for '${request.voiceName}' -> error")
+                     callback.error(TextToSpeech.ERROR_SERVICE); return }
 
         val rate = PantheraEngine.sampleRate()
-        if (callback.start(rate, AudioFormat.ENCODING_PCM_16BIT, 1) != TextToSpeech.SUCCESS) return
+        if (callback.start(rate, AudioFormat.ENCODING_PCM_16BIT, 1) != TextToSpeech.SUCCESS) {
+            Log.w("PantheraTts", "callback.start refused"); return
+        }
+        if (text.isBlank()) { callback.done(); return }
 
-        // Stream the rendered PCM out in framework-sized chunks (little-endian
-        // 16-bit), stopping promptly if the client interrupted us.
-        val maxChunk = callback.maxBufferSize.coerceAtLeast(2) and 1.inv()  // even bytes
-        val bytes = ByteArray(pcm.size * 2)
-        var bi = 0
-        for (s in pcm) {
-            bytes[bi++] = (s.toInt() and 0xff).toByte()
-            bytes[bi++] = ((s.toInt() shr 8) and 0xff).toByte()
+        // Begin synthesis, then stream PCM as the engine produces it -- audio
+        // starts within a chunk instead of after the whole utterance renders.
+        // Render-then-stream went silent because TalkBack gave up waiting the
+        // few seconds the whole render took before any audio arrived.
+        val started = PantheraEngine.speakStart(this, voice, text, wpmFor(request.speechRate))
+        if (started != 0) {
+            Log.w("PantheraTts", "speakStart -> $started")
+            callback.error(TextToSpeech.ERROR_SYNTHESIS); return
         }
-        var off = 0
-        while (off < bytes.size && !stopRequested) {
-            val len = minOf(maxChunk, bytes.size - off)
-            if (callback.audioAvailable(bytes, off, len) != TextToSpeech.SUCCESS) break
-            off += len
+        val samples = ShortArray(4096)             // ~186 ms per pull at 22050 Hz
+        val bytes = ByteArray(samples.size * 2)
+        var total = 0
+        while (!stopRequested) {
+            val n = PantheraEngine.pull(samples)
+            if (n <= 0) break
+            var bi = 0
+            for (i in 0 until n) {
+                val s = samples[i].toInt()
+                bytes[bi++] = (s and 0xff).toByte()
+                bytes[bi++] = ((s shr 8) and 0xff).toByte()
+            }
+            if (callback.audioAvailable(bytes, 0, n * 2) != TextToSpeech.SUCCESS) break
+            total += n
         }
+        Log.i("PantheraTts", "synth ${voice.name} streamed $total samples, stop=$stopRequested")
         callback.done()
     }
 }

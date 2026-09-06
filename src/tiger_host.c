@@ -745,9 +745,11 @@ report:
 #include "tiger_host_api.c"
 #endif
 
-/* The in-process synthesis API the Android JNI layer calls.  Present in every
- * emulated build: the .so binds to it, and the desktop build reaches it through
- * --jni-check so the same render can be checked against the WAV oracle. */
-#ifdef TIGER_UC
+/* The in-process synthesis API the Android JNI layer calls -- and the same one
+ * a Linux port would drive into ALSA or PipeWire, since it hands back raw PCM
+ * and leaves playback to the caller.  Present in every emulated build (the .so
+ * binds to it, and --jni-check reaches it on the desktop); TIGER_LIB pulls it
+ * into a native (non-emulated) library build too. */
+#if defined(TIGER_UC) || defined(TIGER_LIB)
 #include "tiger_host_jni.c"
 #endif

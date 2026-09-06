@@ -99,6 +99,16 @@ class SettingsActivity : Activity() {
         setContentView(scroll)
 
         refresh()
+
+        // Test hook: `am start ... --ez autospeak true` checks the engine and
+        // speaks a sample, so a render can be triggered without navigating to
+        // the button. Harmless in normal use (the extra is never set).
+        if (intent?.getBooleanExtra("autospeak", false) == true) {
+            Thread {
+                PantheraEngine.checkEngine(this)
+                runOnUiThread { refresh(); testSpeak() }
+            }.start()
+        }
     }
 
     private fun refresh() {
@@ -191,7 +201,10 @@ class SettingsActivity : Activity() {
             rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val track = AudioTrack(
             AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_MEDIA)
+                // Accessibility, not media: on a watch, media audio may not route
+                // to the built-in speaker, but the accessibility/TTS route does
+                // (it is where the system's own TTS comes out).
+                .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build(),
             AudioFormat.Builder()
                 .setSampleRate(rate)

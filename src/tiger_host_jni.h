@@ -31,8 +31,22 @@ int  panthera_render(const char *voiceDir, unsigned creator, int voiceId,
                      const char *text, int wpm,
                      short **outPcm, unsigned *outFrames);
 
+/* Streaming synthesis, for the low-latency TTS path.  Rather than render the
+ * whole utterance before any sound (which makes a screen reader give up
+ * waiting), begin the utterance and then pull PCM as the engine produces it:
+ *   panthera_speak_start(...);            // returns as soon as it is accepted
+ *   while ((n = panthera_pull(buf, cap))) // n samples ready; 0 = finished
+ *       hand buf[0..n) to the framework;
+ * so audio starts within one chunk.  speak_start returns 0 or an OSErr; pull
+ * returns int16 samples written to out (0 when the utterance is done, or the
+ * engine has produced nothing for ~10 s, or a stop was asked for). */
+int  panthera_speak_start(const char *voiceDir, unsigned creator, int voiceId,
+                          const char *text, int wpm);
+int  panthera_pull(short *out, int maxSamples);
+
 /* Ask the engine to stop the utterance in progress; makes a blocked
- * panthera_render return with whatever it has.  Safe from another thread. */
+ * panthera_render / panthera_pull return with whatever it has.  Safe from
+ * another thread. */
 void panthera_stop(void);
 
 /* The PCM sample rate panthera_render produces (Hz). */

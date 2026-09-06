@@ -48,6 +48,62 @@ static void pt_stderr_to_logcat(void)
 }
 #endif
 
+/* Only the emulated build has per-thread guest engines to ensure; a native
+ * (Linux x86) build calls the i386 engine directly, so this is a no-op there.
+ * The synthesis API is otherwise identical -- which is what lets it feed ALSA
+ * or PipeWire on the Linux port as readily as AudioTrack on Android: it hands
+ * back raw PCM and the caller owns playback. */
+#ifdef TIGER_UC
+#define PT_ENSURE_ENGINE() uc_ensure_engine()
+#else
+#define PT_ENSURE_ENGINE() ((void)0)
+#endif
+
+static unsigned g_pull_pos;          /* streaming read cursor into g_pcm */
+static unsigned g_pt_voice_creator;  /* last voice selected, to skip re-selecting */
+static int      g_pt_voice_id;
+static int      g_pt_have_voice;
+
+/* Clamp one float sample to int16, the way write_wav does. */
+static short pt_clip(double v)
+{
+    if (v > 1.0) v = 1.0;
+    if (v < -1.0) v = -1.0;
+    return (short)(v * 32767.0);
+}
+
+/* Reset the audio-path state for a new utterance.  Mirrors serve mode's reset;
+ * the AAC/SQL/streaming counters it also clears are inert on the Fred build. */
+static void pt_utterance_reset(void)
+{
+    g_pcm_n = 0; g_slices = 0; g_stopped = 0; g_empty_run = 0;
+    g_dup_slices = 0; g_have_last = 0; g_p_drops = 0;
+    g_epoch_base = 0; g_last_stime = 0.0; g_have_origin = 0;
+    g_utt++; g_stale_slices = 0; g_pull_pos = 0;
+}
+
+/* Select the voice, but only when it actually changes -- reloading a voice
+ * preset is real work, and doing it on every utterance (a screen reader sends
+ * many) both wastes time and churns channel state.  serve mode does the same.
+ * Returns 0, or the engine's OSErr. */
+static int pt_use_voice(const char *voiceDir, unsigned creator, int voiceId)
+{
+    typedef int (__cdecl *SEUseVoice_t)(void *, const void *, const void *);
+    SEUseVoice_t use;
+    struct { unsigned creator; int id; } spec;
+    int err;
+    if (g_pt_have_voice && creator == g_pt_voice_creator && voiceId == g_pt_voice_id)
+        return 0;
+    use = (SEUseVoice_t)find_export(&g_mt, "_SEUseVoice");
+    if (!use) return -2;
+    spec.creator = creator; spec.id = voiceId;
+    err = call_aligned3((void *)use, g_chan, UC_IN(&spec, sizeof spec),
+                        cf_pinned(voiceDir));
+    if (err) { fprintf(stderr, "panthera: SEUseVoice -> OSErr %d\n", err); return err; }
+    g_pt_voice_creator = creator; g_pt_voice_id = voiceId; g_pt_have_voice = 1;
+    return 0;
+}
+
 /* write_wav's float->int16, factored so a rendered utterance is byte-identical
  * to the desktop WAV.  Fills out[0..g_pcm_n) and returns the frame count. */
 static unsigned pcm_to_i16(short *out)
@@ -94,11 +150,54 @@ int panthera_voice_spec(const char *voiceDir, unsigned *creator, int *voiceId)
 
 void panthera_stop(void)
 {
-    uc_ensure_engine();
+    PT_ENSURE_ENGINE();
     g_pt_stop = 1;
     if (g_pt_ready) {
         SEStop_t stop = (SEStop_t)find_export(&g_mt, "_SEStopSpeechAt");
         if (stop) call_aligned2((void *)stop, g_chan, (void *)0); /* stop now */
+    }
+}
+
+/* ---- streaming synthesis (the low-latency TTS path) -------------------- */
+
+int panthera_speak_start(const char *voiceDir, unsigned creator, int voiceId,
+                         const char *text, int wpm)
+{
+    speech_api api;
+    int err;
+    PT_ENSURE_ENGINE();
+    if (!g_pt_ready) return -1;
+    g_pt_stop = 0;
+    pt_utterance_reset();
+    err = pt_use_voice(voiceDir, creator, voiceId);
+    if (err) return err;
+    api = speech_api_of(&g_mt);
+    if (wpm > 0) set_param(&api, g_chan, PARAM_RATE, (unsigned)wpm << 16);
+    err = speak_text(&api, g_chan, text, (unsigned)strlen(text));
+    if (err) fprintf(stderr, "panthera: SESpeakBuffer -> OSErr %d\n", err);
+    return err;   /* synthesis now runs on the engine's worker; drain with pull */
+}
+
+int panthera_pull(short *out, int maxSamples)
+{
+    int idle = 0;
+    /* No PT_ENSURE_ENGINE: this only reads g_pcm, a host-side float buffer the
+     * engine's worker fills -- it never enters the guest, so it needs no engine
+     * on this thread. */
+    if (!g_pt_ready || maxSamples <= 0) return 0;
+    for (;;) {
+        unsigned avail = (g_pcm_n > g_pull_pos) ? (g_pcm_n - g_pull_pos) : 0;
+        if (g_pt_stop) return 0;
+        if (avail > 0) {
+            unsigned n = avail < (unsigned)maxSamples ? avail : (unsigned)maxSamples;
+            unsigned i;
+            for (i = 0; i < n; i++) out[i] = pt_clip(g_pcm[g_pull_pos + i]);
+            g_pull_pos += n;
+            return (int)n;
+        }
+        if (g_stopped) return 0;              /* utterance finished, all drained */
+        Sleep(5);
+        if (++idle > 2000) return 0;          /* ~10 s with no audio: give up */
     }
 }
 
@@ -111,40 +210,21 @@ int panthera_render(const char *voiceDir, unsigned creator, int voiceId,
 
     if (outPcm)   *outPcm = 0;
     if (outFrames) *outFrames = 0;
-    uc_ensure_engine();
+    PT_ENSURE_ENGINE();
     if (!g_pt_ready) return -1;
     g_pt_stop = 0;
 
-    /* A new utterance: reset the audio-path state.  Mirrors the reset in serve
-     * mode (tiger_host_serve.c) and the pmod harness; the AAC/SQL/streaming
-     * counters those also clear are inert on the Fred-first build. */
-    g_pcm_n = 0; g_slices = 0; g_stopped = 0; g_empty_run = 0;
-    g_dup_slices = 0; g_have_last = 0; g_p_drops = 0;
-    g_epoch_base = 0; g_last_stime = 0.0; g_have_origin = 0;
-    g_utt++; g_stale_slices = 0;
-
-    /* Pick the voice (Apple's Speech Manager always does this before speaking). */
-    {
-        typedef int (__cdecl *SEUseVoice_t)(void *chan, const void *spec,
-                                            const void *bundle);
-        SEUseVoice_t use = (SEUseVoice_t)find_export(&g_mt, "_SEUseVoice");
-        struct { unsigned creator; int id; } spec;
-        spec.creator = creator;
-        spec.id      = voiceId;
-        if (!use) return -2;
-        err = call_aligned3((void *)use, g_chan, UC_IN(&spec, sizeof spec),
-                            cf_pinned(voiceDir));
-        if (err) return err;
-    }
+    pt_utterance_reset();
+    err = pt_use_voice(voiceDir, creator, voiceId);
+    if (err) return err;
 
     api = speech_api_of(&g_mt);
-
     /* Rate, in words per minute, as a Fixed 16.16.  Re-applied every utterance
      * because embedded commands in the text can change the channel for good. */
     if (wpm > 0) set_param(&api, g_chan, PARAM_RATE, (unsigned)wpm << 16);
 
     err = speak_text(&api, g_chan, text, (unsigned)strlen(text));
-    if (err) return err;
+    if (err) { fprintf(stderr, "panthera: SESpeakBuffer -> OSErr %d\n", err); return err; }
 
     /* SESpeakBuffer returns as soon as the utterance is accepted; the slices
      * arrive on the engine's worker.  The engine sets g_stopped (AUGraphStop)
