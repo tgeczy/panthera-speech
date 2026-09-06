@@ -48,6 +48,9 @@
  * (TIGER_NO_AAC) here, or the system decoder later. */
 #include "tiger_plat.h"
 #include <sys/resource.h>
+#include <sched.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 #endif
 #include <stdio.h>
 #include <stdlib.h>
@@ -193,6 +196,87 @@ static int g_no_abbrev;
  *
  * Best effort by construction: an app may not always renice its own threads,
  * and failing to is not a reason to refuse to speak. */
+/* The fastest cores this machine has, as a CPU mask, or 0 if they are all the
+ * same.  Read once from cpufreq: cpuinfo_max_freq is per core, and a watch that
+ * pairs one out-of-order core with four in-order ones reports exactly that.
+ *
+ * Measured on a Galaxy Watch (SM-L350): one Cortex-A78 at 2.112 GHz and four
+ * Cortex-A55 at 1.958 GHz.  The clocks are within eight percent of each other
+ * and the cores are not: emulated code is branchy and dependency-chained, which
+ * an in-order core stalls on, so the same soak utterance took 5.1 s on one run
+ * and 14.5 s on the next, and the same 637 access units decoded in 26 ms and
+ * then 362 ms.  That is not thermal and not load, it is which core the thread
+ * happened to be on.
+ */
+static unsigned long tiger_fast_cpu_mask(void)
+{
+    static unsigned long mask;
+    static int done;
+    unsigned long best = 0, m = 0;
+    int i, total = 0, fast = 0;
+    if (done) return mask;
+    done = 1;
+    for (i = 0; i < 32; i++) {
+        char path[128];
+        FILE *f;
+        unsigned long khz = 0;
+        sprintf(path, "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq", i);
+        f = fopen(path, "r");
+        if (!f) continue;
+        if (fscanf(f, "%lu", &khz) != 1) khz = 0;
+        fclose(f);
+        if (!khz) continue;
+        total++;
+        if (khz > best) { best = khz; m = 0; }
+        if (khz == best) m |= 1UL << i;
+    }
+    for (i = 0; i < 32; i++) if (m & (1UL << i)) fast++;
+    /* Every core the same speed -- a Pixel Watch 2 is four identical A53s -- so
+     * there is no faster one to ask for and pinning would only take choices
+     * away from a scheduler that knows more than we do.  Compared against the
+     * machine's own core count rather than a guessed number: a phone with four
+     * big cores and four little ones is heterogeneous and worth pinning on, and
+     * counting to four would have called it homogeneous and skipped it. */
+    if (!total || fast == total) m = 0;
+    mask = m;
+    return mask;
+}
+
+/* Ask for a fast core as well as a high priority.
+ *
+ * Priority alone did not hold it: with THREAD_PRIORITY_AUDIO set, the same
+ * utterance still ran three times slower on one pass than the next, because the
+ * scheduler is free to move a thread and an A55 is a different machine from an
+ * A78 for this workload.  So the threads that actually run guest code say
+ * where they want to be.
+ *
+ * Only the renderers -- the MP worker and the synthesis thread.  The pacer is
+ * deliberately left free: it does a few microseconds per slice and pinning it
+ * to the same single core as the worker would serialise the two against each
+ * other, which is the one way this could be made worse.
+ *
+ * TIGER_NO_AFFINITY=1 turns it off, because "is the pinning helping?" is a
+ * question somebody will want to answer without rebuilding. */
+static void tiger_thread_wants_fast_core(const char *what)
+{
+#ifdef __ANDROID__
+    static int off = -1;
+    unsigned long mask = tiger_fast_cpu_mask();
+    if (off < 0) { const char *e = getenv("TIGER_NO_AFFINITY"); off = e && atoi(e); }
+    if (off || !mask) return;
+    /* Through the syscall rather than the libc wrapper: bionic only declares
+     * sched_setaffinity under _GNU_SOURCE, and defining that for the whole
+     * translation unit to reach one call would change more than it fixes. */
+    if (syscall(__NR_sched_setaffinity, 0, sizeof mask, &mask) != 0) {
+        if (g_verbose) printf("  [sched] %s could not ask for cpu mask %lx\n", what, mask);
+    } else if (g_verbose) {
+        printf("  [sched] %s pinned to cpu mask %lx\n", what, mask);
+    }
+#else
+    (void)what;
+#endif
+}
+
 static void tiger_thread_is_audio(const char *what)
 {
 #ifdef __ANDROID__

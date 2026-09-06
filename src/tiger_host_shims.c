@@ -585,6 +585,7 @@ static DWORD WINAPI mp_thunk(LPVOID arg)
 {
     mptask *t = (mptask *)arg;
     tiger_thread_is_audio("mp worker");
+    tiger_thread_wants_fast_core("mp worker");
     int status = call_aligned1(t->entry, t->param);
     if (t->notify)
         sh_mp_notify_queue(t->notify, t->t1, t->t2, (void *)(intptr_t)status);

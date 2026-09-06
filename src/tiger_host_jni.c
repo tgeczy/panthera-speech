@@ -236,6 +236,10 @@ int panthera_speak_start(const char *voiceDir, unsigned creator, int voiceId,
 {
     speech_api api;
     int err;
+    /* The synthesis thread runs speak_text and the pull loop, so it wants the
+     * fast core too.  Asked per utterance rather than once: this thread belongs
+     * to the framework, which may hand a different one over. */
+    tiger_thread_wants_fast_core("synthesis");
     PT_ENSURE_ENGINE();
     if (!g_pt_ready) return -1;
     InterlockedExchange(&g_pt_stop, 0);

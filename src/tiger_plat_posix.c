@@ -162,9 +162,37 @@ void *VirtualAlloc(void *addr, size_t size, DWORD type, DWORD protect)
                  MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
         if (p == MAP_FAILED) return NULL;
         if (want && p != want) { munmap(p, sz); return NULL; }
+        /* On a 64-bit host, low is not a preference.  The guest is 32-bit and
+         * the whole design is that a pointer the engine holds and a pointer a
+         * shim holds are the same number, so anything the engine can reach has
+         * to fit in 32 bits.  A declined hint is a silent fault deep in
+         * synthesis rather than a failed allocation, so refuse to accept one:
+         * hand the region back and try further up, until the address space
+         * below 4 GB is genuinely exhausted.
+         *
+         * Costs nothing on a 32-bit host, where the test cannot fail. */
+        if (!want && sizeof(void *) > 4) {
+            int tries = 0;
+            while ((unsigned long long)(uintptr_t)p + sz > 0xffffffffULL) {
+                uintptr_t next;
+                munmap(p, sz);
+                if (++tries > 64) return NULL;
+                pthread_mutex_lock(&g_hint_lk);
+                next = g_low_hint + ((uintptr_t)tries << 24);   /* +16 MB a go */
+                if (next + sz > 0xffffffffu) next = 0x10000000u;
+                g_low_hint = next;
+                pthread_mutex_unlock(&g_hint_lk);
+                p = mmap((void *)next, sz, prot,
+                         MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+                if (p == MAP_FAILED) return NULL;
+            }
+        }
         if (!want) {                       /* bump the hint past what we got */
             pthread_mutex_lock(&g_hint_lk);
             {   uintptr_t end = ((uintptr_t)p + sz + 0xffffu) & ~(uintptr_t)0xffffu;
+                /* Stay under 2 GB on a 32-bit host, where an address with the
+                 * top bit set is what started all this; under 4 GB on a 64-bit
+                 * one, which is the whole address space the guest has. */
                 if (end > g_low_hint && end < 0x80000000u) g_low_hint = end; }
             pthread_mutex_unlock(&g_hint_lk);
         }
