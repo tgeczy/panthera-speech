@@ -149,6 +149,11 @@ static int __cdecl sh_DisposeAUGraph(void *g)
 #define kAUProp_ScheduleAudioSlice  3300
 #define kAUProp_ScheduleStartTime   3301
 
+/* AudioUnit's own "not right now" -- what a ScheduledSoundPlayer answers when
+ * it cannot take the slice it is being handed.  Used to cancel an utterance;
+ * see the schedule case in sh_AudioUnitSetProperty. */
+#define kAudioUnitErr_CannotDoInCurrentContext (-10863)
+
 /* The slice begins with an AudioTimeStamp, whose first field is a Float64
  * sample time saying *where in the output* this slice belongs.  Appending in
  * arrival order ignored it, and the positions are not always consecutive. */
@@ -283,6 +288,25 @@ static pending  g_pending[PACE_QCAP];
 static int      g_p_head, g_p_tail, g_p_count;
 static CRITICAL_SECTION g_p_cs;
 static volatile LONG    g_pacer_stop;
+/* Set while the utterance in progress has been cancelled.
+ *
+ * The pacer sleeps out a slice's own duration before completing it, because
+ * the engine's worker is flow-controlled by those completions and would
+ * otherwise run arbitrarily far ahead of the sound.  That throttle is the
+ * whole of why a cancelled utterance took twenty seconds to let go on the
+ * watch: the engine was not being stubborn, it was waiting on ticks we were
+ * deliberately holding back at realtime, and _SEStopSpeechAt could not be
+ * delivered until its worker came up for air.  Measured on a Pixel Watch 2, a
+ * 700-character request cost 20.15 s between the stop and the next utterance
+ * reaching the engine, against ~28 s of audio still owed at g_pace 100.
+ *
+ * Once nobody wants the audio, pacing it is paying realtime for sound we are
+ * about to throw away.  So while cancelling, drop the sleep and let the engine
+ * run the remainder flat out.  Every slice is still completed -- that is the
+ * part that matters, since a completion that never fires wedges the channel --
+ * they are simply completed as fast as the worker can take them, and what they
+ * carry is not collected, because it is audio no one will hear. */
+static volatile LONG    g_au_cancel;
 /* Set while the pacer holds a job it has not finished collecting.  An
  * utterance is complete only when the queue is empty *and* this is clear;
  * reading g_pcm before then is a snapshot of a half-collected timeline. */
@@ -455,14 +479,15 @@ static DWORD WINAPI pacer_thread(LPVOID arg)
              * empty-slice spin returns, so it wants measuring, not guessing. */
             double ms = job.frames * 1000.0 / g_rate * (g_pace / 100.0);
             if (ms < g_pace_floor) ms = g_pace_floor;
+            if (g_au_cancel) ms = 0.0;   /* cancelled: owed nobody any time */
             if (ms >= 1.0) Sleep((DWORD)ms);
-            else SwitchToThread();
+            else SwitchToThread();        /* still yield, or the worker never runs */
         }
         /* Audio for an utterance that has already been answered must not be
          * written into the buffer the next one is filling.  Complete the slice
          * regardless -- that is the engine's clock, and refusing to tick it is
          * how the channel wedges -- but do not collect what it carries. */
-        if (job.utt == g_utt)
+        if (job.utt == g_utt && !g_au_cancel)
             collect_slice((unsigned char *)job.slice);
         else
             g_stale_slices++;
@@ -668,7 +693,28 @@ static int __cdecl sh_AudioUnitSetProperty(au_obj *unit, unsigned id,
                *(const unsigned *)(p + 12), g_channels,
                *(const unsigned *)(p + 32));
     } else if (id == kAUProp_ScheduleAudioSlice && data) {
+        /* Failing the schedule is how an utterance is cancelled.
+         *
+         * The engine hands over finished PCM by scheduling it here, so this
+         * call is the one place per slice where its render loop asks us a
+         * question and reads the answer.  _SEStopSpeechAt is not that place:
+         * measured on a Pixel Watch 2 it returns noErr but takes 20 s, because
+         * it waits for the worker, and the worker is busy rendering the very
+         * text we are trying to abandon -- 7032 slices went by inside one such
+         * call.  A screen reader cannot wait 20 s.
+         *
+         * The slice is taken first and refused second, and the order is the
+         * whole trick.  Simply returning the error took the utterance from 20 s
+         * to never: the engine had scheduled a slice whose completion then had
+         * nobody to fire it, and waited for it forever -- the wedge this file
+         * warns about two hundred lines up, walked straight into.  So take it
+         * (which queues the completion, and with g_au_cancel set the pacer
+         * fires it at once and throws the audio away), and *then* answer the
+         * failure a real ScheduledSoundPlayer would give if it could not accept
+         * the sound.  The engine's clock keeps ticking either way; the error is
+         * what lets it stop early rather than finish the sentence. */
         take_slice((unsigned char *)data);
+        if (g_au_cancel) return kAudioUnitErr_CannotDoInCurrentContext;
     } else if (id == kAUProp_ScheduleStartTime) {
         if (g_verbose) printf("  [au] ScheduleStartTime sampleTime %.1f\n",
                data ? *(const double *)data : 0.0);

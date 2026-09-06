@@ -151,26 +151,56 @@ int panthera_voice_spec(const char *voiceDir, unsigned *creator, int *voiceId)
 void panthera_stop(void)
 {
     /* The Binder caller must never enter the shared guest channel concurrently
-     * with the synthesis thread. It only posts a cancellation request. */
+     * with the synthesis thread, so this posts flags and nothing else.
+     *
+     * g_au_cancel is the one that ends the utterance: it makes the audio shim
+     * refuse the engine's next scheduled slice, which unwinds its render loop
+     * from the inside.  It is a host-side flag, so setting it from Binder is
+     * safe -- that is exactly why the cancellation lives there rather than in
+     * a Speech Manager call this thread is not allowed to make. */
     InterlockedExchange(&g_pt_stop, 1);
+    InterlockedExchange(&g_au_cancel, 1);
 }
 
 void panthera_finish(void)
 {
     if (g_pt_ready && g_pt_stop) {
         unsigned last = g_slices, quiet = 0;
-        int spin;
+        unsigned slices_in = g_slices;
+        double t0 = wall_ms(), t_stop;
+        int spin, err_stop = -1;
         SEStop_t stop;
+        /* Belt and braces: panthera_stop normally sets this, but render mode
+         * calls finish directly and a stop posted before the engine was ready
+         * would not have. */
+        InterlockedExchange(&g_au_cancel, 1);
         PT_ENSURE_ENGINE();
+        /* Tell the channel as well, so its own notion of state agrees with
+         * ours.  This is not what makes the cancellation quick -- refusing the
+         * next slice is -- but by the time we get here the engine's loop is
+         * already unwinding, so the call no longer has to wait out the rest of
+         * the sentence to be answered.
+         *
+         * ('rset' used to be attempted here on the strength of a comment in
+         * serve mode.  It answers paramErr on this engine, and serve mode's
+         * own g_use_reset defaults to off, so it was never doing anything.) */
         stop = (SEStop_t)find_export(&g_mt, "_SEStopSpeechAt");
-        if (stop) call_aligned2((void *)stop, g_chan, (void *)0);
-        /* Stop is asynchronous. Let its outstanding slices settle before the
-         * next request resets the shared timeline (same rule as serve mode). */
+        if (stop) err_stop = call_aligned2((void *)stop, g_chan, (void *)0);
+        t_stop = wall_ms();
+
+        /* Then a bounded settle so outstanding slices land before the next
+         * request resets the shared timeline (same rule as serve mode). */
         for (spin = 0; spin < 100 && quiet < 15; spin++) {
             Sleep(2);
             if (g_slices != last || !pacer_idle()) { last = g_slices; quiet = 0; }
             else quiet++;
         }
+        /* One line, because this path is measured rather than reasoned about:
+         * every previous guess at where the twenty seconds went was wrong. */
+        fprintf(stderr, "panthera: finish stop=%.0fms(err %d) settle=%.0fms "
+                        "slices %u->%u\n",
+                t_stop - t0, err_stop, wall_ms() - t_stop, slices_in, g_slices);
+        InterlockedExchange(&g_au_cancel, 0);
     }
 }
 
@@ -184,6 +214,7 @@ int panthera_speak_start(const char *voiceDir, unsigned creator, int voiceId,
     PT_ENSURE_ENGINE();
     if (!g_pt_ready) return -1;
     InterlockedExchange(&g_pt_stop, 0);
+    InterlockedExchange(&g_au_cancel, 0);   /* this one's audio is wanted */
     pt_utterance_reset();
     err = pt_use_voice(voiceDir, creator, voiceId);
     if (err) return err;
@@ -237,6 +268,7 @@ int panthera_render(const char *voiceDir, unsigned creator, int voiceId,
     PT_ENSURE_ENGINE();
     if (!g_pt_ready) return -1;
     InterlockedExchange(&g_pt_stop, 0);
+    InterlockedExchange(&g_au_cancel, 0);
 
     pt_utterance_reset();
     err = pt_use_voice(voiceDir, creator, voiceId);
