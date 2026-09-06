@@ -494,6 +494,7 @@ static void guest_statics_init(void)
     GUEST_STATIC_INIT(g_errno_storage);
     GUEST_STATIC_INIT(g_dispatch_handles);
     GUEST_STATIC_INIT(g_the_locale);
+    GUEST_STATIC_INIT(g_speech_obj);
 }
 
 static int host_open(const char *mtpath, const char *sdpath)

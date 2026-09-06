@@ -1106,7 +1106,12 @@ static int __cdecl sh_CFBooleanGetValue(const void *o)
  * is a label rather than a protocol. If a path ever compares against an
  * internal literal instead, a wrong value here would present as a property
  * that silently does nothing, which is why they are the real ones anyway. */
-typedef struct { const char *sym, *text; void *obj; } speech_const;
+/* The `obj` slot used to live in this table, and it is the one field the engine
+ * ever sees: cf_data_symbol hands back its ADDRESS, and the engine loads
+ * through it.  So it moves somewhere the guest can hold, and the table -- whose
+ * sym and text are host-side labels -- stays exactly where it was.  Splitting
+ * the one field out beats moving fifty rows of string literals into an arena. */
+typedef struct { const char *sym, *text; } speech_const;
 
 static speech_const g_speech_consts[] = {
     { "_kSpeechRateProperty",             "rate" },
@@ -1171,6 +1176,10 @@ static speech_const g_speech_consts[] = {
 #define SPEECH_CONST_N \
         (int)(sizeof(g_speech_consts) / sizeof(g_speech_consts[0]))
 
+/* One slot per constant, declared here so the table's own count is the only
+ * count -- a second literal would be one more thing to keep in step. */
+GUEST_STATIC(void *, g_speech_obj, SPEECH_CONST_N);
+
 /* The named ones, by index into the table above. */
 #define SPK_RATE       0
 #define SPK_PITCHBASE  1
@@ -1187,10 +1196,10 @@ static void speech_keys_init(void)
 {
     int i;
     for (i = 0; i < SPEECH_CONST_N; i++)
-        if (!g_speech_consts[i].obj)
-            g_speech_consts[i].obj = cf_pinned(g_speech_consts[i].text);
+        if (!g_speech_obj[i])
+            g_speech_obj[i] = cf_pinned(g_speech_consts[i].text);
     for (i = 0; i < 6; i++)
-        g_speech_key[i] = g_speech_consts[i].obj;
+        g_speech_key[i] = g_speech_obj[i];
 }
 
 /* -> the address of the slot holding the constant, which is what an imported
@@ -1209,7 +1218,7 @@ static void *speech_const_lookup(const char *name)
     speech_keys_init();
     for (i = 0; i < SPEECH_CONST_N; i++)
         if (!strcmp(g_speech_consts[i].sym, name))
-            return &g_speech_consts[i].obj;
+            return &g_speech_obj[i];
     /* Named the family but not a member: say so. Being thunked from here is
      * how the first attempt at this crashed. */
     printf("  [cf] no constant for %s -- it will be thunked\n", name);
