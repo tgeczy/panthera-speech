@@ -450,8 +450,10 @@ static int __cdecl sh_advise_ok(void *p, unsigned l, int a)
  * This voice is broken beyond repair." and printing them is worth far more
  * than the ten lines it costs. */
 static char g_fake_sF[1024];             /* ___sF; stderr is &__sF[2] */
-static int  g_errno_storage;
-static int * __cdecl sh_error(void) { return &g_errno_storage; }
+/* The engine reads *__error() directly, so this int has to be somewhere the
+ * guest can reach -- see GUEST_STATIC in tiger_host.c. */
+GUEST_STATIC(int, g_errno_storage, 1);
+static int * __cdecl sh_error(void) { return g_errno_storage; }
 
 static int __cdecl sh_fprintf(void *f, const char *fmt, ...)
 {

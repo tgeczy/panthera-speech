@@ -104,7 +104,10 @@ typedef struct { cfstring str; unsigned magic; long rc; char buf[CFPATH];
  * that cannot reach zero. */
 #define CF_PINNED 0x40000000
 
-static void *g_cfstring_class;           /* ___CFConstantStringClassReference */
+/* ___CFConstantStringClassReference.  Only its ADDRESS is ever used -- it is
+ * an identity rather than a value -- and the engine holds and compares that
+ * address, so it has to be one the guest can hold. */
+GUEST_STATIC(void *, g_cfstring_class, 1);
 
 static cfobj *cf_make(const char *path, long rc)
 {
@@ -129,7 +132,7 @@ static cfobj *cf_make(const char *path, long rc)
         memcpy(o->big, path, n + 1);
         o->str.cstr = o->big;
     }
-    o->str.isa  = &g_cfstring_class;
+    o->str.isa  = g_cfstring_class;
     o->str.len  = (unsigned)n;
     return o;
 }
@@ -150,7 +153,7 @@ static cfobj *cf_text(const char *s)
 
 static int cf_ours(const void *o)
 {
-    return o && ((const cfstring *)o)->isa == &g_cfstring_class &&
+    return o && ((const cfstring *)o)->isa == g_cfstring_class &&
            ((const cfobj *)o)->magic == CF_MAGIC;
 }
 

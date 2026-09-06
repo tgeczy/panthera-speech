@@ -310,13 +310,16 @@ static unsigned g_retire_seq;
  * number that decides how big the table has to be. */
 static unsigned g_src_made, g_src_reused;
 static int g_nsources;
-static int g_dispatch_handles[64];
+/* The guest holds these as opaque ids -- and an opaque id is still a number
+ * that has to fit in the guest's 32 bits. */
+GUEST_STATIC(int, g_dispatch_handles, 64);
 static int g_ndispatch;
 
 static void *dispatch_handle(void)
 {
-    if (g_ndispatch >= (int)(sizeof(g_dispatch_handles) /
-                             sizeof(g_dispatch_handles[0])))
+    /* The macro's own count: sizeof stopped answering for this the moment it
+     * became a pointer to an array rather than the array. */
+    if (g_ndispatch >= (int)g_dispatch_handles_guest_count)
         return &g_dispatch_handles[0];
     return &g_dispatch_handles[g_ndispatch++];
 }

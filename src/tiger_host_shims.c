@@ -129,17 +129,20 @@ static int __cdecl sh_mutexattr_settype(void *a, int t)
  * So hand back the address of a real object.  Nothing dereferences it, and if
  * anything ever does it finds zeroes rather than an address that was never
  * mapped. */
-static struct { int mask; char name[32]; } g_the_locale;
+/* Handed to the engine, which reads it, so it lives where the guest can see
+ * it.  Named rather than anonymous only because GUEST_STATIC needs a type. */
+typedef struct { int mask; char name[32]; } tiger_locale;
+GUEST_STATIC(tiger_locale, g_the_locale, 1);
 
 static void * __cdecl sh_newlocale(int mask, const char *name, void *base)
 {
     (void)base;
-    g_the_locale.mask = mask;
+    g_the_locale->mask = mask;
     if (name) {
-        strncpy(g_the_locale.name, name, sizeof(g_the_locale.name) - 1);
-        g_the_locale.name[sizeof(g_the_locale.name) - 1] = 0;
+        strncpy(g_the_locale->name, name, sizeof(g_the_locale->name) - 1);
+        g_the_locale->name[sizeof(g_the_locale->name) - 1] = 0;
     }
-    return &g_the_locale;
+    return g_the_locale;
 }
 static void __cdecl sh_freelocale(void *loc) { (void)loc; }
 

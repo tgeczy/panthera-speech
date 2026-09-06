@@ -17,8 +17,19 @@
  * does with valid handles.
  */
 typedef struct { unsigned tag; int id; } au_obj;
-static au_obj g_graph = { 0x41554752u, 0 };     /* 'AUGR' */
-static au_obj g_units[8];
+/* The engine holds these as handles, so their addresses have to fit in the
+ * guest's 32 bits -- see GUEST_STATIC in tiger_host.c.  'AUGR' is set in
+ * au_guest_init rather than an initialiser, because on a 64-bit host the
+ * storage does not exist until then. */
+GUEST_STATIC(au_obj, g_graph, 1);
+GUEST_STATIC(au_obj, g_units, 8);
+
+static void au_guest_init(void)
+{
+    GUEST_STATIC_INIT(g_graph);
+    GUEST_STATIC_INIT(g_units);
+    if (g_graph) { g_graph->tag = 0x41554752u; g_graph->id = 0; }   /* 'AUGR' */
+}
 static int    g_nunits;
 
 static void fourcc(char *out, unsigned v)
@@ -31,8 +42,8 @@ static void fourcc(char *out, unsigned v)
 
 static int __cdecl sh_NewAUGraph(au_obj **out)
 {
-    if (out) *out = &g_graph;
-    if (g_verbose) printf("  [au] NewAUGraph -> %p\n", (void *)&g_graph);
+    if (out) *out = g_graph;
+    if (g_verbose) printf("  [au] NewAUGraph -> %p\n", (void *)g_graph);
     return 0;
 }
 static int __cdecl sh_AUGraphNewNode(void *g, const unsigned *desc,

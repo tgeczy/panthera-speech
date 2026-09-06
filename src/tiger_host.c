@@ -169,6 +169,46 @@ typedef struct {
     const dyld_info_command *info;  /* NULL for Tiger and Leopard */
 } image;
 
+/* Storage the guest must be able to hold or dereference.
+ *
+ * The identity mapping means a pointer the engine holds and a pointer a shim
+ * holds are the same number -- and the engine's numbers are 32 bits wide.  On a
+ * 32-bit host every address already qualifies and a plain static is fine.  On a
+ * 64-bit host a static lands wherever the dynamic linker put the library, which
+ * is nowhere near the low 4 GB, and handing its address to the guest truncates
+ * it into a fault a long way from here.
+ *
+ * So on 64-bit these objects are allocated out of the same low region the arena
+ * and the images live in.  Declaring them as POINTERS either way is what keeps
+ * the diff small: `g_units[i]` and `&g_units[n]` read the same whether the name
+ * is an array or a pointer to one, so only the declaration changes.
+ *
+ * Not a copy -- they have to *live* there.  g_errno_storage is written by a
+ * shim and read by the engine; two of it would be a bug that looks like a
+ * miracle.  GUEST_STATIC therefore allocates once and everything uses the
+ * result. */
+#if defined(TIGER_UC) && UINTPTR_MAX > 0xffffffffu
+#define GUEST_LOW 1
+#else
+#define GUEST_LOW 0
+#endif
+
+/* Declare and define one.  On 32-bit it is the static it always was, with a
+ * pointer aimed at it; on 64-bit the pointer is filled in at start-up. */
+#if GUEST_LOW
+#define GUEST_STATIC(type, name, count)     static type *name;     static const unsigned name##_guest_count = (count)
+#else
+#define GUEST_STATIC(type, name, count)     static type name##_storage[(count)];     static type *name = name##_storage;     static const unsigned name##_guest_count = (count)
+#endif
+
+/* Fill in one on a 64-bit host; a no-op on 32-bit.  Called before any image
+ * loads, so the engine can never see an unset pointer. */
+#if GUEST_LOW
+#define GUEST_STATIC_INIT(name)     do { if (!name) { name = (void *)arena_alloc(sizeof *name * name##_guest_count);                       if (name) memset(name, 0, sizeof *name * name##_guest_count); } } while (0)
+#else
+#define GUEST_STATIC_INIT(name) ((void)0)
+#endif
+
 /* ---- shared state ------------------------------------------------------ */
 static image *g_primary;        /* MacinTalk; the image addresses resolve against */
 static int g_verbose = 1;
@@ -440,6 +480,22 @@ static void host_quiet(void)
  * this loader only as cleanup for a reservation that failed -- so calling this
  * twice would map a second copy of every image and, with Alex's 701 MB bank
  * among them, exhaust a 2 GB address space rather than reuse it. */
+/* Give every guest-visible static an address the guest can hold.
+ *
+ * One place rather than scattered lazy initialisation, and it runs immediately
+ * after uc_host_init -- the arena has to exist, and no image may have loaded,
+ * because from the first initialiser onwards the engine can reach these.
+ *
+ * A no-op on a 32-bit host, where each of these is the static it always was. */
+static void guest_statics_init(void)
+{
+    au_guest_init();                       /* g_graph, g_units, and 'AUGR' */
+    GUEST_STATIC_INIT(g_cfstring_class);
+    GUEST_STATIC_INIT(g_errno_storage);
+    GUEST_STATIC_INIT(g_dispatch_handles);
+    GUEST_STATIC_INIT(g_the_locale);
+}
+
 static int host_open(const char *mtpath, const char *sdpath)
 {
     SEOpen_t open_chan;
@@ -453,6 +509,7 @@ static int host_open(const char *mtpath, const char *sdpath)
      * regions at their own addresses, which a later image slide must never be
      * handed. */
     uc_host_init();
+    guest_statics_init();       /* needs the arena; must precede any image */
 #endif
     if (getenv("TIGER_CF_LOG")) g_cflog = 1;
     { const char *e = getenv("TIGER_SPEED");
