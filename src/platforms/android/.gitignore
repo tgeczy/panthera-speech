@@ -3,6 +3,8 @@
 /app/build/
 /app/.cxx/
 .gradle/
+.kotlin/
+hs_err_pid*.log
 local.properties
 *.iml
 .idea/
