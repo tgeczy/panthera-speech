@@ -126,10 +126,11 @@ class PantheraTtsService : TextToSpeechService() {
         // whatever it was handed, and a stop waits for it. Cancelling therefore
         // costs the rest of the current piece, not the rest of the paragraph --
         // see PantheraText for the measurement and the cutting rules.
-        val pieces = PantheraText.split(text)
+        val pieces = PantheraText.pieces(text)
         for (piece in pieces) {
             if (stopRequested) break
-            val started = PantheraEngine.speakStart(this, voice, piece, wpmFor(request.speechRate))
+            val started = PantheraEngine.speakStart(
+                this, voice, PantheraText.bytes(piece), wpmFor(request.speechRate))
             if (started != 0) {
                 Log.w("PantheraTts", "speakStart -> $started")
                 // Anything already spoken is real audio the user heard; only a

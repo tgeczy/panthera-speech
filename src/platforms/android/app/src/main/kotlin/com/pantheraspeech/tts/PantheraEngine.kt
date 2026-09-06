@@ -150,12 +150,17 @@ object PantheraEngine {
      * seconds to map), so a screen reader's first request is not gated on it. */
     fun warmUp(ctx: Context) { synchronized(lock) { open(ctx) } }
 
-    /** Render one utterance to PCM, or null on failure. Serialised. */
+    /** Render one utterance to PCM, or null on failure. Serialised.
+     *
+     * Takes the text as the app has it and puts it through the same emoji and
+     * MacRoman pass the speech path uses, so a preview here sounds like the
+     * real thing rather than like a second implementation of it. */
     fun render(ctx: Context, voice: VoiceInfo, text: String, wpm: Int): ShortArray? {
         synchronized(lock) {
             if (!open(ctx)) return null
             return try {
-                PantheraNative.nativeRender(voice.dir, voice.creator, voice.voiceId, text, wpm)
+                PantheraNative.nativeRender(voice.dir, voice.creator, voice.voiceId,
+                    PantheraText.forEngine(text), wpm)
             } catch (e: Throwable) { null }
         }
     }
@@ -163,7 +168,7 @@ object PantheraEngine {
     /** Begin an utterance for the streaming path. Serialised (does the one-time
      * open + selects the voice); the pull that follows is lock-free. Returns 0
      * or an error. */
-    fun speakStart(ctx: Context, voice: VoiceInfo, text: String, wpm: Int): Int {
+    fun speakStart(ctx: Context, voice: VoiceInfo, text: ByteArray, wpm: Int): Int {
         synchronized(lock) {
             if (!open(ctx)) return -1
             return try {

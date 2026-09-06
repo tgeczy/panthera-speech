@@ -105,6 +105,22 @@ object PantheraText {
         return out
     }
 
+    /** The utterance as the engine should hear it, cut into pieces.
+     *
+     * Emoji are described first, and the cutting runs on the result: TalkBack
+     * hands over the code points themselves, and "grinning face" is several
+     * words where the emoji was one character, so splitting before describing
+     * would size the pieces against the wrong text. NVDA never needed this --
+     * it hands the desktop driver words already -- so there is nothing to port
+     * from there and this is Android's own problem. */
+    fun pieces(text: String): List<String> = split(Emoji.describe(text, true))
+
+    /** One utterance, described and encoded, for callers that do not stream. */
+    fun forEngine(text: String): ByteArray = MacRoman.encode(Emoji.describe(text, true))
+
+    /** One piece, in the engine's own bytes. */
+    fun bytes(piece: String): ByteArray = MacRoman.encode(piece)
+
     /** `text` in pieces that rejoin to exactly `text`.
      *
      * Never fewer characters than went in, and never a cut anywhere except a

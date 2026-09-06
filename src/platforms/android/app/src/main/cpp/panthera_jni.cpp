@@ -10,6 +10,7 @@
 // point is serialised on the Kotlin side (PantheraEngine's lock).
 
 #include <jni.h>
+#include <string>
 #include <stdlib.h>
 #include "tiger_host_jni.h"
 
@@ -26,20 +27,34 @@ Java_com_pantheraspeech_tts_PantheraNative_nativeOpen(
     return rc;
 }
 
+// The engine's text is MacRoman bytes, not UTF-8 -- Kotlin has already folded
+// and encoded it (see MacRoman.kt), so it arrives as a byte array and must not
+// be touched again here. Copied into a NUL-terminated std::string because the
+// C API takes a C string; MacRoman has no embedded NULs to lose.
+static bool pt_text_bytes(JNIEnv *env, jbyteArray jtext, std::string &out) {
+    if (!jtext) return false;
+    jsize n = env->GetArrayLength(jtext);
+    jbyte *b = env->GetByteArrayElements(jtext, nullptr);
+    if (!b) return false;
+    out.assign(reinterpret_cast<const char *>(b), (size_t)n);
+    env->ReleaseByteArrayElements(jtext, b, JNI_ABORT);
+    return true;
+}
+
 JNIEXPORT jshortArray JNICALL
 Java_com_pantheraspeech_tts_PantheraNative_nativeRender(
         JNIEnv *env, jclass, jstring jvoice, jint creator, jint voiceId,
-        jstring jtext, jint wpm) {
+        jbyteArray jtext, jint wpm) {
     const char *voice = env->GetStringUTFChars(jvoice, nullptr);
-    const char *text  = env->GetStringUTFChars(jtext, nullptr);
+    std::string text;
+    bool haveText = pt_text_bytes(env, jtext, text);
     short   *pcm    = nullptr;
     unsigned frames = 0;
-    int rc = (voice && text)
-        ? panthera_render(voice, (unsigned)creator, (int)voiceId, text,
+    int rc = (voice && haveText)
+        ? panthera_render(voice, (unsigned)creator, (int)voiceId, text.c_str(),
                           (int)wpm, &pcm, &frames)
         : -1;
     if (voice) env->ReleaseStringUTFChars(jvoice, voice);
-    if (text)  env->ReleaseStringUTFChars(jtext, text);
     if (rc != 0 || pcm == nullptr) { free(pcm); return nullptr; }
     jshortArray arr = env->NewShortArray((jsize)frames);
     if (arr) env->SetShortArrayRegion(arr, 0, (jsize)frames,
@@ -51,14 +66,15 @@ Java_com_pantheraspeech_tts_PantheraNative_nativeRender(
 JNIEXPORT jint JNICALL
 Java_com_pantheraspeech_tts_PantheraNative_nativeSpeakStart(
         JNIEnv *env, jclass, jstring jvoice, jint creator, jint voiceId,
-        jstring jtext, jint wpm) {
+        jbyteArray jtext, jint wpm) {
     const char *voice = env->GetStringUTFChars(jvoice, nullptr);
-    const char *text  = env->GetStringUTFChars(jtext, nullptr);
-    int rc = (voice && text)
-        ? panthera_speak_start(voice, (unsigned)creator, (int)voiceId, text, (int)wpm)
+    std::string text;
+    bool haveText = pt_text_bytes(env, jtext, text);
+    int rc = (voice && haveText)
+        ? panthera_speak_start(voice, (unsigned)creator, (int)voiceId,
+                               text.c_str(), (int)wpm)
         : -1;
     if (voice) env->ReleaseStringUTFChars(jvoice, voice);
-    if (text)  env->ReleaseStringUTFChars(jtext, text);
     return rc;
 }
 

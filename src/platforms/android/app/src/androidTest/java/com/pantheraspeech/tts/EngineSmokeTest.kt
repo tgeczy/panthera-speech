@@ -83,6 +83,37 @@ class EngineSmokeTest : Instrumentation() {
                 results.putInt("wav${i}Peak", peak)
                 Log.i("PantheraTest", "file $i: ${bytes.size} bytes, peak=$peak")
             }
+            // Emoji and encoding, checked against each other rather than by ear.
+            //
+            // TalkBack hands over emoji code points, and MacRoman -- a 1984
+            // Western European encoding -- has none of them, so without the
+            // describing pass they become the space that anything unspellable
+            // becomes and the user hears nothing where the emoji was. The oracle
+            // is exact: if the pass works, an emoji renders to the same bytes as
+            // the words it stands for.
+            fun pcmOf(name: String, text: String): ByteArray {
+                val file = File(targetContext.filesDir, "$name.wav")
+                utterance(name) { client.synthesizeToFile(text, Bundle(), file, name) }
+                return file.readBytes()
+            }
+            val emoji = pcmOf("emoji", "A 👋 here.")
+            val spelled = pcmOf("spelled", "A waving hand here.")
+            check(emoji.contentEquals(spelled)) {
+                "emoji did not speak as its name: ${emoji.size} vs ${spelled.size} bytes"
+            }
+            results.putInt("emojiBytes", emoji.size)
+            Log.i("PantheraTest", "emoji speaks as its name: ${emoji.size} bytes")
+
+            // The same trick for the MacRoman fold. A typographic apostrophe is
+            // an apostrophe; sent as itself, the engine's front end reads 0xD5
+            // as a quotation mark and breaks the phrase there.
+            val curly = pcmOf("curly", "Canopy’s investments.")
+            val straight = pcmOf("straight", "Canopy's investments.")
+            check(curly.contentEquals(straight)) {
+                "curly apostrophe did not fold: ${curly.size} vs ${straight.size} bytes"
+            }
+            Log.i("PantheraTest", "curly apostrophe folds to straight")
+
             client.setAudioAttributes(AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
