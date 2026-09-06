@@ -275,9 +275,20 @@ int panthera_pull(short *out, int maxSamples)
             /* Slices per utterance, so a cancelled one can be told from a
              * completed one: the question is whether a stop truncates the
              * render or merely watches it run to the end. */
-            fprintf(stderr, "panthera: utterance done slices=%u frames=%u "
-                            "first=%.0fms aac=%.0fms over %u units\n",
-                    g_slices, g_pcm_n, g_first_slice_ms, g_aac_ms, g_aac_units);
+            {
+                /* "Still eight megabytes and steady" and "climbing two a
+                 * utterance" look identical from one render and are completely
+                 * different problems, so the arena is reported every time. */
+                unsigned bumped = 0, freed = 0;
+#ifdef TIGER_UC
+                arena_usage(&bumped, &freed);
+#endif
+                fprintf(stderr, "panthera: utterance done slices=%u frames=%u "
+                                "first=%.0fms aac=%.0fms over %u units "
+                                "arena=%uK free=%uK\n",
+                        g_slices, g_pcm_n, g_first_slice_ms, g_aac_ms,
+                        g_aac_units, bumped / 1024u, freed / 1024u);
+            }
             return 0;
         }
         Sleep(5);

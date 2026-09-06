@@ -90,21 +90,98 @@ static void uc_must(uc_err e, const char *what)
 }
 
 /* ---- the guest arena --------------------------------------------------- *
- * A bump allocator with an 8-byte size header, so realloc knows the old size.
- * free is a no-op: a render has no teardown path here any more than the native
- * host does (see host_open), and one utterance never approaches 64 MB.  Because
- * the region is identity-mapped, the returned guest address is also a valid
- * host pointer, so a shim can fill it directly.  Locked, because the worker and
- * pacer engines allocate concurrently. */
+ * The engine's malloc, in memory the guest can address.  An 8-byte header per
+ * block -- size, then the free-list link -- and the payload after it.  Because
+ * the region is identity-mapped, the address handed back is also a valid host
+ * pointer, so a shim can fill it directly.  Locked, because the worker and
+ * pacer engines allocate concurrently.
+ *
+ * **free is real, and has to be.**  It was a no-op, on the reasoning that a
+ * render has no teardown path and one utterance never approaches 64 MB.  The
+ * first half is true and the second is beside the point: a *session* of
+ * utterances does, because nothing was ever given back.  Alex allocates enough
+ * per utterance to get there in about thirty seconds of reading, and what that
+ * looks like is not a tidy out-of-memory error -- it is
+ *
+ *     tiger_host_uc: arena exhausted (+3984)
+ *     Fatal signal 11 (SIGSEGV) ... fault addr 0x0 (write)
+ *
+ * in the same millisecond: malloc answers null, the engine does not ask, and
+ * memcpy writes 3984 bytes to address zero.  The native host has always given
+ * the engine a real malloc and free and the engine has always behaved on it,
+ * so this is matching that rather than trusting it with something new.
+ *
+ * First fit over a free list, splitting a block that is much too big, and no
+ * coalescing: the workload is the same handful of sizes utterance after
+ * utterance, which a free list serves almost exactly and a bump allocator
+ * cannot serve at all. */
+#define ARENA_HDR   8u          /* [0]=payload size, [4]=next free block */
+#define ARENA_SPLIT 64u         /* leftover worth making a block of its own */
+
+/* The free list is kept in ADDRESS order, which is the only reason coalescing
+ * is possible -- and coalescing is the difference between working and not.
+ *
+ * Measured without it, on the soak: 63 MB handed out, 52 MB of that already
+ * back on the free list, and the allocation that killed the process was 89 KB.
+ * There was four times the memory needed and not one piece of it big enough.
+ * A free list without coalescing does not run out of memory, it runs out of
+ * *shapes*, and the failure looks exactly like a leak from the outside. */
+#define ARENA_SIZE(h)   (*(unsigned *)(uintptr_t)(h))
+#define ARENA_NEXT(h)   (*(unsigned *)(uintptr_t)((h) + 4))
+#define ARENA_END(h)    ((h) + ARENA_HDR + ARENA_SIZE(h))
+
+static unsigned g_arena_free;   /* lowest free block's header, 0 = none */
+
+/* Put a block back, in address order, merged with either neighbour it touches.
+ * Caller holds the lock. */
+static void arena_release(unsigned hdr)
+{
+    unsigned prev = 0, cur = g_arena_free;
+    while (cur && cur < hdr) { prev = cur; cur = ARENA_NEXT(cur); }
+    ARENA_NEXT(hdr) = cur;
+    if (prev) ARENA_NEXT(prev) = hdr;
+    else      g_arena_free = hdr;
+    if (cur && ARENA_END(hdr) == cur) {          /* merge forward */
+        ARENA_SIZE(hdr) += ARENA_HDR + ARENA_SIZE(cur);
+        ARENA_NEXT(hdr)  = ARENA_NEXT(cur);
+    }
+    if (prev && ARENA_END(prev) == hdr) {        /* and backward */
+        ARENA_SIZE(prev) += ARENA_HDR + ARENA_SIZE(hdr);
+        ARENA_NEXT(prev)  = ARENA_NEXT(hdr);
+    }
+}
+
 static void *arena_alloc(size_t n)
 {
-    unsigned hdr, p;
+    unsigned hdr, p, cur, prev = 0;
     void *ret = NULL;
     n = (n + 7u) & ~(size_t)7u;
     if (g_uc_cs_ready) EnterCriticalSection(&g_arena_cs);
-    if ((size_t)g_arena_next + 8 + n <= g_uc_arena_end) {
+    for (cur = g_arena_free; cur; ) {
+        unsigned sz   = ARENA_SIZE(cur);
+        unsigned next = ARENA_NEXT(cur);
+        if (sz >= (unsigned)n) {
+            /* Split when the leftover is worth a header of its own.  The tail
+             * sits immediately after this block and before `next`, so it takes
+             * this block's place in the list and the ordering still holds. */
+            if (sz >= (unsigned)n + ARENA_HDR + ARENA_SPLIT) {
+                unsigned tail = cur + ARENA_HDR + (unsigned)n;
+                ARENA_SIZE(tail) = sz - (unsigned)n - ARENA_HDR;
+                ARENA_NEXT(tail) = next;
+                ARENA_SIZE(cur)  = (unsigned)n;
+                next = tail;
+            }
+            if (prev) ARENA_NEXT(prev) = next;
+            else      g_arena_free = next;
+            ret = (void *)(uintptr_t)(cur + ARENA_HDR);
+            break;
+        }
+        prev = cur;
+        cur  = next;
+    }
+    if (!ret && (size_t)g_arena_next + ARENA_HDR + n <= g_uc_arena_end) {
         hdr = g_arena_next;
-        p   = hdr + 8;
+        p   = hdr + ARENA_HDR;
         *(unsigned *)(uintptr_t)hdr = (unsigned)n;
         g_arena_next = p + (unsigned)n;
         ret = (void *)(uintptr_t)p;
@@ -115,8 +192,34 @@ static void *arena_alloc(size_t n)
     return ret;
 }
 
+/* How much of the arena has ever been handed out, and how much is on the free
+ * list waiting to be handed out again.  Reported per utterance: "still 8 MB and
+ * steady" and "climbing 2 MB an utterance" are the same picture from a single
+ * render and completely different problems. */
+static void arena_usage(unsigned *bumped, unsigned *freed)
+{
+    unsigned cur, total = 0;
+    if (g_uc_cs_ready) EnterCriticalSection(&g_arena_cs);
+    for (cur = g_arena_free; cur; cur = *(unsigned *)(uintptr_t)(cur + 4))
+        total += *(unsigned *)(uintptr_t)cur + ARENA_HDR;
+    *bumped = g_arena_next - g_uc_arena;
+    *freed  = total;
+    if (g_uc_cs_ready) LeaveCriticalSection(&g_arena_cs);
+}
+
 static void * __cdecl sh_uc_malloc(size_t n)          { return arena_alloc(n); }
-static void   __cdecl sh_uc_free(void *p)             { (void)p; }
+static void   __cdecl sh_uc_free(void *p)
+{
+    unsigned a = (unsigned)(uintptr_t)p, hdr;
+    /* Only ours.  The engine frees pointers this allocator never handed out --
+     * anything a shim returned from host memory, for one -- and threading those
+     * onto the free list would hand the engine a block of somebody else's. */
+    if (!p || a < g_uc_arena + ARENA_HDR || a >= g_uc_arena_end) return;
+    hdr = a - ARENA_HDR;
+    if (g_uc_cs_ready) EnterCriticalSection(&g_arena_cs);
+    arena_release(hdr);
+    if (g_uc_cs_ready) LeaveCriticalSection(&g_arena_cs);
+}
 static void * __cdecl sh_uc_calloc(size_t a, size_t b)
 {
     size_t n = a * b;
@@ -129,9 +232,12 @@ static void * __cdecl sh_uc_realloc(void *old, size_t n)
     void *p;
     unsigned oldn;
     if (!old) return arena_alloc(n);
-    oldn = *(unsigned *)(uintptr_t)((unsigned)(uintptr_t)old - 8);
+    oldn = *(unsigned *)(uintptr_t)((unsigned)(uintptr_t)old - ARENA_HDR);
+    if (oldn >= n) return old;          /* already big enough; keep the block */
     p = arena_alloc(n);
-    if (p && oldn) memcpy(p, old, oldn < n ? oldn : n);
+    if (!p) return NULL;                /* the old block is still the caller's */
+    if (oldn) memcpy(p, old, oldn);
+    sh_uc_free(old);                    /* growing a buffer must not leak it */
     return p;
 }
 

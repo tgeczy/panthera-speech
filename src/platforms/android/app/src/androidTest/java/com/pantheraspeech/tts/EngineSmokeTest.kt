@@ -152,6 +152,37 @@ class EngineSmokeTest : Instrumentation() {
                 check(client.setVoice(fred) == TextToSpeech.SUCCESS)
             }
 
+            // A session, not an utterance.
+            //
+            // The guest arena used to be a bump allocator whose free was a
+            // no-op, on the reasoning that one utterance never approaches its
+            // 64 MB. One does not; a session of them does, and Alex allocates
+            // enough per utterance to get there in about thirty seconds of real
+            // reading -- malloc then answers null, the engine does not ask, and
+            // memcpy writes to address zero. Nothing that renders a single
+            // utterance can see that, which is why it reached a wrist before it
+            // reached a test.
+            run {
+                val soakVoice = client.voices.firstOrNull { it.name.endsWith("-alex") }
+                    ?: client.voices.firstOrNull { it.name.endsWith("-vicki") }
+                    ?: fred
+                check(client.setVoice(soakVoice) == TextToSpeech.SUCCESS)
+                val file = File(targetContext.filesDir, "soak.wav")
+                for (i in 1..24) {
+                    utterance("soak-$i") {
+                        client.synthesizeToFile(
+                            "Licensed under the Apache License, Version $i.0, " +
+                            "you may not use this file except in compliance.",
+                            Bundle(), file, "soak-$i")
+                    }
+                }
+                val bytes = file.readBytes()
+                check(bytes.size > 2048) { "soak produced almost nothing" }
+                results.putString("soak", "24 utterances on ${soakVoice.name}")
+                Log.i("PantheraTest", "soak: 24 utterances on ${soakVoice.name} survived")
+                check(client.setVoice(fred) == TextToSpeech.SUCCESS)
+            }
+
             client.setAudioAttributes(AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())

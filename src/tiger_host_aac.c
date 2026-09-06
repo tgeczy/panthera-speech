@@ -462,6 +462,7 @@ static int __cdecl sh_SoundConverterFillBuffer(void *sc, fill_proc upp,
             snd_data **slot = (snd_data **)UC_OUT(in);
             more = CALL_GUEST2((void *)upp, slot, refcon) & 0xff;
             UC_OUT_GET(slot, in);
+            UC_FREE(slot);
         }
         if (more && in && in->buffer) {
             if (!(in->flags & kExtendedSoundData) || in->recordSize < 68 ||
@@ -778,6 +779,9 @@ static int __cdecl sh_AudioConverterFillComplexBuffer_inner(void *conv,
                     memcpy(&in, p_in, sizeof in);
                     descs = *p_descs;
                 }
+                /* This runs once per refill and a long utterance has hundreds;
+                 * leaking three slots each is how the arena ran dry. */
+                UC_FREE(p_packets); UC_FREE(p_in); UC_FREE(p_descs);
             }
             if (packets && descs && in.mBuffers[0].mData) {
                 const unsigned char *base =

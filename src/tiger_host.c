@@ -239,6 +239,12 @@ static unsigned bswap(unsigned v)
  * context-saving path rather than uc_call, which refuses re-entry. */
 #define CALL_GUEST2(fn, a, b)             uc_cb2((fn), (a), (b))
 #define CALL_GUEST5(fn, a, b, c, d, e)    uc_cb5((fn), (a), (b), (c), (d), (e))
+/* Give a marshalling slot back.  UC_IN and UC_OUT take arena memory, and a
+ * call site that runs once per utterance can forget to; one that runs hundreds
+ * of times per utterance -- the audio callbacks -- cannot, because the arena is
+ * finite and what exhausting it looks like is a null malloc the engine does not
+ * check.  A no-op in the native build, where the "slot" is a stack address. */
+#define UC_FREE(p)            sh_uc_free((void *)(p))
 #else
 #define UC_IN(host, n)        ((void *)(host))
 #define UC_IN_STR(s, n)       ((void *)(s))
@@ -246,6 +252,7 @@ static unsigned bswap(unsigned v)
 #define UC_OUT_GET(slot, var) ((void)0)
 #define CALL_GUEST2(fn, a, b)             call_aligned2((fn), (a), (b))
 #define CALL_GUEST5(fn, a, b, c, d, e)    call_aligned5((fn), (a), (b), (c), (d), (e))
+#define UC_FREE(p)            ((void)0)
 #endif
 #include "tiger_host_shims.c"
 #include "tiger_host_cf.c"
