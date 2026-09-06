@@ -80,16 +80,26 @@ static void __cdecl sh_stack_chk_fail(void)
  * MSVC generates the same operations inline for `long long`, so each of these
  * is one line and exactly right rather than approximately so.
  */
-static long long __cdecl sh_divdi3(long long a, long long b)
-{ return b ? a / b : 0; }
-static unsigned long long __cdecl sh_udivdi3(unsigned long long a,
-                                             unsigned long long b)
-{ return b ? a / b : 0; }
-static long long __cdecl sh_moddi3(long long a, long long b)
-{ return b ? a % b : 0; }
-static unsigned long long __cdecl sh_umoddi3(unsigned long long a,
-                                             unsigned long long b)
-{ return b ? a % b : 0; }
+/* Four words in, eight bytes out.  These are the compiler's own 64-bit
+ * division helpers, so the engine reaches them for every 64-bit divide it
+ * performs -- and declared with `long long` parameters they read the dividend
+ * as the divisor on AArch64, which is a wrong ANSWER rather than a crash and
+ * so travels a long way before anything notices.  It surfaced as a divide by
+ * zero inside MTFEFrameFiller::GetDiphthongs, four calls downstream. */
+static long long __cdecl sh_divdi3(unsigned alo, unsigned ahi,
+                                   unsigned blo, unsigned bhi)
+{ long long a = GI64(alo, ahi), b = GI64(blo, bhi); return b ? a / b : 0; }
+static unsigned long long __cdecl sh_udivdi3(unsigned alo, unsigned ahi,
+                                             unsigned blo, unsigned bhi)
+{ unsigned long long a = GU64(alo, ahi), b = GU64(blo, bhi);
+  return b ? a / b : 0; }
+static long long __cdecl sh_moddi3(unsigned alo, unsigned ahi,
+                                   unsigned blo, unsigned bhi)
+{ long long a = GI64(alo, ahi), b = GI64(blo, bhi); return b ? a % b : 0; }
+static unsigned long long __cdecl sh_umoddi3(unsigned alo, unsigned ahi,
+                                             unsigned blo, unsigned bhi)
+{ unsigned long long a = GU64(alo, ahi), b = GU64(blo, bhi);
+  return b ? a % b : 0; }
 
 /* pthreads, on top of critical sections.
  *
@@ -671,10 +681,14 @@ static long long duration_to_ticks(int d)
  * Declaring it with one made the worker compute a wake-up 52 hours out and
  * sleep through every utterance, which presents as an engine that runs
  * perfectly and emits nothing. */
-static int __cdecl sh_abs_delta_to_duration(long long a, long long b)
-{ return ticks_to_duration(a - b); }
-static int __cdecl sh_abs_to_duration(long long a)
-{ return ticks_to_duration(a); }
+static int __cdecl sh_abs_delta_to_duration(unsigned alo, unsigned ahi,
+                                            unsigned blo, unsigned bhi)
+{ return ticks_to_duration(GI64(alo, ahi) - GI64(blo, bhi)); }
+static int __cdecl sh_abs_to_duration(unsigned lo, unsigned hi)
+{ return ticks_to_duration(GI64(lo, hi)); }
+/* These two keep their `long long`: the dispatcher gives them a return class
+ * of their own (RC_I64_I_I64) and hands them an assembled value, because
+ * their result is 64-bit as well as their argument. */
 static long long __cdecl sh_add_duration(int d, long long a)
 { return a + duration_to_ticks(d); }
 static long long __cdecl sh_sub_duration(int d, long long a)

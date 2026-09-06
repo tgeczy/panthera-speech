@@ -424,6 +424,11 @@ static float uc_argf(const unsigned *a, int i)
 
 static int g_uc_missing_hits;   /* how many missing-shim calls, this session */
 static const char *g_uc_last_shim;   /* name of the last shim dispatched (debug) */
+/* And the seven before it.  A guest fault is very often the PREVIOUS shim's
+ * fault, and naming only one of them turns every such bug into a guess about
+ * which; the ring costs one store per dispatch and answers it. */
+static const char *g_uc_shim_ring[8];
+static unsigned    g_uc_shim_i;
 
 /* Fires on whichever engine `u` executed the trampoline -- always the current
  * thread's engine, since an engine only ever runs on its own thread.  Reads the
@@ -443,6 +448,7 @@ static void uc_dispatch(uc_engine *u, uint64_t address, uint32_t size,
     uc_mem_read(u, esp + 4, a, sizeof a);      /* args: cdecl, above the retaddr */
 
     g_uc_last_shim = s->name;
+    g_uc_shim_ring[g_uc_shim_i++ & 7] = s->name;
     if (s->missing) {
         unsigned zero = 0;
         g_uc_missing_hits++;
@@ -705,6 +711,47 @@ static int uc_call(void *fn, int argc, const unsigned *argv)
                 uc_strerror(e), eip, engine_symbol((void *)(uintptr_t)eip),
                 (unsigned)(uintptr_t)fn, engine_symbol(fn),
                 g_uc_last_shim ? g_uc_last_shim : "(none)");
+        {
+            unsigned i;
+            fprintf(stderr, "  shims before it (oldest first):");
+            for (i = 0; i < 8; i++) {
+                const char *nm = g_uc_shim_ring[(g_uc_shim_i + i) & 7];
+                fprintf(stderr, " %s", nm ? nm : "-");
+            }
+            fprintf(stderr, "\n");
+        }
+        /* The registers, which the invalid-access hook has always printed and
+         * this path never did.  A fault that is not an access -- a divide by
+         * zero, most of all -- says nothing at all without them: the address
+         * is the instruction, and the instruction is only interesting for the
+         * operand it was given. */
+        {
+            static const struct { int id; const char *nm; } R[] = {
+                { UC_X86_REG_EAX, "eax" }, { UC_X86_REG_EBX, "ebx" },
+                { UC_X86_REG_ECX, "ecx" }, { UC_X86_REG_EDX, "edx" },
+                { UC_X86_REG_ESI, "esi" }, { UC_X86_REG_EDI, "edi" },
+                { UC_X86_REG_EBP, "ebp" }, { UC_X86_REG_ESP, "esp" }
+            };
+            unsigned v, i;
+            fprintf(stderr, "  regs:");
+            for (i = 0; i < sizeof R / sizeof R[0]; i++) {
+                v = 0;
+                uc_reg_read(t_uc, R[i].id, &v);
+                fprintf(stderr, " %s=%08x", R[i].nm, v);
+                if (i == 3) fprintf(stderr, "\n       ");
+            }
+            fprintf(stderr, "\n");
+            /* And the bytes it choked on, so the instruction can be read
+             * without going back to the binary with a calculator. */
+            {
+                unsigned char op[8] = { 0 };
+                if (uc_mem_read(t_uc, eip, op, sizeof op) == UC_ERR_OK)
+                    fprintf(stderr, "  opcode: %02x %02x %02x %02x "
+                                    "%02x %02x %02x %02x\n",
+                            op[0], op[1], op[2], op[3],
+                            op[4], op[5], op[6], op[7]);
+            }
+        }
         die("guest fault: %s at eip=%08x (entry %08x)",
             uc_strerror(e), eip, (unsigned)(uintptr_t)fn);
     }

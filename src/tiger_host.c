@@ -285,6 +285,26 @@ static float GFLOAT(unsigned bits)
     return f;
 }
 
+/* A 64-bit value the guest passed BY VALUE, as the two words it pushed.
+ *
+ * Same fact as GFLOAT and a worse blast radius.  The engine pushes eight
+ * bytes as two stack words; a shim declaring `long long` is handed ONE
+ * register on AArch64, so it reads the low half as the whole value and every
+ * argument after it shifts by one.  `___divdi3` -- which is every 64-bit
+ * division the engine performs -- was taking its divisor from the dividend's
+ * high word.
+ *
+ * The pair was already known here: AddDurationToAbsolute and
+ * SubDurationFromAbsolute have their own return class in the dispatcher, with
+ * a comment about exactly this alignment.  What was missed is that the same
+ * thing is true of every OTHER function taking a 64-bit argument, whatever it
+ * returns.  Taking the words is right on i386 too, where they are the same
+ * eight bytes in the same order. */
+#define GI64(lo, hi) \
+    ((long long)(((unsigned long long)(unsigned)(hi) << 32) | (unsigned)(lo)))
+#define GU64(lo, hi) \
+    ((((unsigned long long)(unsigned)(hi)) << 32) | (unsigned)(lo))
+
 /* Memory whose ADDRESS the guest will hold.
  *
  * A shim returns its result in EAX, which is four bytes wide, so anything a
