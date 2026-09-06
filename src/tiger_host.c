@@ -504,17 +504,25 @@ int main(int argc, char **argv)
     /* Render through the Android synthesis API (tiger_host_jni.c) rather than
      * inline, and write the same wav -- so the on-device APK path is exercised
      * on the desktop and its output can be byte-diffed against the oracle.
-     *   --jni-check <MacinTalk> <SpeechDictionary> <Voice.SpeechVoice> [creator-hex] [voice-id] */
+     *   --jni-check <MacinTalk> <SpeechDictionary> <Voice.SpeechVoice>
+     *               [creator-hex] [voice-id] [wpm] */
     if (argc > 4 && !strcmp(argv[1], "--jni-check")) {
         unsigned creator = (argc > 5) ? (unsigned)strtoul(argv[5], NULL, 16)
                                       : (unsigned)'mtk3';
         int voiceid = (argc > 6) ? atoi(argv[6]) : 1;
+        /* Rate, so a desktop render can be compared with a device one.  The
+         * Android service asks for a wpm -- 180 at speechRate 100 -- and
+         * rendering here at the engine's own default instead compares two
+         * different utterances and calls the difference a fault.  Voices do not
+         * share a default: Vicki's is 180 and Fred's is not, which is exactly
+         * the trap this argument exists to avoid. */
+        int wpm = (argc > 7) ? atoi(argv[7]) : 0;
         const char *e = getenv("TIGER_TEXT");
         const char *txt = (e && *e) ? e : "Hello there.";
         short *pcm = 0; unsigned nf = 0;
         int rc = panthera_init(argv[2], argv[3]);
         if (rc) { fprintf(stderr, "panthera_init -> %d\n", rc); return 2; }
-        rc = panthera_render(argv[4], creator, voiceid, txt, 0, &pcm, &nf);
+        rc = panthera_render(argv[4], creator, voiceid, txt, wpm, &pcm, &nf);
         if (rc) { fprintf(stderr, "panthera_render -> %d\n", rc); return 2; }
         free(pcm);
         if (g_pcm_n) write_wav("tiger-out.wav");
