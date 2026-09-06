@@ -59,6 +59,17 @@ static void pt_stderr_to_logcat(void)
 #define PT_ENSURE_ENGINE() ((void)0)
 #endif
 
+/* What to pass SEStopSpeechAt as `whereToStop`.
+ *
+ * Under dispute and therefore made measurable rather than argued about.  The
+ * Speech Synthesis Manager documents kImmediate/kEndOfWord/kEndOfSentence as
+ * 0/1/2, which is what this host has always passed and what serve mode still
+ * passes; the competing reading is that they are OSTypes 'immd'/'word'/'sent'.
+ * Override at build time to try the other one and read the finish= line. */
+#ifndef PT_STOP_WHERE
+#define PT_STOP_WHERE 0u                 /* kImmediate, on the 0/1/2 reading */
+#endif
+
 static unsigned g_pull_pos;          /* streaming read cursor into g_pcm */
 static unsigned g_pt_voice_creator;  /* last voice selected, to skip re-selecting */
 static int      g_pt_voice_id;
@@ -185,7 +196,8 @@ void panthera_finish(void)
          * serve mode.  It answers paramErr on this engine, and serve mode's
          * own g_use_reset defaults to off, so it was never doing anything.) */
         stop = (SEStop_t)find_export(&g_mt, "_SEStopSpeechAt");
-        if (stop) err_stop = call_aligned2((void *)stop, g_chan, (void *)0);
+        if (stop) err_stop = call_aligned2((void *)stop, g_chan,
+                                           (void *)(unsigned)PT_STOP_WHERE);
         t_stop = wall_ms();
 
         /* Then a bounded settle so outstanding slices land before the next
@@ -246,7 +258,14 @@ int panthera_pull(short *out, int maxSamples)
             g_pull_pos += n;
             return (int)n;
         }
-        if (g_stopped && pacer_idle()) return 0;              /* utterance finished, all drained */
+        if (g_stopped && pacer_idle()) {                      /* utterance finished, all drained */
+            /* Slices per utterance, so a cancelled one can be told from a
+             * completed one: the question is whether a stop truncates the
+             * render or merely watches it run to the end. */
+            fprintf(stderr, "panthera: utterance done slices=%u frames=%u\n",
+                    g_slices, g_pcm_n);
+            return 0;
+        }
         Sleep(5);
         if (++idle > 2000) {
             fprintf(stderr, "panthera: pull timeout pcm=%u cursor=%u slices=%u stopped=%ld pending=%d busy=%ld\n",

@@ -107,15 +107,6 @@ class PantheraTtsService : TextToSpeechService() {
         }
         if (text.isBlank()) { callback.done(); return }
 
-        // Begin synthesis, then stream PCM as the engine produces it -- audio
-        // starts within a chunk instead of after the whole utterance renders.
-        // Render-then-stream went silent because TalkBack gave up waiting the
-        // few seconds the whole render took before any audio arrived.
-        val started = PantheraEngine.speakStart(this, voice, text, wpmFor(request.speechRate))
-        if (started != 0) {
-            Log.w("PantheraTts", "speakStart -> $started")
-            callback.error(TextToSpeech.ERROR_SYNTHESIS); return
-        }
         val sampleCapacity = minOf(4096, callback.maxBufferSize / 2)
         if (sampleCapacity <= 0) {
             PantheraEngine.stop()
@@ -125,29 +116,52 @@ class PantheraTtsService : TextToSpeechService() {
         val samples = ShortArray(sampleCapacity)
         val bytes = ByteArray(samples.size * 2)
         var total = 0
-        while (!stopRequested) {
-            val n = PantheraEngine.pull(samples)
-            if (n < 0) {
-                Log.e("PantheraTts", "nativePull failed: $n")
-                PantheraEngine.stop()
-                callback.error(TextToSpeech.ERROR_SYNTHESIS)
-                return
+
+        // Hand the engine one piece at a time, and stream each piece's PCM as
+        // it is produced -- audio starts within a chunk instead of after a whole
+        // render. Render-then-stream went silent because TalkBack gave up
+        // waiting the few seconds a full render took before any audio arrived.
+        //
+        // The pieces exist because the engine cannot be interrupted: it renders
+        // whatever it was handed, and a stop waits for it. Cancelling therefore
+        // costs the rest of the current piece, not the rest of the paragraph --
+        // see PantheraText for the measurement and the cutting rules.
+        val pieces = PantheraText.split(text)
+        for (piece in pieces) {
+            if (stopRequested) break
+            val started = PantheraEngine.speakStart(this, voice, piece, wpmFor(request.speechRate))
+            if (started != 0) {
+                Log.w("PantheraTts", "speakStart -> $started")
+                // Anything already spoken is real audio the user heard; only a
+                // failure on the very first piece is a failed utterance.
+                if (total == 0) { callback.error(TextToSpeech.ERROR_SYNTHESIS); return }
+                break
             }
-            if (n == 0) break
-            var bi = 0
-            for (i in 0 until n) {
-                val s = samples[i].toInt()
-                bytes[bi++] = (s and 0xff).toByte()
-                bytes[bi++] = ((s shr 8) and 0xff).toByte()
+            while (!stopRequested) {
+                val n = PantheraEngine.pull(samples)
+                if (n < 0) {
+                    Log.e("PantheraTts", "nativePull failed: $n")
+                    PantheraEngine.stop()
+                    callback.error(TextToSpeech.ERROR_SYNTHESIS)
+                    return
+                }
+                if (n == 0) break
+                var bi = 0
+                for (i in 0 until n) {
+                    val s = samples[i].toInt()
+                    bytes[bi++] = (s and 0xff).toByte()
+                    bytes[bi++] = ((s shr 8) and 0xff).toByte()
+                }
+                if (callback.audioAvailable(bytes, 0, n * 2) != TextToSpeech.SUCCESS) {
+                    Log.i("PantheraTts", "audio callback stopped after $total samples")
+                    PantheraEngine.stop()
+                    return
+                }
+                total += n
             }
-            if (callback.audioAvailable(bytes, 0, n * 2) != TextToSpeech.SUCCESS) {
-                Log.i("PantheraTts", "audio callback stopped after $total samples")
-                PantheraEngine.stop()
-                return
-            }
-            total += n
         }
-        Log.i("PantheraTts", "synth ${voice.name} streamed $total samples, stop=$stopRequested")
+        Log.i("PantheraTts", "synth ${voice.name} streamed $total samples in " +
+            "${pieces.size} piece(s), stop=$stopRequested")
         callback.done()
     }
 }
