@@ -1,0 +1,17 @@
+# Gradle / AGP build output
+/build/
+/app/build/
+/app/.cxx/
+.gradle/
+local.properties
+*.iml
+.idea/
+
+# The native engine is prebuilt by build_jni_so.sh (from the one C TU + the
+# cross-built Unicorn); it is reproducible, so it is not committed.
+/app/src/main/jniLibs/**/libpanthera.so
+
+# Keystores never go in the repo.
+keystore.properties
+*.keystore
+*.jks

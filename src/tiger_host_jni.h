@@ -38,6 +38,11 @@ void panthera_stop(void);
 /* The PCM sample rate panthera_render produces (Hz). */
 int  panthera_sample_rate(void);
 
+/* Read a .SpeechVoice bundle's VoiceSpec (creator OSType, id) from its
+ * VoiceDescription -- a plain file read, no engine needed.  Returns 1 and fills
+ * *creator/*voiceId on success, 0 if the bundle has no VoiceDescription. */
+int  panthera_voice_spec(const char *voiceDir, unsigned *creator, int *voiceId);
+
 #ifdef __cplusplus
 }
 #endif

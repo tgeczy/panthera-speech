@@ -44,6 +44,11 @@ int panthera_sample_rate(void)
     return (int)(g_rate + 0.5);
 }
 
+int panthera_voice_spec(const char *voiceDir, unsigned *creator, int *voiceId)
+{
+    return voice_spec(voiceDir, creator, voiceId);   /* serve.c: reads the file */
+}
+
 void panthera_stop(void)
 {
     uc_ensure_engine();
