@@ -75,6 +75,24 @@ class EngineSmokeTest : Instrumentation() {
                 }
                 val bytes = file.readBytes()
                 check(bytes.size > 2048) { "empty or very short WAV: ${bytes.size}" }
+                // Long enough to BE "Hello there.", not merely long enough to
+                // be audio.
+                //
+                // This check is here because its absence let a broken port
+                // look green: on the first arm64 build every phoneme duration
+                // collapsed to its minimum, so the sentence came back at 4032
+                // frames instead of the 18144 the desktop renders -- a quarter
+                // of a second of gabble with a healthy peak and perfect
+                // run-to-run determinism. Both the checks above passed it.
+                //
+                // 20000 bytes is about 0.45 s, comfortably under any real
+                // render of this sentence at any generation's default rate and
+                // far above a collapsed one. A tighter bound would have to
+                // know which generation is loaded; this does not need to.
+                check(bytes.size > 20000) {
+                    "far too short for \"Hello there.\": ${bytes.size} bytes " +
+                    "-- durations are collapsing, not merely quiet"
+                }
                 check(String(bytes, 0, 4) == "RIFF")
                 var peak = 0
                 for (offset in 44 until bytes.size - 1 step 2) {
