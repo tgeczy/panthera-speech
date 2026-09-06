@@ -36,28 +36,47 @@ object PantheraEngine {
     )
 
     // ---- data layout -------------------------------------------------------
+    //
+    // Data may live in either the app's external files dir (user-visible, the
+    // place to extract into) or its internal files dir (always readable by the
+    // app -- the reliable fallback, and where a future in-app import lands).
+    // Each generation is looked for in both; whichever holds it wins.
 
-    fun dataRoot(ctx: Context): File = File(ctx.getExternalFilesDir(null), DATA_DIR)
-    fun genDir(ctx: Context, gen: String): File = File(dataRoot(ctx), gen)
-    private fun macinTalk(ctx: Context, gen: String) = File(genDir(ctx, gen), "MacinTalk")
-    private fun speechDict(ctx: Context, gen: String) =
-        File(genDir(ctx, gen), "SpeechDictionary.framework/Versions/A/SpeechDictionary")
-    private fun voicesDir(ctx: Context, gen: String) = File(genDir(ctx, gen), "Voices")
+    private fun candidateRoots(ctx: Context): List<File> = listOfNotNull(
+        ctx.getExternalFilesDir(null)?.let { File(it, DATA_DIR) },
+        File(ctx.filesDir, DATA_DIR),
+    )
+
+    /** The root shown to the user as the place to extract data into. */
+    fun dataRoot(ctx: Context): File =
+        ctx.getExternalFilesDir(null)?.let { File(it, DATA_DIR) }
+            ?: File(ctx.filesDir, DATA_DIR)
+
+    private fun mtIn(root: File, gen: String) = File(root, "$gen/MacinTalk")
+    private fun sdIn(root: File, gen: String) =
+        File(root, "$gen/SpeechDictionary.framework/Versions/A/SpeechDictionary")
+    private fun voicesIn(root: File, gen: String) = File(root, "$gen/Voices")
 
     /** The one generation the engine is (or would be) loaded from. v1: Tiger. */
     private fun activeGen(): String = GEN_TIGER
 
     // ---- scanning ----------------------------------------------------------
 
-    /** Whether a generation's engine files are all present. */
+    /** The candidate root that actually holds this generation's engine, or null. */
+    private fun genRoot(ctx: Context, gen: String): File? =
+        candidateRoots(ctx).firstOrNull { mtIn(it, gen).isFile && sdIn(it, gen).isFile }
+
+    /** Whether a generation's engine files are all present (in either root). */
     fun genPresent(ctx: Context, gen: String): Boolean =
-        macinTalk(ctx, gen).isFile && speechDict(ctx, gen).isFile &&
-            scanVoices(ctx, gen).isNotEmpty()
+        genRoot(ctx, gen)?.let { scanVoicesIn(it, gen).isNotEmpty() } == true
 
     /** The voices found in a generation, each read from its own bundle. Safe to
      * call before the engine is opened (nativeVoiceSpec is a plain file read). */
-    fun scanVoices(ctx: Context, gen: String): List<VoiceInfo> {
-        val files = voicesDir(ctx, gen).listFiles() ?: return emptyList()
+    fun scanVoices(ctx: Context, gen: String): List<VoiceInfo> =
+        genRoot(ctx, gen)?.let { scanVoicesIn(it, gen) } ?: emptyList()
+
+    private fun scanVoicesIn(root: File, gen: String): List<VoiceInfo> {
+        val files = voicesIn(root, gen).listFiles() ?: return emptyList()
         val out = ArrayList<VoiceInfo>()
         for (f in files.sortedBy { it.name.lowercase() }) {
             if (!f.isDirectory || !f.name.endsWith(".SpeechVoice")) continue
@@ -109,10 +128,10 @@ object PantheraEngine {
         synchronized(lock) {
             if (opened) return true
             val gen = activeGen()
-            if (!genPresent(ctx, gen)) return false
+            val root = genRoot(ctx, gen) ?: return false
             val rc = try {
                 PantheraNative.nativeOpen(
-                    macinTalk(ctx, gen).absolutePath, speechDict(ctx, gen).absolutePath)
+                    mtIn(root, gen).absolutePath, sdIn(root, gen).absolutePath)
             } catch (e: Throwable) { return false }
             opened = (rc == 0)
             return opened

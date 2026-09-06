@@ -52,7 +52,10 @@ eval "\"$CLANGXX\" --target=$TARGET -O2 -fPIC -std=c++17 -I\"$ROOT/src\" \
     >> "$BUILD/build.log" 2>&1 || { echo "jni compile failed:"; tail -40 "$BUILD/build.log"; exit 1; }
 
 echo "linking libpanthera.so"
-eval "\"$CLANGXX\" --target=$TARGET -shared -fPIC -o \"$OUT/libpanthera.so\" \
+# -static-libstdc++: the JNI bridge is the only C++ here and uses no STL, so
+# statically link the tiny bit of C++ runtime it needs rather than depend on
+# libc++_shared.so, which the APK would otherwise have to ship too.
+eval "\"$CLANGXX\" --target=$TARGET -shared -fPIC -static-libstdc++ -o \"$OUT/libpanthera.so\" \
     \"$BUILD/tiger_host.o\" \"$BUILD/panthera_jni.o\" \
     -Wl,--start-group \"$UC_STATIC\" \"$UC_SOFTMMU\" \"$UC_COMMON\" -Wl,--end-group \
     -llog -lm -ldl -Wl,-z,max-page-size=16384 -Wl,--no-undefined" \
