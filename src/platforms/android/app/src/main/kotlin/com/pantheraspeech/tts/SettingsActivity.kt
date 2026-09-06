@@ -6,11 +6,16 @@
 package com.pantheraspeech.tts
 
 import android.app.Activity
+import android.content.Intent
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
 import android.os.Bundle
+import android.provider.Settings
+import android.util.Log
+import java.io.File
+import java.io.FileOutputStream
 import android.text.method.ScrollingMovementMethod
 import android.view.Gravity
 import android.view.View
@@ -83,7 +88,11 @@ class SettingsActivity : Activity() {
         root.addView(testButton)
         root.addView(body(
             "Then pick Panthera Speech as your engine in the system's " +
-            "Text-to-speech settings."))
+            "Text-to-speech settings — jump straight there:"))
+        root.addView(Button(this).apply {
+            text = "Open Text-to-speech settings"
+            setOnClickListener { openTtsSettings() }
+        })
 
         val scroll = ScrollView(this).apply { addView(root) }
         status.movementMethod = ScrollingMovementMethod()
@@ -128,13 +137,53 @@ class SettingsActivity : Activity() {
         Thread {
             val pcm = PantheraEngine.render(
                 this, voice, "Hello there. This is ${voice.name}, on your watch.", 0)
+            val n = pcm?.size ?: 0
+            val peak = if (n > 0) pcm!!.maxOf { kotlin.math.abs(it.toInt()) } else 0
+            Log.i("Panthera", "render ${voice.name}: $n samples, peak $peak")
+            if (n > 0) try {
+                writeWav(File(filesDir, "last-render.wav"), pcm!!, PantheraEngine.sampleRate())
+            } catch (e: Exception) { Log.w("Panthera", "wav dump failed", e) }
             runOnUiThread {
                 testButton.isEnabled = true
-                if (pcm == null || pcm.isEmpty()) { status.text = "Render failed."; return@runOnUiThread }
-                status.text = "Playing ${pcm.size} samples from ${voice.name}."
+                status.text = when {
+                    n == 0 -> "Render produced no audio."
+                    peak == 0 -> "Rendered $n samples but they are silent."
+                    else -> "Playing $n samples from ${voice.name} (peak $peak)."
+                }
             }
-            if (pcm != null && pcm.isNotEmpty()) playPcm(pcm, PantheraEngine.sampleRate())
+            if (n > 0 && peak > 0) playPcm(pcm!!, PantheraEngine.sampleRate())
         }.start()
+    }
+
+    /** Jump to the system's Text-to-speech settings; fall back if unavailable. */
+    private fun openTtsSettings() {
+        val tries = listOf(
+            Intent("com.android.settings.TTS_SETTINGS"),
+            Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS),
+            Intent(Settings.ACTION_SETTINGS),
+        )
+        for (i in tries) {
+            try { i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK); startActivity(i); return }
+            catch (e: Exception) { /* try the next */ }
+        }
+        toast("Couldn't open settings on this device.")
+    }
+
+    /** A 16-bit mono WAV, for pulling a rendered utterance off the device. */
+    private fun writeWav(file: File, pcm: ShortArray, rate: Int) {
+        val dataBytes = pcm.size * 2
+        FileOutputStream(file).use { o ->
+            fun i32(v: Int) = o.write(byteArrayOf(
+                v.toByte(), (v shr 8).toByte(), (v shr 16).toByte(), (v shr 24).toByte()))
+            fun i16(v: Int) = o.write(byteArrayOf(v.toByte(), (v shr 8).toByte()))
+            o.write("RIFF".toByteArray()); i32(36 + dataBytes); o.write("WAVE".toByteArray())
+            o.write("fmt ".toByteArray()); i32(16); i16(1); i16(1)
+            i32(rate); i32(rate * 2); i16(2); i16(16)
+            o.write("data".toByteArray()); i32(dataBytes)
+            val b = ByteArray(dataBytes); var j = 0
+            for (s in pcm) { b[j++] = s.toByte(); b[j++] = (s.toInt() shr 8).toByte() }
+            o.write(b)
+        }
     }
 
     private fun playPcm(pcm: ShortArray, rate: Int) {
@@ -151,6 +200,11 @@ class SettingsActivity : Activity() {
             maxOf(min, pcm.size * 2), AudioTrack.MODE_STATIC, AudioManager.AUDIO_SESSION_ID_GENERATE)
         track.write(pcm, 0, pcm.size)
         track.play()
+        // playPcm runs on a background thread; hold the track (and this frame's
+        // reference to it) alive until the clip has actually finished, or the
+        // local goes out of scope, is collected, and the sound is cut off.
+        try { Thread.sleep(pcm.size * 1000L / rate + 400) } catch (e: InterruptedException) {}
+        try { track.stop(); track.release() } catch (e: Exception) {}
     }
 
     private fun toast(t: String) = Toast.makeText(this, t, Toast.LENGTH_SHORT).show()

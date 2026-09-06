@@ -11,6 +11,43 @@
 static int          g_pt_ready;
 static volatile int g_pt_stop;      /* set by panthera_stop, read by the poll */
 
+/* In an app, the engine's stderr diagnostics (its "[au] slice" commentary and
+ * every error) go nowhere.  Pump them into logcat so a silent render can be
+ * read.  Android-only; the desktop --jni-check build keeps its real stderr. */
+#ifdef TIGER_JNI
+#include <android/log.h>
+static void *pt_log_pump(void *arg)
+{
+    int fd = (int)(intptr_t)arg, used = 0, n;
+    char buf[512];
+    while ((n = (int)read(fd, buf + used, (size_t)(sizeof(buf) - 1 - used))) > 0) {
+        char *line, *nl;
+        used += n; buf[used] = 0;
+        line = buf;
+        while ((nl = strchr(line, '\n')) != 0) {
+            *nl = 0;
+            __android_log_write(ANDROID_LOG_INFO, "PantheraEngine", line);
+            line = nl + 1;
+        }
+        used = (int)strlen(line);
+        memmove(buf, line, (size_t)used + 1);
+    }
+    return 0;
+}
+static void pt_stderr_to_logcat(void)
+{
+    static int done = 0;
+    int pfd[2];
+    pthread_t t;
+    if (done) return;
+    done = 1;
+    if (pipe(pfd) != 0) return;
+    dup2(pfd[1], 2);                 /* the engine's stderr -> the pipe */
+    if (pthread_create(&t, 0, pt_log_pump, (void *)(intptr_t)pfd[0]) == 0)
+        pthread_detach(t);
+}
+#endif
+
 /* write_wav's float->int16, factored so a rendered utterance is byte-identical
  * to the desktop WAV.  Fills out[0..g_pcm_n) and returns the frame count. */
 static unsigned pcm_to_i16(short *out)
@@ -28,6 +65,9 @@ static unsigned pcm_to_i16(short *out)
 int panthera_init(const char *mtPath, const char *sdPath)
 {
     if (g_pt_ready) return 0;
+#ifdef TIGER_JNI
+    pt_stderr_to_logcat();          /* capture the engine's own diagnostics */
+#endif
     /* host_open brings the emulator up (uc_host_init reserves the guest block)
      * and ensures THIS thread's engine -- so, unlike render/stop below, it must
      * NOT be preceded by uc_ensure_engine: there is no arena to map yet. */
@@ -35,6 +75,9 @@ int panthera_init(const char *mtPath, const char *sdPath)
         int e = host_open(mtPath, sdPath);
         if (e) return e;
     }
+#ifdef TIGER_JNI
+    g_verbose = 0;                  /* the per-slice commentary floods logcat */
+#endif
     g_pt_ready = 1;
     return 0;
 }
@@ -104,14 +147,20 @@ int panthera_render(const char *voiceDir, unsigned creator, int voiceId,
     if (err) return err;
 
     /* SESpeakBuffer returns as soon as the utterance is accepted; the slices
-     * arrive on the engine's worker.  Wait until they stop coming (or a stop is
-     * asked for) rather than guessing a duration. */
+     * arrive on the engine's worker.  The engine sets g_stopped (AUGraphStop)
+     * when the utterance ends -- that is the reliable signal, the one serve
+     * mode waits on.  A "quiet window" is only a fallback, and it must not start
+     * counting until slices have actually begun: a slow first slice (a cold
+     * engine, a voice still loading) is longer than the window, and counting
+     * quiet from t=0 made this return a one-frame render that played as
+     * silence. */
     {
         unsigned last = 0, quiet = 0, ticks = 0;
-        while (!g_pt_stop && quiet < 40 && ticks < 2400) {   /* <= ~60 s cap */
+        int started = 0;
+        while (!g_pt_stop && !g_stopped && ticks < 4000) {   /* <= ~100 s cap */
             Sleep(25); ticks++;
-            if (g_slices != last) { last = g_slices; quiet = 0; }
-            else quiet++;
+            if (g_slices != last) { last = g_slices; quiet = 0; started = 1; }
+            else if (started && ++quiet >= 120) break;       /* 3 s of quiet */
         }
     }
 
