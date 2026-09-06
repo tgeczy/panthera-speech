@@ -92,6 +92,12 @@ static void pt_utterance_reset(void)
     g_epoch_base = 0; g_last_stime = 0.0; g_have_origin = 0;
     g_utt++; g_stale_slices = 0; g_pull_pos = 0;
     g_aac_ms = 0.0; g_aac_units = 0;
+    /* Time to the FIRST slice, which is the latency a listener actually feels:
+     * the service streams, so speech starts when the engine produces its first
+     * audio and not when it finishes the utterance.  serve mode has always
+     * reset these; this path never did, and so could only measure whole renders
+     * and call them latency. */
+    g_utt_t0 = wall_ms(); g_first_slice_ms = -1.0; g_last_slice_ms = 0.0;
 }
 
 /* Select the voice, but only when it actually changes -- reloading a voice
@@ -270,8 +276,8 @@ int panthera_pull(short *out, int maxSamples)
              * completed one: the question is whether a stop truncates the
              * render or merely watches it run to the end. */
             fprintf(stderr, "panthera: utterance done slices=%u frames=%u "
-                            "aac=%.0fms over %u units\n",
-                    g_slices, g_pcm_n, g_aac_ms, g_aac_units);
+                            "first=%.0fms aac=%.0fms over %u units\n",
+                    g_slices, g_pcm_n, g_first_slice_ms, g_aac_ms, g_aac_units);
             return 0;
         }
         Sleep(5);
