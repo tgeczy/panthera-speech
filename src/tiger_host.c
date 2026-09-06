@@ -47,6 +47,7 @@
  * below.  Media Foundation is Windows-only; the AAC path is the stub
  * (TIGER_NO_AAC) here, or the system decoder later. */
 #include "tiger_plat.h"
+#include <sys/resource.h>
 #endif
 #include <stdio.h>
 #include <stdlib.h>
@@ -173,6 +174,38 @@ static volatile long g_stopped; /* AUGraphStop: the engine's end-of-utterance */
 /* "Expand abbreviations", off by TIGER_NO_ABBREV; see tiger_host_regex.c.
  * Read once at startup so the answer cannot change mid-utterance. */
 static int g_no_abbrev;
+
+/* Tell the scheduler that a thread carries speech.
+ *
+ * The emulated engine runs on three host threads -- the synthesis thread, the
+ * engine's MP worker, and the pacer that ticks its slice completions -- and all
+ * three are on the path between a key press and a word.  Android's scheduler
+ * places by priority, so a thread that never says it is latency-critical is a
+ * thread it is free to put on the slowest core it has.
+ *
+ * That is worth nothing on the watch this was measured on -- a Pixel Watch 2 is
+ * four identical Cortex-A53s at 1.708 GHz, already pinned at maximum by the
+ * governor during a render, with no faster core to be moved to.  It is worth a
+ * great deal on a heterogeneous one: a Galaxy Watch pairs a Cortex-A78 with
+ * A55s, and an in-order A55 is close to the worst case for QEMU's threaded code
+ * while an out-of-order A78 is not.  Being placed on the wrong one of those is
+ * the difference between Alex answering and Alex being a joke.
+ *
+ * Best effort by construction: an app may not always renice its own threads,
+ * and failing to is not a reason to refuse to speak. */
+static void tiger_thread_is_audio(const char *what)
+{
+#ifdef __ANDROID__
+    /* -16 is THREAD_PRIORITY_AUDIO, the value the framework's own audio threads
+     * use.  Not URGENT_AUDIO: this is a renderer, not a mixer, and starving the
+     * mixer to feed it would be a poor trade. */
+    if (setpriority(PRIO_PROCESS, 0, -16) != 0 && g_verbose)
+        printf("  [sched] %s stays at default priority\n", what);
+#else
+    (void)what;
+#endif
+}
+
 /* TIGER_PREF_LOG: name every tuning parameter the engine asks for. */
 static int g_pref_log;
 /* TIGER_DEFERRED_STOP=1 lets Lion's deferred audio-graph stop fire, which

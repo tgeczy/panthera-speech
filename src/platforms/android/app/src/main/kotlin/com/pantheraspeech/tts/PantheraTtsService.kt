@@ -92,6 +92,15 @@ class PantheraTtsService : TextToSpeechService() {
     }
 
     private fun synthesize(request: SynthesisRequest, callback: SynthesisCallback) {
+        // Say that this thread carries speech.  The scheduler places by
+        // priority, and on a watch with unequal cores -- a Galaxy Watch pairs a
+        // Cortex-A78 with A55s -- being put on the wrong one is the difference
+        // between the engine answering and the engine being unusable: an
+        // in-order core is close to the worst case for emulated code. The
+        // native worker and pacer threads ask for the same thing themselves.
+        // Worth nothing on four identical A53s, which is what this was measured
+        // on, and free either way.
+        android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO)
 
         val text = request.charSequenceText?.toString() ?: ""
         Log.i("PantheraTts", "synth: voice=${request.voiceName} lang=${request.language} " +

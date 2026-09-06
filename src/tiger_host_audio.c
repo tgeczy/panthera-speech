@@ -492,6 +492,7 @@ static void collect_slice(unsigned char *slice)
 static DWORD WINAPI pacer_thread(LPVOID arg)
 {
     (void)arg;
+    tiger_thread_is_audio("pacer");
     while (!g_pacer_stop) {
         pending job;
         int have = 0;
