@@ -40,7 +40,7 @@ UC_INC="$ROOT/android/harness/unicorn/include"
 BUILD="$ROOT/build/jni"
 mkdir -p "$BUILD" "$OUT"
 
-CFLAGS="-O2 -fPIC -DTIGER_UC -DTIGER_NO_AAC -DTIGER_JNI -Wno-macro-redefined -I\"$UC_INC\""
+CFLAGS="-O2 -fPIC -DTIGER_UC -DTIGER_AAC_NDK -DTIGER_JNI -Wno-macro-redefined -I\"$UC_INC\""
 
 echo "compiling engine TU (TIGER_JNI)"
 eval "\"$CLANG\" --target=$TARGET $CFLAGS -c \"$ROOT/src/tiger_host.c\" -o \"$BUILD/tiger_host.o\"" \
@@ -58,7 +58,7 @@ echo "linking libpanthera.so"
 eval "\"$CLANGXX\" --target=$TARGET -shared -fPIC -static-libstdc++ -o \"$OUT/libpanthera.so\" \
     \"$BUILD/tiger_host.o\" \"$BUILD/panthera_jni.o\" \
     -Wl,--start-group \"$UC_STATIC\" \"$UC_SOFTMMU\" \"$UC_COMMON\" -Wl,--end-group \
-    -llog -lm -ldl -Wl,-z,max-page-size=16384 -Wl,--no-undefined" \
+    -llog -lm -ldl -lmediandk -Wl,-z,max-page-size=16384 -Wl,--no-undefined" \
     >> "$BUILD/build.log" 2>&1 || { echo "link failed:"; tail -40 "$BUILD/build.log"; exit 1; }
 
 echo "  -> $OUT/libpanthera.so ($(wc -c < "$OUT/libpanthera.so") bytes)"

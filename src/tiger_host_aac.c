@@ -264,10 +264,8 @@ static void aac_decode_unit(const snd_data *in)
      * decode the unit again on a new one -- once.  Cheaper than being wrong,
      * and it only ever runs when something is already amiss. */
     full = (unsigned)in->frameCount * AAC_FRAME;
-    if (g_sc.pcm_n < full && g_aac) {
-        IMFTransform_Release(g_aac);
-        g_aac = NULL;
-        g_aac_state = 0;
+    if (g_sc.pcm_n < full && aac_is_open()) {
+        aac_reset_decoder();
         g_sc.lost = 0;
         if (aac_open()) aac_run_unit(in);
     }
@@ -431,8 +429,28 @@ static int __cdecl sh_SoundConverterFillBuffer(void *sc, fill_proc upp,
     (void)sc;
     if (g_sc.pcm_pos >= g_sc.pcm_n) {           /* need another blob */
         snd_data *in = NULL;
+        int more = 0;
         g_sc.pcm_n = g_sc.pcm_pos = 0;
-        if (upp && upp(&in, refcon) && in && in->buffer) {
+        if (upp) {
+            /* Into the guest, so through the emulator rather than by calling
+             * the pointer.  A direct call is right only when the host runs the
+             * guest's own instruction set: on i386 it worked for years, and on
+             * ARM it jumps into i386 bytes and takes the process with it.
+             *
+             * `in` is an out-parameter the guest writes, so it needs an address
+             * the guest can see -- a host stack slot is not one under the
+             * identity mapping.  UC_OUT lends it a guest-visible slot and
+             * UC_OUT_GET takes the answer back; both are identities off ARM.
+             *
+             * Only AL is meaningful: the callee sets a Boolean, and reading the
+             * whole of EAX would make "no more data" look like more whenever
+             * the high bytes held junk.  The old code got that from the
+             * function pointer's `unsigned char` return type; say it here. */
+            snd_data **slot = (snd_data **)UC_OUT(in);
+            more = CALL_GUEST2((void *)upp, slot, refcon) & 0xff;
+            UC_OUT_GET(slot, in);
+        }
+        if (more && in && in->buffer) {
             if (!(in->flags & kExtendedSoundData) || in->recordSize < 68 ||
                 !in->frameSizes || in->frameCount <= 0) {
                 if (!g_sc.quiet++)
@@ -567,11 +585,8 @@ static int __cdecl sh_AudioConverterNew(const au_asbd *insrc,
         if (!rate) rate = 22050;
         fourcc(f, in->mFormatID);
         /* A converter for a different rate cannot reuse the old transform. */
-        if (g_aac && (rate != g_sc.rate || ch != g_sc.channels)) {
-            IMFTransform_Release(g_aac);
-            g_aac = NULL;
-            g_aac_state = 0;
-        }
+        if (aac_is_open() && (rate != g_sc.rate || ch != g_sc.channels))
+            aac_reset_decoder();
         g_sc.rate = rate;
         g_sc.channels = ch;
         if (g_verbose) {
@@ -604,8 +619,8 @@ static int __cdecl sh_AudioConverterNew(const au_asbd *insrc,
 static int __cdecl sh_AudioConverterDispose(void *conv)
 {
     (void)conv;
-    if (g_sc.ac_live && g_aac) {
-        IMFTransform_ProcessMessage(g_aac, MFT_MESSAGE_COMMAND_FLUSH, 0);
+    if (g_sc.ac_live && aac_is_open()) {
+        aac_flush_now();
         g_sc.ac_live = 0;
     }
     g_sc.pcm_n = g_sc.pcm_pos = 0;
@@ -619,8 +634,8 @@ static int __cdecl sh_AudioConverterReset(void *conv)
 {
     (void)conv;
     g_sc.pcm_n = g_sc.pcm_pos = 0;
-    if (g_sc.ac_live && g_aac) {
-        IMFTransform_ProcessMessage(g_aac, MFT_MESSAGE_COMMAND_FLUSH, 0);
+    if (g_sc.ac_live && aac_is_open()) {
+        aac_flush_now();
         g_sc.ac_live = 0;
     }
     /* Whether this is ever called decides whether the packets the engine feeds
@@ -735,7 +750,22 @@ static int __cdecl sh_AudioConverterFillComplexBuffer_inner(void *conv,
             unsigned packets = 0;
             memset(&in, 0, sizeof in);
             in.mNumberBuffers = 1;
-            proc(conv, &packets, &in, &descs, user);
+            /* Into the guest -- see the Sound Manager fill callback above for
+             * why this cannot be a direct call.  Three out-parameters, so
+             * three borrowed slots, read back before anything looks at them. */
+            {
+                unsigned      *p_packets = (unsigned *)UC_OUT(packets);
+                au_bufferlist *p_in      = (au_bufferlist *)UC_OUT(in);
+                au_packetdesc **p_descs  = (au_packetdesc **)UC_OUT(descs);
+                if (p_packets && p_in && p_descs) {
+                    memcpy(p_in, &in, sizeof in);
+                    CALL_GUEST5((void *)proc, conv, p_packets, p_in,
+                                p_descs, user);
+                    packets = *p_packets;
+                    memcpy(&in, p_in, sizeof in);
+                    descs = *p_descs;
+                }
+            }
             if (packets && descs && in.mBuffers[0].mData) {
                 const unsigned char *base =
                     (const unsigned char *)in.mBuffers[0].mData;
@@ -1007,11 +1037,8 @@ static int __cdecl sh_SoundConverterOpen(const unsigned char *in,
         /* A second AAC voice at a different rate would otherwise be decoded
          * with the first one's decoder.  Tiger has only Vicki, but Leopard's
          * Alex uses this same engine. */
-        if (g_aac && (ch != g_sc.channels || rate != g_sc.rate)) {
-            IMFTransform_Release(g_aac);
-            g_aac = NULL;
-            g_aac_state = 0;
-        }
+        if (aac_is_open() && (ch != g_sc.channels || rate != g_sc.rate))
+            aac_reset_decoder();
         g_sc.channels = ch;
         g_sc.rate = rate;
     }

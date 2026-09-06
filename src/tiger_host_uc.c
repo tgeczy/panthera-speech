@@ -539,18 +539,22 @@ static void uc_run_init(void *fn) { uc_call(fn, 0, NULL); }
  * nested call would), so the suspended outer frames are untouched.  This is the
  * synchronous, same-thread cousin of the MP worker, which instead gets its own
  * engine on its own thread. */
-static void uc_call_nested(void *fn)
+static int uc_call_nested_args(void *fn, int argc, const unsigned *argv)
 {
     uc_context *ctx;
-    unsigned esp, sp, magic = UC_RETMAGIC;
+    unsigned esp, base, sp, magic = UC_RETMAGIC, eax = 0;
     uc_err e;
     uc_must(uc_context_alloc(t_uc, &ctx), "context alloc");
     uc_must(uc_context_save(t_uc, ctx), "context save");
     uc_reg_read(t_uc, UC_X86_REG_ESP, &esp);
-    sp = ((esp - 512u) & ~15u) - 4u;             /* 16-aligned at the call */
+    base = (esp - 512u) & ~15u;                  /* 16-aligned at the call */
+    sp   = base - 4u;
+    if (argc > 0)
+        uc_must(uc_mem_write(t_uc, base, argv, (size_t)argc * 4), "nested args");
     uc_must(uc_mem_write(t_uc, sp, &magic, 4), "nested retaddr");
     uc_must(uc_reg_write(t_uc, UC_X86_REG_ESP, &sp), "nested esp");
     e = uc_emu_start(t_uc, (uint64_t)(uintptr_t)fn, UC_RETMAGIC, 0, 0);
+    if (e == UC_ERR_OK) uc_reg_read(t_uc, UC_X86_REG_EAX, &eax);
     uc_must(uc_context_restore(t_uc, ctx), "context restore");
     uc_context_free(ctx);
     if (e != UC_ERR_OK) {
@@ -559,7 +563,22 @@ static void uc_call_nested(void *fn)
         die("nested guest fault: %s at eip=%08x (entry %08x)",
             uc_strerror(e), eip, (unsigned)(uintptr_t)fn);
     }
+    return (int)eax;
 }
+
+static void uc_call_nested(void *fn) { (void)uc_call_nested_args(fn, 0, NULL); }
+
+/* The audio callbacks the engine hands us, called back from inside a shim and
+ * therefore always nested: the Sound Manager's fill proc (Vicki) and the
+ * AudioConverter's input proc (Alex).  uc_call would refuse these -- it is for
+ * entering the guest from a thread that is not already in it. */
+static int uc_cb2(void *fn, void *a, void *b)
+{ unsigned v[2]; v[0]=(unsigned)(uintptr_t)a; v[1]=(unsigned)(uintptr_t)b;
+  return uc_call_nested_args(fn, 2, v); }
+static int uc_cb5(void *fn, void *a, void *b, void *c, void *d, void *e)
+{ unsigned v[5]; v[0]=(unsigned)(uintptr_t)a; v[1]=(unsigned)(uintptr_t)b;
+  v[2]=(unsigned)(uintptr_t)c; v[3]=(unsigned)(uintptr_t)d;
+  v[4]=(unsigned)(uintptr_t)e; return uc_call_nested_args(fn, 5, v); }
 
 /* ---- argument marshalling ---------------------------------------------- *
  * The engine dereferences the pointers it is handed, so a host buffer passed to
@@ -590,6 +609,14 @@ static int uc_call4(void *fn, void *a, void *b, void *c, void *d)
 { unsigned v[4]; v[0]=(unsigned)(uintptr_t)a; v[1]=(unsigned)(uintptr_t)b;
   v[2]=(unsigned)(uintptr_t)c; v[3]=(unsigned)(uintptr_t)d;
   return uc_call(fn,4,v); }
+/* Five, for the AudioConverter input callback -- the one Alex's decode runs
+ * through.  It is a host->guest call like the others, and had been a plain C
+ * call: correct on an i386 host, and anywhere else a jump into i386 bytes as
+ * though they were the host's own instructions. */
+static int uc_call5(void *fn, void *a, void *b, void *c, void *d, void *e)
+{ unsigned v[5]; v[0]=(unsigned)(uintptr_t)a; v[1]=(unsigned)(uintptr_t)b;
+  v[2]=(unsigned)(uintptr_t)c; v[3]=(unsigned)(uintptr_t)d;
+  v[4]=(unsigned)(uintptr_t)e; return uc_call(fn,5,v); }
 
 /* ---- bring-up ---------------------------------------------------------- *
  * Reserve one contiguous block for the trampolines and the arena, in this

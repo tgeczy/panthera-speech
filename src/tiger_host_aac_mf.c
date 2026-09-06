@@ -354,3 +354,29 @@ static void aac_end_stream(void)
     IMFTransform_ProcessMessage(g_aac, MFT_MESSAGE_COMMAND_DRAIN, 0);
     aac_drain();
 }
+
+/* Is there a decoder right now?  The shared side asks before deciding whether
+ * a change of rate or channel count means the current one is the wrong one. */
+static int aac_is_open(void)
+{
+    return g_aac != NULL;
+}
+
+/* Throw the decoder away; the next aac_open builds a fresh one.
+ *
+ * Two callers, both of them "this decoder is not the one we want": a second
+ * AAC voice at another sample rate (Tiger has only Vicki, but Leopard's Alex
+ * is the same engine), and a unit that came back short, which means the
+ * transform is in a state we did not put it in. */
+static void aac_reset_decoder(void)
+{
+    if (g_aac) IMFTransform_Release(g_aac);
+    g_aac = NULL;
+    g_aac_state = 0;
+}
+
+/* Drop what the decoder is holding without ending the stream. */
+static void aac_flush_now(void)
+{
+    if (g_aac) IMFTransform_ProcessMessage(g_aac, MFT_MESSAGE_COMMAND_FLUSH, 0);
+}

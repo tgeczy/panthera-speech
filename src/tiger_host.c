@@ -233,11 +233,19 @@ static unsigned bswap(unsigned v)
 #define UC_IN_STR(s, n)       uc_in_str((s), (n))
 #define UC_OUT(var)           uc_out(sizeof(var))
 #define UC_OUT_GET(slot, var) ((var) = *(slot))
+/* Calling back into the guest from *inside* a shim -- the audio callbacks the
+ * engine hands us.  These are nested by construction: the guest is already
+ * running up the stack, suspended in the dispatch hook, so they take the
+ * context-saving path rather than uc_call, which refuses re-entry. */
+#define CALL_GUEST2(fn, a, b)             uc_cb2((fn), (a), (b))
+#define CALL_GUEST5(fn, a, b, c, d, e)    uc_cb5((fn), (a), (b), (c), (d), (e))
 #else
 #define UC_IN(host, n)        ((void *)(host))
 #define UC_IN_STR(s, n)       ((void *)(s))
 #define UC_OUT(var)           (&(var))
 #define UC_OUT_GET(slot, var) ((void)0)
+#define CALL_GUEST2(fn, a, b)             call_aligned2((fn), (a), (b))
+#define CALL_GUEST5(fn, a, b, c, d, e)    call_aligned5((fn), (a), (b), (c), (d), (e))
 #endif
 #include "tiger_host_shims.c"
 #include "tiger_host_cf.c"

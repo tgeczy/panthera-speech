@@ -444,6 +444,8 @@ static int call_aligned3(void *fn, void *a, void *b, void *c)
 { return uc_call3(fn, a, b, c); }
 static int call_aligned4(void *fn, void *a, void *b, void *c, void *d)
 { return uc_call4(fn, a, b, c, d); }
+static int call_aligned5(void *fn, void *a, void *b, void *c, void *d, void *e)
+{ return uc_call5(fn, a, b, c, d, e); }
 #else
 static __declspec(naked) int call_aligned1(void *fn, void *a)
 {
@@ -536,6 +538,37 @@ static __declspec(naked) int call_aligned4(void *fn, void *a, void *b, void *c,
         mov  edx, [ebp + 24]
         mov  [esp + 8], ecx
         mov  [esp + 12], edx
+        call eax
+        mov  esp, ebx
+        pop  ebx
+        pop  ebp
+        ret
+    }
+}
+/* Five arguments, for the AudioConverter input callback.  Same shape as
+ * call_aligned4: 5 words is 20 bytes, so reserve 32 to land the call on a
+ * 16-byte boundary. */
+static __declspec(naked) int call_aligned5(void *fn, void *a, void *b, void *c,
+                                           void *d, void *e)
+{
+    __asm {
+        push ebp
+        mov  ebp, esp
+        push ebx
+        mov  ebx, esp
+        mov  eax, [ebp + 8]
+        and  esp, -16
+        sub  esp, 32
+        mov  ecx, [ebp + 12]
+        mov  edx, [ebp + 16]
+        mov  [esp], ecx
+        mov  [esp + 4], edx
+        mov  ecx, [ebp + 20]
+        mov  edx, [ebp + 24]
+        mov  [esp + 8], ecx
+        mov  [esp + 12], edx
+        mov  ecx, [ebp + 28]
+        mov  [esp + 16], ecx
         call eax
         mov  esp, ebx
         pop  ebx

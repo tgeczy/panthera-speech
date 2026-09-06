@@ -107,8 +107,17 @@ object PantheraEngine {
         val out = ArrayList<VoiceInfo>()
         for (f in files.sortedBy { it.name.lowercase() }) {
             if (!f.isDirectory || !f.name.endsWith(".SpeechVoice")) continue
-            val spec = try { PantheraNative.nativeVoiceSpec(f.absolutePath) } catch (e: Throwable) { null }
-                ?: continue
+            // A bundle that is present and still not offered is worth a line:
+            // silently dropping one is indistinguishable from never having
+            // copied it, and that cost an hour once.
+            val spec = try { PantheraNative.nativeVoiceSpec(f.absolutePath) }
+                catch (e: Throwable) {
+                    android.util.Log.w("PantheraEngine", "voiceSpec threw for ${f.name}: $e"); null
+                }
+            if (spec == null) {
+                android.util.Log.w("PantheraEngine", "no usable VoiceDescription in ${f.name}")
+                continue
+            }
             val name = f.name.removeSuffix(".SpeechVoice")
             out.add(VoiceInfo(
                 name = name,

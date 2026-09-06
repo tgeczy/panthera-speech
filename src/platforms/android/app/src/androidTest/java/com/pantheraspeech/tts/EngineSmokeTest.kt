@@ -120,6 +120,35 @@ class EngineSmokeTest : Instrumentation() {
             }
             Log.i("PantheraTest", "curly apostrophe folds to straight")
 
+            // Vicki, if her data is here: the AAC path, and the only way to
+            // know it works. She and Alex share the `meow` engine, whose sample
+            // bank is AAC rather than PCM, so this exercises the decoder the
+            // device supplies -- everything above it is Fred, who never touches
+            // one. A silent WAV is the failure that matters: a decoder that
+            // returns nothing looks exactly like success from here.
+            val vicki = client.voices.firstOrNull { it.name.endsWith("-vicki") }
+            if (vicki == null) {
+                Log.i("PantheraTest", "no Vicki on this device; AAC not exercised")
+            } else {
+                check(client.setVoice(vicki) == TextToSpeech.SUCCESS)
+                val file = File(targetContext.filesDir, "vicki.wav")
+                utterance("vicki") {
+                    client.synthesizeToFile("Hello there.", Bundle(), file, "vicki")
+                }
+                val bytes = file.readBytes()
+                var peak = 0
+                for (o in 44 until bytes.size - 1 step 2) {
+                    val s = ((bytes[o].toInt() and 255) or (bytes[o + 1].toInt() shl 8)).toShort()
+                    peak = maxOf(peak, kotlin.math.abs(s.toInt()))
+                }
+                check(bytes.size > 2048) { "Vicki produced almost nothing: ${bytes.size} bytes" }
+                check(peak > 100) { "Vicki decoded to silence: peak=$peak (AAC decoder?)" }
+                results.putInt("vickiBytes", bytes.size)
+                results.putInt("vickiPeak", peak)
+                Log.i("PantheraTest", "Vicki through AAC: ${bytes.size} bytes, peak=$peak")
+                check(client.setVoice(fred) == TextToSpeech.SUCCESS)
+            }
+
             client.setAudioAttributes(AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
