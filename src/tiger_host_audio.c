@@ -257,7 +257,16 @@ typedef void (__cdecl *slice_done_t)(void *userData, void *slice);
  * pipeline spins; without the delay the worker never gets scheduled between
  * completions and never renders.
  */
-#define PACE_QCAP  64
+/* Deep enough to absorb a cancelled utterance's burst: the engine runs
+ * unthrottled then, and 64 was measured overflowing 260 times on one
+ * interrupt.  512 slices is about ten seconds of audio in flight and 10 KB
+ * of queue, which is nothing next to what a wedged channel costs. */
+#define PACE_QCAP  512
+/* How long queue_completion will wait for room before giving up and
+ * dropping, in milliseconds.  Long enough that the pacer -- which pays an
+ * emulated guest call per slice -- can always catch up; short enough that a
+ * genuine stall still ends. */
+#define PACE_QWAIT_MS 500
 /* Tunable so the trade-off can be measured; TIGER_PACE is a percentage of
  * real time and TIGER_PACE_FLOOR a minimum in milliseconds. */
 static double g_pace = 100.0;
@@ -320,21 +329,50 @@ static unsigned         g_p_drops;
  * stop, and it used to be audible. */
 static unsigned         g_stale_slices;
 
+/* Queue one slice's completion, waiting for room rather than dropping it.
+ *
+ * A full queue used to mean a dropped slice, and a dropped slice is a
+ * completion that never fires.  Measured on a Pixel Watch 2: interrupt Leopard
+ * and the queue overflows 260 times, and the next utterance then never starts
+ * -- the engine sits in a loop calling AudioUnitReset, 118,760 times in
+ * thirty-five seconds, reading no property and asking nothing, waiting for
+ * slices that will never be finished.  The comment above g_p_drops said this
+ * would happen; it took a second decoder generation to actually do it.
+ *
+ * It overflows during a cancellation specifically, because that is when the
+ * engine is deliberately let run flat out (see g_au_cancel) while each
+ * completion still costs an emulated call into the guest.  Producer beats
+ * consumer, and the queue is the only thing between them.
+ *
+ * So: a bigger queue to absorb the burst, and then wait for room.  Waiting is
+ * safe here -- this runs on the engine's worker, and the pacer that drains the
+ * queue is a different thread -- but it is bounded anyway, because a wait that
+ * cannot end is a worse bug than the one being fixed.  If the bound is ever
+ * reached the slice is still dropped and still counted, and the count is in the
+ * finish line where somebody will see it. */
 static void queue_completion(slice_done_t p, void *u, void *s, unsigned frames)
 {
-    EnterCriticalSection(&g_p_cs);
-    if (g_p_count < PACE_QCAP) {
-        g_pending[g_p_tail].proc = p;
-        g_pending[g_p_tail].udata = u;
-        g_pending[g_p_tail].slice = s;
-        g_pending[g_p_tail].frames = frames;
-        g_pending[g_p_tail].utt = g_utt;
-        g_p_tail = (g_p_tail + 1) % PACE_QCAP;
-        g_p_count++;
-    } else {
-        g_p_drops++;
+    int waited = 0;
+    for (;;) {
+        int full;
+        EnterCriticalSection(&g_p_cs);
+        full = (g_p_count >= PACE_QCAP);
+        if (!full) {
+            g_pending[g_p_tail].proc = p;
+            g_pending[g_p_tail].udata = u;
+            g_pending[g_p_tail].slice = s;
+            g_pending[g_p_tail].frames = frames;
+            g_pending[g_p_tail].utt = g_utt;
+            g_p_tail = (g_p_tail + 1) % PACE_QCAP;
+            g_p_count++;
+        } else if (waited >= PACE_QWAIT_MS) {
+            g_p_drops++;
+        }
+        LeaveCriticalSection(&g_p_cs);
+        if (!full || waited >= PACE_QWAIT_MS) return;
+        Sleep(1);
+        waited++;
     }
-    LeaveCriticalSection(&g_p_cs);
 }
 
 /* True when the pacer has nothing left to collect. */
@@ -714,7 +752,6 @@ static int __cdecl sh_AudioUnitSetProperty(au_obj *unit, unsigned id,
          * the sound.  The engine's clock keeps ticking either way; the error is
          * what lets it stop early rather than finish the sentence. */
         take_slice((unsigned char *)data);
-        if (g_au_cancel) return kAudioUnitErr_CannotDoInCurrentContext;
     } else if (id == kAUProp_ScheduleStartTime) {
         if (g_verbose) printf("  [au] ScheduleStartTime sampleTime %.1f\n",
                data ? *(const double *)data : 0.0);

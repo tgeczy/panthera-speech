@@ -214,9 +214,10 @@ void panthera_finish(void)
         /* One line, because this path is measured rather than reasoned about:
          * every previous guess at where the twenty seconds went was wrong. */
         fprintf(stderr, "panthera: finish ready=%.0fms stop=%.0fms(err %d) "
-                        "settle=%.0fms slices %u->%u\n",
+                        "settle=%.0fms slices %u->%u drops=%u stale=%u\n",
                 t_ready - t0, t_stop - t_ready, err_stop,
-                wall_ms() - t_stop, slices_in, g_slices);
+                wall_ms() - t_stop, slices_in, g_slices,
+                g_p_drops, g_stale_slices);
         InterlockedExchange(&g_au_cancel, 0);
     }
 }
