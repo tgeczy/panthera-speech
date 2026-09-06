@@ -197,26 +197,35 @@ class SettingsActivity : Activity() {
     }
 
     private fun playPcm(pcm: ShortArray, rate: Int) {
-        val min = AudioTrack.getMinBufferSize(
+        // MODE_STREAM, not MODE_STATIC: the streaming path (write after play,
+        // blocking) is what the watch actually plays -- MODE_STATIC created a
+        // track that routed to the speaker but never made a sound.  Accessibility
+        // usage so it goes to the built-in speaker (media does not, on a watch).
+        val minBuf = AudioTrack.getMinBufferSize(
             rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
-        val track = AudioTrack(
-            AudioAttributes.Builder()
-                // Accessibility, not media: on a watch, media audio may not route
-                // to the built-in speaker, but the accessibility/TTS route does
-                // (it is where the system's own TTS comes out).
-                .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
-                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build(),
-            AudioFormat.Builder()
-                .setSampleRate(rate)
-                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                .setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build(),
-            maxOf(min, pcm.size * 2), AudioTrack.MODE_STATIC, AudioManager.AUDIO_SESSION_ID_GENERATE)
-        track.write(pcm, 0, pcm.size)
+        val track = AudioTrack.Builder()
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
+            .setAudioFormat(
+                AudioFormat.Builder()
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setSampleRate(rate)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
+            .setBufferSizeInBytes(maxOf(minBuf, rate))   // ~0.5 s of headroom
+            .setTransferMode(AudioTrack.MODE_STREAM)
+            .build()
+        Log.i("Panthera", "AudioTrack state=${track.state} min=$minBuf")
         track.play()
-        // playPcm runs on a background thread; hold the track (and this frame's
-        // reference to it) alive until the clip has actually finished, or the
-        // local goes out of scope, is collected, and the sound is cut off.
-        try { Thread.sleep(pcm.size * 1000L / rate + 400) } catch (e: InterruptedException) {}
+        var off = 0
+        while (off < pcm.size) {
+            val w = track.write(pcm, off, pcm.size - off)   // blocks, pacing playback
+            if (w < 0) { Log.e("Panthera", "AudioTrack.write -> $w"); break }
+            off += w
+        }
+        Log.i("Panthera", "wrote $off/${pcm.size} samples, playState=${track.playState}")
+        try { Thread.sleep(300) } catch (e: InterruptedException) {}   // drain the tail
         try { track.stop(); track.release() } catch (e: Exception) {}
     }
 
