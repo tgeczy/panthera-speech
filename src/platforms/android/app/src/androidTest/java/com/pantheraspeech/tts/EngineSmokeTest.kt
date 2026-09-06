@@ -36,8 +36,14 @@ class EngineSmokeTest : Instrumentation() {
             val client = tts!!
             check(client.isLanguageAvailable(Locale.US) == TextToSpeech.LANG_COUNTRY_AVAILABLE)
             check(client.setLanguage(Locale.US) >= 0)
-            val fred = client.voices.firstOrNull { it.name == "panthera-tiger-fred" }
-                ?: error("Fred missing from platform voice list")
+            // Fred from whichever generation is active, not Tiger's by name:
+            // every generation ships a Fred and the engine loads one generation
+            // per process, so pinning the id here would fail the moment the
+            // device is set to Leopard rather than telling us anything.
+            val fred = client.voices.firstOrNull { it.name.endsWith("-fred") }
+                ?: error("Fred missing from platform voice list: " +
+                         client.voices.joinToString { it.name })
+            Log.i("PantheraTest", "generation under test: ${fred.name}")
             check(client.setVoice(fred) == TextToSpeech.SUCCESS)
             results.putInt("voices", client.voices.size)
             Log.i("PantheraTest", "initialized: ${client.voices.size} voices, Fred selected")

@@ -22,10 +22,26 @@ object PantheraEngine {
 
     const val DATA_DIR = "panthera-data"
 
-    // v1 supports the Tiger generation (Fred and the other MacinTalk voices).
-    // Each generation is a folder; more get added here as they come online.
+    // One folder per Mac OS X speech generation. All four ship the same engine
+    // body under different builds, so the host loads any of them; what differs
+    // is which voices come with it and what they need underneath. Tiger is the
+    // one proven on the watch. The rest are listed because the data layout, the
+    // gate and the push harness are all per-generation already, and because
+    // "Alex and the other engines" is the point of the port -- but Alex and
+    // Vicki both live on the `meow` engine, whose banks are AAC, and the AAC
+    // decoder here is still the Windows one. Their generations therefore offer
+    // their formant voices and no more until that is ported.
     const val GEN_TIGER = "tiger"
-    val GENERATIONS = listOf(GEN_TIGER)
+    const val GEN_LEOPARD = "leopard"
+    const val GEN_SNOW_LEOPARD = "snowleopard"
+    const val GEN_LION = "lion"
+    val GENERATIONS = listOf(GEN_TIGER, GEN_LEOPARD, GEN_SNOW_LEOPARD, GEN_LION)
+
+    /** Which generation the engine loads from. Chosen once per process, because
+     * host_open maps its images once per process: changing it takes effect on
+     * the next start, which is why this is a stored preference and not a live
+     * switch. */
+    const val PREF_GEN = "engine_generation"
 
     data class VoiceInfo(
         val name: String,      // "Fred"
@@ -57,8 +73,19 @@ object PantheraEngine {
         File(root, "$gen/SpeechDictionary.framework/Versions/A/SpeechDictionary")
     private fun voicesIn(root: File, gen: String) = File(root, "$gen/Voices")
 
-    /** The one generation the engine is (or would be) loaded from. v1: Tiger. */
-    private fun activeGen(): String = GEN_TIGER
+    /** The generation the engine is (or would be) loaded from: the user's
+     * choice if its data is actually there, otherwise the first generation that
+     * is. A stored choice whose data has since been removed must not strand the
+     * app with no engine, so presence wins over preference. */
+    private fun activeGen(ctx: Context): String {
+        val chosen = prefs(ctx).getString(PREF_GEN, null)
+        if (chosen != null && genRoot(ctx, chosen) != null) return chosen
+        return GENERATIONS.firstOrNull { genRoot(ctx, it) != null } ?: GEN_TIGER
+    }
+
+    /** The generations whose data is present, for the settings picker. */
+    fun availableGens(ctx: Context): List<String> =
+        GENERATIONS.filter { genPresent(ctx, it) }
 
     // ---- scanning ----------------------------------------------------------
 
@@ -94,9 +121,14 @@ object PantheraEngine {
         return out
     }
 
-    /** Every voice across every present generation -- the engine's voice list. */
-    fun allVoices(ctx: Context): List<VoiceInfo> =
-        GENERATIONS.flatMap { if (genPresent(ctx, it)) scanVoices(ctx, it) else emptyList() }
+    /** The engine's voice list: the active generation's voices, and only those.
+     *
+     * Not every present generation's. host_open maps one generation's images
+     * per process, so a voice from another one would be handed to an engine
+     * that has never heard of it -- listing them all would offer the user
+     * twenty-four voices of which most answer an OSErr. Which generation is
+     * active is the user's choice; see activeGen. */
+    fun allVoices(ctx: Context): List<VoiceInfo> = scanVoices(ctx, activeGen(ctx))
 
     fun voiceById(ctx: Context, id: String?): VoiceInfo? =
         allVoices(ctx).firstOrNull { it.id == id }
@@ -110,11 +142,11 @@ object PantheraEngine {
      * data is actually there.  This is the gate the service honours: no verify,
      * no voices. */
     fun verified(ctx: Context): Boolean =
-        prefs(ctx).getBoolean(PREF_VERIFIED, false) && genPresent(ctx, activeGen())
+        prefs(ctx).getBoolean(PREF_VERIFIED, false) && genPresent(ctx, activeGen(ctx))
 
     /** Run the check: does the data exist? Records the result as the gate. */
     fun checkEngine(ctx: Context): Boolean {
-        val ok = genPresent(ctx, activeGen())
+        val ok = genPresent(ctx, activeGen(ctx))
         prefs(ctx).edit().putBoolean(PREF_VERIFIED, ok).apply()
         return ok
     }
@@ -133,7 +165,7 @@ object PantheraEngine {
     private fun open(ctx: Context): Boolean {
         synchronized(lock) {
             if (opened) return true
-            val gen = activeGen()
+            val gen = activeGen(ctx)
             val root = genRoot(ctx, gen) ?: return false
             val rc = try {
                 PantheraNative.nativeOpen(
