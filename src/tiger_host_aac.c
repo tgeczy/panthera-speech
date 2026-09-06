@@ -114,6 +114,19 @@ static unsigned g_ac_silent_streams;
 /* TIGER_SIM_WIN7: pretend to be Windows 7's AAC decoder; see aac_end. */
 static int g_sim_win7 = -1;
 
+/* Wall time spent inside the decoder, and how many access units went through
+ * it, for one utterance.  Alex renders twenty times slower on a watch than the
+ * same emulator does on a desktop while Fred is only three times slower, and
+ * the two of them differ in exactly one thing: Alex decodes AAC.  Whether that
+ * decode is the cost is a question about where time goes, so it is measured
+ * rather than argued -- and measured at the decoder, because Alex arrives
+ * through AudioConverter and Vicki through the Sound Manager, and instrumenting
+ * either route alone answers for only one voice.  g_aac_depth keeps a feed that
+ * drains inside itself from being counted twice. */
+static double   g_aac_ms;
+static unsigned g_aac_units;
+static int      g_aac_depth;
+
 
 static void pcm_append(const unsigned char *p, unsigned bytes)
 {

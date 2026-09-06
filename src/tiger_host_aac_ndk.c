@@ -38,12 +38,22 @@ static int          g_aac_state;        /* 0 untried, 1 ready, -1 no decoder */
 static int64_t      g_aac_time;         /* presentation time, microseconds */
 static int          g_aac_eos;          /* end-of-stream has been signalled */
 
-/* How long to wait for a buffer.  Input is nearly always ready, so a short
- * wait there costs nothing; output needs long enough for the codec to have
- * produced something but not so long that a drain with nothing left stalls the
- * render -- the loop below leaves on the first try-again either way. */
-#define NDK_IN_TIMEOUT   10000          /* 10 ms */
-#define NDK_OUT_TIMEOUT   5000          /*  5 ms */
+/* Waiting for a buffer, and why almost all of it is zero.
+ *
+ * A drain ends when the codec says try-again, so any timeout on that poll is
+ * paid in full on the *last* iteration of every drain -- and a drain runs after
+ * every access unit.  At 5 ms that came to 18.8 ms per unit and 2733 ms of an
+ * Alex utterance that only lasted 820 ms: two thirds of his render was this
+ * host waiting to be told there was nothing to collect.  A real AAC frame
+ * decodes in well under a millisecond.
+ *
+ * Nothing is lost by not waiting.  MediaCodec is a pipeline: output that is not
+ * ready now is still there on the next drain, the next unit is fed meanwhile,
+ * and at end of stream aac_end_stream waits properly for the tail.  So the poll
+ * is non-blocking, and the only real waits left are the ones that mean
+ * something -- an input buffer that has not come back yet, and the tail. */
+#define NDK_IN_TIMEOUT   10000          /* 10 ms: only when input is exhausted */
+#define NDK_TAIL_TIMEOUT 20000          /* 20 ms: only while draining the tail */
 
 static int aac_is_open(void)
 {
@@ -67,19 +77,24 @@ static void aac_reset_decoder(void)
  * units may have several buffers ready, and leaving one behind would put every
  * later unit 1024 samples out of place -- not silence but wrong speech, which
  * is the failure aac_feed's Media Foundation counterpart guards against too. */
-static void aac_drain(void)
+/* -> 1 if the codec reported end of stream. */
+static int aac_drain_to(int64_t timeoutUs)
 {
+    double t0 = (g_aac_depth++ == 0) ? wall_ms() : 0.0;
+    int saw_eos = 0;
     for (;;) {
         AMediaCodecBufferInfo info;
-        ssize_t idx = AMediaCodec_dequeueOutputBuffer(g_aac, &info,
-                                                      NDK_OUT_TIMEOUT);
+        ssize_t idx = AMediaCodec_dequeueOutputBuffer(g_aac, &info, timeoutUs);
         if (idx >= 0) {
             size_t cap = 0;
             uint8_t *buf = AMediaCodec_getOutputBuffer(g_aac, (size_t)idx, &cap);
             if (buf && info.size > 0)
                 pcm_append(buf + info.offset, (unsigned)info.size);
             AMediaCodec_releaseOutputBuffer(g_aac, (size_t)idx, false);
-            if (info.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM) return;
+            if (info.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM) {
+                saw_eos = 1;
+                break;
+            }
             continue;
         }
         if (idx == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED) {
@@ -97,9 +112,14 @@ static void aac_drain(void)
             continue;
         }
         if (idx == AMEDIACODEC_INFO_OUTPUT_BUFFERS_CHANGED) continue;
-        return;                          /* try-again, or an error: we are done */
+        break;                           /* try-again, or an error: we are done */
     }
+    if (--g_aac_depth == 0) g_aac_ms += wall_ms() - t0;
+    return saw_eos;
 }
+
+/* The per-unit poll: take what is ready, wait for nothing. */
+static void aac_drain(void) { (void)aac_drain_to(0); }
 
 static int aac_open(void)
 {
@@ -154,7 +174,11 @@ static int aac_feed(const unsigned char *data, unsigned len)
     ssize_t idx;
     size_t cap = 0;
     uint8_t *buf;
+    double t0;
+    int ok = 0;
     if (!g_aac) return 0;
+    t0 = (g_aac_depth++ == 0) ? wall_ms() : 0.0;
+    g_aac_units++;
     idx = AMediaCodec_dequeueInputBuffer(g_aac, NDK_IN_TIMEOUT);
     if (idx < 0) {
         /* Every input buffer is held by output nobody has taken.  Dropping the
@@ -162,20 +186,23 @@ static int aac_feed(const unsigned char *data, unsigned len)
          * ask once more. */
         aac_drain();
         idx = AMediaCodec_dequeueInputBuffer(g_aac, NDK_IN_TIMEOUT);
-        if (idx < 0) return 0;
     }
-    buf = AMediaCodec_getInputBuffer(g_aac, (size_t)idx, &cap);
-    if (!buf || cap < len) {
-        AMediaCodec_queueInputBuffer(g_aac, (size_t)idx, 0, 0, g_aac_time, 0);
-        return 0;
+    if (idx >= 0) {
+        buf = AMediaCodec_getInputBuffer(g_aac, (size_t)idx, &cap);
+        if (!buf || cap < len) {
+            AMediaCodec_queueInputBuffer(g_aac, (size_t)idx, 0, 0, g_aac_time, 0);
+        } else {
+            memcpy(buf, data, len);
+            if (AMediaCodec_queueInputBuffer(g_aac, (size_t)idx, 0, len,
+                                             (uint64_t)g_aac_time, 0) == AMEDIA_OK) {
+                g_aac_time += 1000000LL * AAC_FRAME / (g_sc.rate ? g_sc.rate : 22050);
+                aac_drain();
+                ok = 1;
+            }
+        }
     }
-    memcpy(buf, data, len);
-    if (AMediaCodec_queueInputBuffer(g_aac, (size_t)idx, 0, len,
-                                     (uint64_t)g_aac_time, 0) != AMEDIA_OK)
-        return 0;
-    g_aac_time += 1000000LL * AAC_FRAME / (g_sc.rate ? g_sc.rate : 22050);
-    aac_drain();
-    return 1;
+    if (--g_aac_depth == 0) g_aac_ms += wall_ms() - t0;
+    return ok;
 }
 
 static void aac_begin(void)
@@ -193,6 +220,7 @@ static void aac_begin(void)
 static void aac_end_stream(void)
 {
     ssize_t idx;
+    int rounds;
     if (!g_aac) return;
     if (!g_aac_eos) {
         idx = AMediaCodec_dequeueInputBuffer(g_aac, NDK_IN_TIMEOUT);
@@ -204,7 +232,12 @@ static void aac_end_stream(void)
             g_aac_eos = 1;
         }
     }
-    aac_drain();
+    /* This is the one place a wait earns its keep: the tail is only finished
+     * when the codec says so, and everything fed is owed back before the unit
+     * is complete.  Bounded, because a codec that never reports end of stream
+     * must not take the utterance with it. */
+    for (rounds = 0; rounds < 64; rounds++)
+        if (aac_drain_to(NDK_TAIL_TIMEOUT)) break;
 }
 
 static void aac_flush_now(void)
