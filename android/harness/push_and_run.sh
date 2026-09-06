@@ -17,7 +17,9 @@
 set -e
 export MSYS_NO_PATHCONV=1
 
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+# Windows-form path (C:/...): native adb.exe cannot stat an MSYS /c/... path,
+# and the MSYS tools (md5sum, cmp) accept the drive-letter form too.
+ROOT="$(cd "$(dirname "$0")/../.." && pwd -W 2>/dev/null || pwd)"
 BIN="$ROOT/build/ndk/tiger_host"
 ORACLE="$ROOT/build/ndk/fred-desktop-uc.wav"
 

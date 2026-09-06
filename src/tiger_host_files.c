@@ -484,7 +484,7 @@ static int __cdecl sh_sprintf(char *buf, const char *fmt, ...)
     va_start(ap, fmt);
     n = vsprintf(buf, fmt, ap);
     va_end(ap);
-    if (g_verbose) printf("  [engine sprintf] %s\n", buf);
+    if (g_verbose) printf("  [engine sprintf] fmt<%s> -> %s\n", fmt ? fmt : "(null)", buf);
     return n;
 }
 static int __cdecl sh_vsprintf(char *buf, const char *fmt, va_list ap)

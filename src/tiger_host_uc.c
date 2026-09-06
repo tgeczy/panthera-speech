@@ -318,6 +318,10 @@ static void uc_dispatch(uc_engine *u, uint64_t address, uint32_t size,
 /* An invalid-access hook: name the faulting address, so a fault says what it
  * touched instead of only where the code was.  Returns false -- the access
  * still fails; this only reports it. */
+/* Defined later in tiger_host_fault.c (same TU); names a guest address as
+ * image+offset, or the nearest preceding symbol. */
+static const char *engine_symbol(void *addr);
+
 static bool uc_on_badmem(uc_engine *u, uc_mem_type type, uint64_t address,
                          int size, int64_t value, void *user)
 {
@@ -327,8 +331,21 @@ static bool uc_on_badmem(uc_engine *u, uc_mem_type type, uint64_t address,
                     type == UC_MEM_FETCH_UNMAPPED ? "fetch" : "prot";
     (void)user;
     uc_reg_read(u, UC_X86_REG_EIP, &eip);
-    fprintf(stderr, "  [uc] BAD %s addr=%08x size=%d value=%08x eip=%08x\n",
-            k, (unsigned)address, size, (unsigned)value, eip);
+    fprintf(stderr, "  [uc] BAD %s addr=%08x size=%d value=%08x eip=%08x  %s\n",
+            k, (unsigned)address, size, (unsigned)value, eip,
+            engine_symbol((void *)(uintptr_t)eip));
+    {   unsigned r[8]; static const char *nm[8] =
+            { "eax","ebx","ecx","edx","esi","edi","ebp","esp" };
+        int reg[8] = { UC_X86_REG_EAX, UC_X86_REG_EBX, UC_X86_REG_ECX,
+                       UC_X86_REG_EDX, UC_X86_REG_ESI, UC_X86_REG_EDI,
+                       UC_X86_REG_EBP, UC_X86_REG_ESP };
+        int i;
+        for (i = 0; i < 8; i++) uc_reg_read(u, reg[i], &r[i]);
+        fprintf(stderr, "  [uc]   %s=%08x %s=%08x %s=%08x %s=%08x\n"
+                        "  [uc]   %s=%08x %s=%08x %s=%08x %s=%08x\n",
+                nm[0], r[0], nm[1], r[1], nm[2], r[2], nm[3], r[3],
+                nm[4], r[4], nm[5], r[5], nm[6], r[6], nm[7], r[7]);
+    }
     return false;
 }
 
@@ -488,6 +505,10 @@ static int uc_call(void *fn, int argc, const unsigned *argv)
     if (e != UC_ERR_OK) {
         unsigned eip = 0;
         uc_reg_read(t_uc, UC_X86_REG_EIP, &eip);
+        fprintf(stderr, "tiger_host: guest fault: %s\n"
+                        "  at eip=%08x  %s\n  entry %08x  %s\n",
+                uc_strerror(e), eip, engine_symbol((void *)(uintptr_t)eip),
+                (unsigned)(uintptr_t)fn, engine_symbol(fn));
         die("guest fault: %s at eip=%08x (entry %08x)",
             uc_strerror(e), eip, (unsigned)(uintptr_t)fn);
     }

@@ -117,6 +117,18 @@ static size_t resv_take(void *base)
     return len;
 }
 
+/* Where to place a reserve-anywhere allocation.  It matters: real 32-bit dyld
+ * loads images in the low couple of GB, and the i386 engine quietly assumes it
+ * -- some pointer math treats an address as signed, which only misbehaves once
+ * an address has its top bit set.  On Windows VirtualAlloc handed back low
+ * addresses and it never showed; bionic's mmap hands back high ones (0xe69...),
+ * and the engine faulted deep in synthesis.  So pack guest allocations into the
+ * low half of the address space, bumping a hint so they do not overlap.  A hint
+ * the kernel declines is only a hint -- we take whatever it returns and move
+ * on, so this can never fail the allocation, only miss the optimisation. */
+static uintptr_t g_low_hint = 0x10000000u;
+static pthread_mutex_t g_hint_lk = PTHREAD_MUTEX_INITIALIZER;
+
 static int win_prot(DWORD protect)
 {
     switch (protect & 0xffu) {
@@ -139,10 +151,23 @@ void *VirtualAlloc(void *addr, size_t size, DWORD type, DWORD protect)
     if (type & MEM_RESERVE) {
         int   prot  = (type & MEM_COMMIT) ? win_prot(protect) : PROT_NONE;
         void *want  = addr;
-        void *p     = mmap(want, sz, prot,
-                           MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+        void *hint  = want;
+        void *p;
+        if (!want) {                       /* reserve-anywhere: aim low */
+            pthread_mutex_lock(&g_hint_lk);
+            hint = (void *)g_low_hint;
+            pthread_mutex_unlock(&g_hint_lk);
+        }
+        p = mmap(hint, sz, prot,
+                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
         if (p == MAP_FAILED) return NULL;
         if (want && p != want) { munmap(p, sz); return NULL; }
+        if (!want) {                       /* bump the hint past what we got */
+            pthread_mutex_lock(&g_hint_lk);
+            {   uintptr_t end = ((uintptr_t)p + sz + 0xffffu) & ~(uintptr_t)0xffffu;
+                if (end > g_low_hint && end < 0x80000000u) g_low_hint = end; }
+            pthread_mutex_unlock(&g_hint_lk);
+        }
         resv_add(p, sz);
         return p;
     }
