@@ -1,8 +1,13 @@
 // The Android TTS engine. One engine, many voices (like SAPI): every voice the
-// present engine generations expose is one Android Voice, all served by the one
-// emulated MacinTalk. The framework hands us text + rate; we render the whole
-// utterance to PCM (the engine is faster than realtime for the formant voices)
-// and stream it back, interruptible.
+// active engine generation exposes is one Android Voice, all served by the one
+// emulated MacinTalk. The framework hands us text + rate; we cut it into pieces
+// (see PantheraText), hand the engine one at a time, and stream each piece's
+// PCM back as it is produced.
+//
+// A piece at a time rather than the whole utterance because the engine cannot
+// be interrupted: it renders what it was given and a stop waits for it, so the
+// piece is what a cancellation costs. Streaming rather than render-then-play
+// because TalkBack gives up waiting.
 package com.pantheraspeech.tts
 
 import android.media.AudioFormat

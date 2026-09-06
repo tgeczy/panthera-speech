@@ -178,14 +178,18 @@ void panthera_finish(void)
     if (g_pt_ready && g_pt_stop) {
         unsigned last = g_slices, quiet = 0;
         unsigned slices_in = g_slices;
-        double t0 = wall_ms(), t_stop;
+        double t0 = wall_ms(), t_ready, t_stop;
         int spin, err_stop = -1;
         SEStop_t stop;
         /* Belt and braces: panthera_stop normally sets this, but render mode
          * calls finish directly and a stop posted before the engine was ready
          * would not have. */
         InterlockedExchange(&g_au_cancel, 1);
+        /* Timed apart from the stop itself: on the emulated build this lazily
+         * creates the thread's uc_engine, and "the stop took 20 s" would be a
+         * different fault if the 20 s were spent here. */
         PT_ENSURE_ENGINE();
+        t_ready = wall_ms();
         /* Tell the channel as well, so its own notion of state agrees with
          * ours.  This is not what makes the cancellation quick -- refusing the
          * next slice is -- but by the time we get here the engine's loop is
@@ -209,9 +213,10 @@ void panthera_finish(void)
         }
         /* One line, because this path is measured rather than reasoned about:
          * every previous guess at where the twenty seconds went was wrong. */
-        fprintf(stderr, "panthera: finish stop=%.0fms(err %d) settle=%.0fms "
-                        "slices %u->%u\n",
-                t_stop - t0, err_stop, wall_ms() - t_stop, slices_in, g_slices);
+        fprintf(stderr, "panthera: finish ready=%.0fms stop=%.0fms(err %d) "
+                        "settle=%.0fms slices %u->%u\n",
+                t_ready - t0, t_stop - t_ready, err_stop,
+                wall_ms() - t_stop, slices_in, g_slices);
         InterlockedExchange(&g_au_cancel, 0);
     }
 }
