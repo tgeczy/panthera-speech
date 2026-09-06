@@ -31,6 +31,11 @@
 
 static NeAACDecHandle g_faad;
 static int            g_aac_state;      /* 0 untried, 1 ready, -1 no decoder */
+static int            g_faad_said;
+static int            g_faad_shown;
+static short         *g_faad_mono;   /* one channel of an upmixed frame */
+static unsigned       g_faad_mono_cap;
+static int            g_faad_primed;  /* the swallowed first frame */      /* the wrong-length complaint, said once */
 
 static int aac_is_open(void)
 {
@@ -44,6 +49,7 @@ static void aac_reset_decoder(void)
     g_aac_state = 0;
 }
 
+static int aac_open(void);
 static int aac_open(void)
 {
     NeAACDecConfigurationPtr cfg;
@@ -69,6 +75,15 @@ static int aac_open(void)
          * arithmetic counts samples, not frames. */
         cfg->outputFormat = FAAD_FMT_16BIT;
         cfg->downMatrix   = 0;
+        /* **Do not upsample for implicit SBR**, which FAAD2 does by default and
+         * which is wrong for every bank here.  It returns 2048 samples where
+         * the engine's arithmetic says 1024, at the same nominal rate, so the
+         * engine reads the first half of each unit and gets audio an octave
+         * down and a unit cut in half -- heard, exactly, as "a slowed down
+         * cassette with stuttering".  No length check catches it: there is more
+         * audio than asked for, not less, and the short-decode alarm only fires
+         * on less. */
+        cfg->dontUpSampleImplicitSBR = 1;
         NeAACDecSetConfiguration(g_faad, cfg);
     }
     /* Init2 takes the AudioSpecificConfig itself, which is exactly what the
@@ -85,6 +100,7 @@ static int aac_open(void)
         printf("  [aac] FAAD2 ready: %lu Hz, %u channel(s); the voice says "
                "%u Hz, %u\n", rate, chans, g_sc.rate, g_sc.channels);
     g_aac_state = 1;
+    g_faad_primed = 0;
     return 1;
 }
 
@@ -98,8 +114,79 @@ static int aac_feed(const unsigned char *data, unsigned len)
     g_aac_units++;
     memset(&info, 0, sizeof info);
     pcm = NeAACDecDecode(g_faad, &info, (unsigned char *)data, len);
-    if (!info.error && pcm && info.samples)
-        pcm_append((const unsigned char *)pcm, (unsigned)info.samples * 2u);
+    /* **Stand in for the frame this decoder eats.**  FAAD2 answers zero samples
+     * for the first access unit after an init -- it primes its overlap buffer
+     * with it rather than emitting it -- where Media Foundation hands that
+     * frame over like any other.  The engine then skips a fixed 2112 samples of
+     * codec delay off the front of every unit, so one decoder's stream is a
+     * whole frame out of step with the other's and each unit is read from 1024
+     * samples too far in.  There is no global lag to find afterwards, because
+     * every unit is shifted inside itself: cross-correlating the finished
+     * utterance against the desktop gave 0.22 where the system decoder gives
+     * 1.00.  So put the frame back, as silence, and the arithmetic lines up. */
+    if (g_faad_primed == 0) {
+        g_faad_primed = 1;
+        if (!info.error && info.samples == 0) {
+            static const short quiet[AAC_FRAME] = { 0 };
+            pcm_append((const unsigned char *)quiet, AAC_FRAME * 2u);
+        }
+    }
+    /* An access unit is AAC_FRAME samples per channel and the engine's whole
+     * arithmetic depends on it.  Say so once if it ever is not: too FEW is
+     * already caught downstream, too MANY is not, and too many is what implicit
+     * SBR upsampling produces -- silently, and audibly. */
+    /* The first few decodes after an init, unconditionally, because a decoder
+     * that answers ZERO samples for the first frame -- priming its overlap
+     * buffer rather than emitting it -- shifts every unit by 1024 samples and
+     * is invisible to any check that only looks at non-empty frames. */
+    if (g_faad_shown < 4) {
+        g_faad_shown++;
+        fprintf(stderr, "  [aac] FAAD2 decode %d: %lu samples, %u ch, %lu Hz, "
+                        "err %u, consumed %lu of %u\n", g_faad_shown,
+                info.samples, info.channels, info.samplerate, info.error,
+                info.bytesconsumed, len);
+    }
+    if (!info.error && info.samples) {
+        unsigned want = AAC_FRAME * (info.channels ? info.channels : 1u);
+        if ((unsigned)info.samples != want && !g_faad_said) {
+            g_faad_said = 1;
+            fprintf(stderr, "  [aac] FAAD2 returned %lu samples for one access "
+                            "unit, expected %u (%u ch at %lu Hz). The voice "
+                            "will be pitched wrong.\n",
+                    info.samples, want, info.channels, info.samplerate);
+        }
+    }
+    if (!info.error && pcm && info.samples) {
+        /* **Take one channel when the decoder invents two.**  The banks are
+         * mono -- the AudioSpecificConfig says channelConfig 1 -- and FAAD2
+         * still answers two channels, because implicit parametric stereo
+         * upmixes it.  info.samples counts interleaved samples, so 2048 of them
+         * are 1024 frames, and handing all 2048 to an engine expecting 1024
+         * mono ones plays every frame at half speed an octave down: heard,
+         * exactly, as a slowed cassette.
+         *
+         * Nothing downstream can catch it.  There is more audio than asked for
+         * rather than less, so the short-decode alarm stays quiet, and the
+         * length the engine finally writes is set by its own arithmetic, so
+         * even the WAV comes out the right size.  Only the ear, and a
+         * cross-correlation against the same utterance rendered on the desktop,
+         * which came back at 0.12 where the system decoder gives 1.00. */
+        const short *src = (const short *)pcm;
+        unsigned n = (unsigned)info.samples;
+        if (info.channels > 1 && g_sc.channels <= 1) {
+            unsigned frames = n / info.channels, i;
+            if (frames > g_faad_mono_cap) {
+                short *g = (short *)realloc(g_faad_mono, frames * 2u);
+                if (!g) { if (--g_aac_depth == 0) g_aac_ms += wall_ms() - t0; return 0; }
+                g_faad_mono = g;
+                g_faad_mono_cap = frames;
+            }
+            for (i = 0; i < frames; i++) g_faad_mono[i] = src[i * info.channels];
+            src = g_faad_mono;
+            n   = frames;
+        }
+        pcm_append((const unsigned char *)src, n * 2u);
+    }
     if (--g_aac_depth == 0) g_aac_ms += wall_ms() - t0;
     if (info.error) {
         if (!g_sc.quiet++)
@@ -116,12 +203,26 @@ static int aac_feed(const unsigned char *data, unsigned len)
 static void aac_drain(void) { }
 static void aac_end_stream(void) { }
 
-/* Between units.  The engine treats each unit as its own stream, and an AAC
- * frame is finished by the one after it, so the decoder's carry-over from the
- * previous unit must not bleed into this one. */
+/* Between units, and it has to be a real reset.
+ *
+ * The engine treats each unit as its own stream, and an AAC frame is finished
+ * by the one after it -- the decoder carries an overlap buffer forward.  Media
+ * Foundation is sent COMMAND_FLUSH here, which discards that.
+ * NeAACDecPostSeekReset does not discard enough: with it, every unit after the
+ * first is decoded on top of the previous unit's tail, which is not noise and
+ * not silence but a different voice entirely.
+ *
+ * So the decoder is rebuilt.  In process that costs a NeAACDecOpen and an
+ * Init2 against two bytes of config -- microseconds, and nothing like the
+ * per-buffer IPC this backend exists to avoid. */
 static void aac_flush_now(void)
 {
-    if (g_faad) NeAACDecPostSeekReset(g_faad, 0);
+    if (!g_faad) return;
+    NeAACDecClose(g_faad);
+    g_faad = NULL;
+    g_aac_state = 0;
+    g_faad_primed = 0;
+    (void)aac_open();
 }
 
 static void aac_begin(void)
