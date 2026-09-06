@@ -40,7 +40,10 @@ UC_INC="$ROOT/android/harness/unicorn/include"
 BUILD="$ROOT/build/jni"
 mkdir -p "$BUILD" "$OUT"
 
-CFLAGS="-O2 -fPIC -DTIGER_UC -DTIGER_AAC_NDK -DTIGER_JNI -Wno-macro-redefined -I\"$UC_INC\""
+FAAD_OBJ="$ROOT/android/harness/faad2-obj"
+FAAD_INC="$ROOT/android/harness/faad2/include"
+[ -d "$FAAD_OBJ" ] || { echo "no FAAD2 objects; run android/harness/build_faad2.sh"; exit 1; }
+CFLAGS="-O2 -fPIC -DTIGER_UC -DTIGER_AAC_FAAD -DTIGER_JNI -Wno-macro-redefined -I\"$UC_INC\" -I\"$FAAD_INC\""
 
 echo "compiling engine TU (TIGER_JNI)"
 eval "\"$CLANG\" --target=$TARGET $CFLAGS -c \"$ROOT/src/tiger_host.c\" -o \"$BUILD/tiger_host.o\"" \
@@ -56,7 +59,7 @@ echo "linking libpanthera.so"
 # statically link the tiny bit of C++ runtime it needs rather than depend on
 # libc++_shared.so, which the APK would otherwise have to ship too.
 eval "\"$CLANGXX\" --target=$TARGET -shared -fPIC -static-libstdc++ -o \"$OUT/libpanthera.so\" \
-    \"$BUILD/tiger_host.o\" \"$BUILD/panthera_jni.o\" \
+    \"$BUILD/tiger_host.o\" \"$BUILD/panthera_jni.o\" \"$FAAD_OBJ\"/*.o \
     -Wl,--start-group \"$UC_STATIC\" \"$UC_SOFTMMU\" \"$UC_COMMON\" -Wl,--end-group \
     -llog -lm -ldl -lmediandk -Wl,-z,max-page-size=16384 -Wl,--no-undefined" \
     >> "$BUILD/build.log" 2>&1 || { echo "link failed:"; tail -40 "$BUILD/build.log"; exit 1; }

@@ -191,7 +191,9 @@ static void aac_dump_adts(const snd_data *in)
  * since 4.1, so neither build carries one, exactly as neither carries SQLite
  * (see tiger_host_sqlite.c).
  */
-#ifdef TIGER_AAC_NDK
+#if defined(TIGER_AAC_FAAD)
+#include "tiger_host_aac_faad.c"       /* in process, FAAD2 */
+#elif defined(TIGER_AAC_NDK)
 #include "tiger_host_aac_ndk.c"        /* Android: AMediaCodec */
 #else
 #include "tiger_host_aac_mf.c"         /* Windows: Media Foundation */
