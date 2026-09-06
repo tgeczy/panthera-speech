@@ -25,13 +25,15 @@ ORACLE="$ROOT/build/ndk/fred-desktop-uc.wav"
 
 ENGINE="${ENGINE:-D:/speech-tiger/x86}"
 MT="$ENGINE/Speech/Synthesizers/MacinTalk.SpeechSynthesizer/Contents/MacOS/MacinTalk"
-SD="$ENGINE/SpeechDictionary.framework/Versions/A/SpeechDictionary"  # not the symlink
+SDVER="$ENGINE/SpeechDictionary.framework/Versions/A"   # binary + Resources/ live here
+SD="$SDVER/SpeechDictionary"                            # not the top-level symlink
+SDRES="$SDVER/Resources"                                # StdDictionary, SymbolDictionary, ...
 FV="$ENGINE/Speech/Voices/Fred.SpeechVoice"
 
 ADB="${ADB:-C:/Android/Sdk/platform-tools/adb.exe}"
 DEV=/data/local/tmp/panthera
 
-for f in "$BIN" "$MT" "$SD" "$FV"; do
+for f in "$BIN" "$MT" "$SD" "$SDRES" "$FV"; do
     [ -e "$f" ] || { echo "missing: $f"; exit 1; }
 done
 [ -f "$ORACLE" ] || { echo "no oracle at $ORACLE; render it on the desktop first"; exit 1; }
@@ -47,11 +49,17 @@ case "$ABIS" in
 esac
 
 echo "== push =="
-"$ADB" shell "mkdir -p $DEV/Fred.SpeechVoice" >/dev/null
-"$ADB" push "$BIN" "$DEV/tiger_host" | tail -1
-"$ADB" push "$MT"  "$DEV/MacinTalk" | tail -1
-"$ADB" push "$SD"  "$DEV/SpeechDictionary" | tail -1
-"$ADB" push "$FV/." "$DEV/Fred.SpeechVoice" | tail -1
+# SpeechDictionary must keep its bundle shape: GetBundleWithIdentifier resolves
+# the framework from the binary's path and then loads Resources/ beside it (the
+# StdDictionary/SymbolDictionary/CartLite/CartNames the parser needs).  Pushed
+# flat, the dictionaries come back empty and the tokeniser dereferences a null.
+SDDIR="$DEV/SpeechDictionary.framework/Versions/A"
+"$ADB" shell "mkdir -p $DEV/Fred.SpeechVoice $SDDIR/Resources" >/dev/null
+"$ADB" push "$BIN"    "$DEV/tiger_host" | tail -1
+"$ADB" push "$MT"     "$DEV/MacinTalk" | tail -1
+"$ADB" push "$SD"     "$SDDIR/SpeechDictionary" | tail -1
+"$ADB" push "$SDRES/." "$SDDIR/Resources" | tail -1
+"$ADB" push "$FV/."   "$DEV/Fred.SpeechVoice" | tail -1
 "$ADB" shell "chmod 755 $DEV/tiger_host"
 
 echo "== render Fred on device (TIGER_SPEED=1, honest realtime) =="
@@ -60,7 +68,7 @@ echo "== render Fred on device (TIGER_SPEED=1, honest realtime) =="
 # oracle is byte-identical at speed 1 and 128, so the byte-diff below is valid
 # at speed 1.  Re-run without TIGER_SPEED (defaults to 128) afterwards for the
 # perf number -- how much faster than real time this watch renders Fred.
-"$ADB" shell "cd $DEV && TIGER_SPEED=1 ./tiger_host ./MacinTalk ./SpeechDictionary ./Fred.SpeechVoice > run.log 2>&1; echo exit=\$?"
+"$ADB" shell "cd $DEV && TIGER_SPEED=1 ./tiger_host ./MacinTalk ./SpeechDictionary.framework/Versions/A/SpeechDictionary ./Fred.SpeechVoice > run.log 2>&1; echo exit=\$?"
 echo "  --- last lines of on-device log ---"
 "$ADB" shell "tail -6 $DEV/run.log" | sed 's/^/  /'
 
