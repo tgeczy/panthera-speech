@@ -28,12 +28,17 @@ set -e
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SRC="$HERE/faad2"
-OBJ="$HERE/faad2-obj"
 TAG="${FAAD2_TAG:-2.11.2}"
+ABI="${1:-armeabi-v7a}"
+OBJ="$HERE/faad2-obj-$ABI"
 
 NDK="${ANDROID_NDK:-C:/Android/Sdk/ndk/27.2.12479018}"
 API="${ANDROID_API:-26}"
-TARGET="armv7-none-linux-androideabi${API}"
+case "$ABI" in
+  armeabi-v7a) TARGET="armv7-none-linux-androideabi${API}" ;;
+  arm64-v8a)   TARGET="aarch64-none-linux-android${API}" ;;
+  *) echo "unknown ABI '$ABI' (armeabi-v7a or arm64-v8a)"; exit 1 ;;
+esac
 CLANG="$NDK/toolchains/llvm/prebuilt/windows-x86_64/bin/clang.exe"
 [ -x "$CLANG" ] || { echo "no NDK clang at $CLANG"; exit 1; }
 

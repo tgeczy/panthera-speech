@@ -461,9 +461,9 @@ static int __cdecl sh_SoundConverterFillBuffer(void *sc, fill_proc upp,
              * whole of EAX would make "no more data" look like more whenever
              * the high bytes held junk.  The old code got that from the
              * function pointer's `unsigned char` return type; say it here. */
-            snd_data **slot = (snd_data **)UC_OUT(in);
+            void *slot = UC_OUT_PTR(in);
             more = CALL_GUEST2((void *)upp, slot, refcon) & 0xff;
-            UC_OUT_GET(slot, in);
+            UC_OUT_PTR_GET(slot, in);
             UC_FREE(slot);
         }
         if (more && in && in->buffer) {
@@ -772,14 +772,14 @@ static int __cdecl sh_AudioConverterFillComplexBuffer_inner(void *conv,
             {
                 unsigned      *p_packets = (unsigned *)UC_OUT(packets);
                 au_bufferlist *p_in      = (au_bufferlist *)UC_OUT(in);
-                au_packetdesc **p_descs  = (au_packetdesc **)UC_OUT(descs);
+                void          *p_descs   = UC_OUT_PTR(descs);
                 if (p_packets && p_in && p_descs) {
                     memcpy(p_in, &in, sizeof in);
                     CALL_GUEST5((void *)proc, conv, p_packets, p_in,
                                 p_descs, user);
                     packets = *p_packets;
                     memcpy(&in, p_in, sizeof in);
-                    descs = *p_descs;
+                    UC_OUT_PTR_GET(p_descs, descs);
                 }
                 /* This runs once per refill and a long utterance has hundreds;
                  * leaking three slots each is how the arena ran dry. */

@@ -388,7 +388,11 @@ static void bind(image *im, image *dep)
         n = s->size / stride;
         for (j = 0; j < n; j++) {
             unsigned isym = ind[s->reserved1 + j];
-            void **slot = (void **)(s->addr + im->slide + j * stride);
+            /* A guest slot is four bytes wide.  Writing a host pointer
+             * through it would store eight and take the next slot with
+             * it -- silently, and only on a 64-bit host. */
+            unsigned *slot =
+                (unsigned *)(uintptr_t)(s->addr + im->slide + j * stride);
             const char *nm;
             void *fn;
             if (stride == 5) {
@@ -453,7 +457,11 @@ static void bind(image *im, image *dep)
                 fn = make_thunk(nm);
                 thunked++;
             }
-            *slot = fn;
+            /* Narrowed deliberately: the slot is the guest's and four bytes
+             * wide.  Everything the engine can reach lives below 4 GB, so this
+             * cannot lose anything -- and if it ever could, the reservation in
+             * tiger_plat_posix.c would have failed first. */
+            *slot = (unsigned)(uintptr_t)fn;
         }
     }
     if (g_verbose)
@@ -468,14 +476,22 @@ static void run_initializers(image *im)
         const section *s = &im->sects[i];
         if ((s->flags & 0xff) != S_MOD_INIT_FUNC) continue;
         {
+            /* Four bytes an entry, which `size / 4` already knew and
+             * `void **` did not.  On a 64-bit host that read two entries
+             * at a time and handed the engine a function pointer built
+             * from two unrelated halves -- "initializer 0 ->
+             * 0x17074f9017074f78", and then a fault at a real address
+             * shifted into the high word. */
             unsigned n = s->size / 4, j;
-            void **fns = (void **)(s->addr + im->slide);
+            const unsigned *fns =
+                (const unsigned *)(uintptr_t)(s->addr + im->slide);
             for (j = 0; j < n; j++) {
-                if (g_verbose) printf("  initializer %u -> %p\n", j, fns[j]);
+                void *fn = (void *)(uintptr_t)fns[j];
+                if (g_verbose) printf("  initializer %u -> %p\n", j, fn);
 #ifdef TIGER_UC
-                uc_run_init(fns[j]);
+                uc_run_init(fn);
 #else
-                ((void (__cdecl *)(void))fns[j])();
+                ((void (__cdecl *)(void))fn)();
 #endif
             }
         }

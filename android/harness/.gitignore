@@ -4,4 +4,4 @@ unicorn/
 results/
 *.log
 faad2/
-faad2-obj/
+faad2-obj-*/

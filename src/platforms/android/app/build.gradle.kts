@@ -20,7 +20,12 @@ android {
         // step here and the APK build needs no NDK/Cygwin.  armeabi-v7a only:
         // the emulator maps guest addresses as a 32-bit identity.
         ndk {
-            abiFilters += "armeabi-v7a"
+            // Both, and both are needed.  Watches and budget phones are 32-bit
+            // for years yet -- a Galaxy Watch reports armeabi-v7a and nothing
+            // else -- while ARMv9 phones dropped AArch32 in the silicon and
+            // refuse a 32-bit APK outright (INSTALL_FAILED_NO_MATCHING_ABIS).
+            // Neither ABI covers the field on its own.
+            abiFilters += listOf("armeabi-v7a", "arm64-v8a")
         }
     }
 

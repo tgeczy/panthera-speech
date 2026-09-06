@@ -390,6 +390,15 @@ static unsigned bswap(unsigned v)
 #define UC_IN_STR(s, n)       uc_in_str((s), (n))
 #define UC_OUT(var)           uc_out(sizeof(var))
 #define UC_OUT_GET(slot, var) ((var) = *(slot))
+/* An out-parameter the guest fills with a POINTER.
+ *
+ * sizeof(var) is the wrong size for one of those on a 64-bit host: the guest
+ * writes four bytes and UC_OUT_GET would read eight, taking whatever sits next
+ * to it as the top half.  That is not a subtle corruption -- the first one cost
+ * a fault at 0xa6d0d7c000000000, which is a perfectly good guest address
+ * shifted into the high word. */
+#define UC_OUT_PTR(var)           uc_out(4)
+#define UC_OUT_PTR_GET(slot, var)         ((var) = (void *)(uintptr_t)*(unsigned *)(slot))
 /* Calling back into the guest from *inside* a shim -- the audio callbacks the
  * engine hands us.  These are nested by construction: the guest is already
  * running up the stack, suspended in the dispatch hook, so they take the
@@ -407,6 +416,8 @@ static unsigned bswap(unsigned v)
 #define UC_IN_STR(s, n)       ((void *)(s))
 #define UC_OUT(var)           (&(var))
 #define UC_OUT_GET(slot, var) ((void)0)
+#define UC_OUT_PTR(var)       (&(var))
+#define UC_OUT_PTR_GET(slot, var) ((void)0)
 #define CALL_GUEST2(fn, a, b)             call_aligned2((fn), (a), (b))
 #define CALL_GUEST5(fn, a, b, c, d, e)    call_aligned5((fn), (a), (b), (c), (d), (e))
 #define UC_FREE(p)            ((void)0)
@@ -639,9 +650,9 @@ static int host_open(const char *mtpath, const char *sdpath)
      * out-parameter: the engine writes it through the pointer we pass, which
      * under emulation must be a guest address (UC_OUT), read back after. */
     {
-        void **slot = (void **)UC_OUT(g_chan);
+        void *slot = UC_OUT_PTR(g_chan);
         err = call_aligned1((void *)open_chan, slot);
-        UC_OUT_GET(slot, g_chan);
+        UC_OUT_PTR_GET(slot, g_chan);
     }
     if (g_verbose) printf("  -> OSErr %d, channel %p\n", err, g_chan);
     /* A zero OSErr with a null channel has never been seen, but everything

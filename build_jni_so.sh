@@ -18,12 +18,19 @@ export MSYS2_ARG_CONV_EXCL="*"
 export MSYS_NO_PATHCONV=1
 
 ROOT="$(cd "$(dirname "$0")" && pwd -W 2>/dev/null || pwd)"
-ABI="armeabi-v7a"
+# Which ABI.  Both are shipped: watches and budget phones are 32-bit for years
+# yet, and ARMv9 phones dropped AArch32 in the silicon, so neither one covers
+# the field.  ./build_jni_so.sh [armeabi-v7a|arm64-v8a]
+ABI="${1:-armeabi-v7a}"
 OUT="$ROOT/src/platforms/android/app/src/main/jniLibs/$ABI"
 
 NDK="${ANDROID_NDK:-C:/Android/Sdk/ndk/27.2.12479018}"
 API="${ANDROID_API:-26}"
-TARGET="armv7-none-linux-androideabi${API}"
+case "$ABI" in
+  armeabi-v7a) TARGET="armv7-none-linux-androideabi${API}" ;;
+  arm64-v8a)   TARGET="aarch64-none-linux-android${API}" ;;
+  *) echo "unknown ABI '$ABI' (armeabi-v7a or arm64-v8a)"; exit 1 ;;
+esac
 CLANG="$NDK/toolchains/llvm/prebuilt/windows-x86_64/bin/clang.exe"
 CLANGXX="$NDK/toolchains/llvm/prebuilt/windows-x86_64/bin/clang++.exe"
 
@@ -37,12 +44,12 @@ UC_INC="$ROOT/android/harness/unicorn/include"
 [ -f "$UC_STATIC" ] || { echo "no cross-built Unicorn ($UC_STATIC); run android/harness/build_unicorn_cyg.sh $ABI build"; exit 1; }
 [ -f "$UC_INC/unicorn/unicorn.h" ] || { echo "no unicorn headers at $UC_INC"; exit 1; }
 
-BUILD="$ROOT/build/jni"
+BUILD="$ROOT/build/jni-$ABI"
 mkdir -p "$BUILD" "$OUT"
 
-FAAD_OBJ="$ROOT/android/harness/faad2-obj"
+FAAD_OBJ="$ROOT/android/harness/faad2-obj-$ABI"
 FAAD_INC="$ROOT/android/harness/faad2/include"
-[ -d "$FAAD_OBJ" ] || { echo "no FAAD2 objects; run android/harness/build_faad2.sh"; exit 1; }
+[ -d "$FAAD_OBJ" ] || { echo "no FAAD2 objects for $ABI; run android/harness/build_faad2.sh $ABI"; exit 1; }
 CFLAGS="-O2 -fPIC -DTIGER_UC -DTIGER_AAC_FAAD -DTIGER_JNI -Wno-macro-redefined -I\"$UC_INC\" -I\"$FAAD_INC\""
 
 echo "compiling engine TU (TIGER_JNI)"
