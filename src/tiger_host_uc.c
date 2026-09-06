@@ -517,10 +517,21 @@ static int uc_call(void *fn, int argc, const unsigned *argv)
     if (e != UC_ERR_OK) {
         unsigned eip = 0;
         uc_reg_read(t_uc, UC_X86_REG_EIP, &eip);
+        /* Name the last shim that ran, because a guest fault is very often the
+         * *previous* shim's fault: something marshalled correctly for an i386
+         * host and not for an ARM one hands back a plausible-looking zero, and
+         * the engine dereferences it a few instructions later.  That is exactly
+         * how the 64-bit clock bug read, and how Leopard's worker reads now.
+         *
+         * Trust the addresses over the names either side of it: engine_symbol
+         * takes the nearest preceding export and will cheerfully name something
+         * forty kilobytes away, or something that is not the engine's at all. */
         fprintf(stderr, "tiger_host: guest fault: %s\n"
-                        "  at eip=%08x  %s\n  entry %08x  %s\n",
+                        "  at eip=%08x  %s\n  entry %08x  %s\n"
+                        "  last shim dispatched: %s\n",
                 uc_strerror(e), eip, engine_symbol((void *)(uintptr_t)eip),
-                (unsigned)(uintptr_t)fn, engine_symbol(fn));
+                (unsigned)(uintptr_t)fn, engine_symbol(fn),
+                g_uc_last_shim ? g_uc_last_shim : "(none)");
         die("guest fault: %s at eip=%08x (entry %08x)",
             uc_strerror(e), eip, (unsigned)(uintptr_t)fn);
     }

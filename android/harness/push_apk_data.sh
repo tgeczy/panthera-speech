@@ -50,6 +50,21 @@ mkdir -p "$STAGE/$GEN/Voices" "$STAGE/$GEN/SpeechDictionary.framework/Versions/A
 cp "$MT" "$STAGE/$GEN/MacinTalk"
 cp "$SDVER/SpeechDictionary" "$STAGE/$GEN/SpeechDictionary.framework/Versions/A/SpeechDictionary"
 cp "$SDVER/Resources/"* "$STAGE/$GEN/SpeechDictionary.framework/Versions/A/Resources/" 2>/dev/null || true
+# The C++ runtime, where the generation has one.  Leopard and later import
+# GCC's libstdc++ for std::string, the list helpers and -- the one that bites --
+# __dynamic_cast and the RTTI that makes it answer anything but null.  Without
+# it that symbol falls through to a stub returning 0, the engine takes the null
+# for a cast result and dereferences it, and the worker dies reading 0x1c.
+# Tiger imports none of this, which is why nobody missed it until Leopard.
+for lib in libc++abi.dylib libstdc++.6.0.9.dylib libstdc++.6.0.4.dylib            libstdc++.6.dylib; do
+    for src in "$ENGINE/$lib" "$ENGINE/../$lib" "$ENGINE/usr/lib/$lib"; do
+        [ -f "$src" ] || continue
+        cp "$src" "$STAGE/$GEN/$lib"
+        echo "  runtime: $lib"
+        break
+    done
+done
+
 n=0
 for v in "$VOICES"/*.SpeechVoice; do
     name="$(basename "$v")"
