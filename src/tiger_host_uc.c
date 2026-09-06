@@ -42,8 +42,24 @@
  * own host address.  Guest stacks are allocated per-engine out of the arena. */
 #define UC_TRAMP_SZ     0x00010000u   /* 64 KB = 4096 trampoline slots          */
 #define UC_TRAMP_STRIDE 16u
+#if GUEST_LOW
+/* Four times the size on a 64-bit host, and not because the engine asks for
+ * more.  It asks for the same; it is the HOST that now has to allocate here
+ * too.  Anything a shim hands back -- every cfobj, every CFData holding a
+ * dictionary table, every string an utterance arrives as -- has to live
+ * somewhere the guest can hold the address of, and on a 32-bit host that was
+ * the ordinary heap and cost this nothing.
+ *
+ * The arena has run dry once already, on 64 MB with 52 MB of it free: it had
+ * run out of shapes rather than memory.  Adding the host's traffic to it
+ * without adding room would be asking for that afternoon back.  Reserved, not
+ * touched, so the extra 192 MB costs nothing until something uses it -- and
+ * a 64-bit address space has no shortage to spend. */
+#define UC_ARENA_SZ     0x10000000u   /* 256 MB: arena + stacks + host objects  */
+#else
 #define UC_ARENA_SZ     0x04000000u   /* 64 MB: arena + every engine's stack.   */
                                       /* Alex's bank comes via sh_mmap, not here */
+#endif
 #define UC_STACK_SZ     0x00100000u   /* 1 MB per guest stack                   */
 #define UC_BLOCK_SZ     (UC_TRAMP_SZ + UC_ARENA_SZ)
 #define UC_RETMAGIC     0x00ff0000u   /* pushed as the return address; emu stops */
@@ -65,7 +81,9 @@ static __declspec(thread) int        t_running;   /* guards non-nested re-entry 
  * 64-bit argument differently from the packed i386 stack. */
 enum { RC_INT = 0, RC_VOID, RC_I64, RC_I64_I_I64, RC_DBL, RC_FLT };
 
-typedef struct { void *fn; const char *name; unsigned char rc; unsigned char missing; }
+typedef struct { void *fn; const char *name; unsigned char rc;
+                 unsigned char argc;            /* maths arity; see RC_DBL */
+                 unsigned char missing; }
         uc_slot;
 
 /* Shared, and safe to share: the trampoline table is populated at load time on
@@ -303,6 +321,14 @@ static unsigned char uc_rc_for(const char *nm)
     return RC_INT;
 }
 
+/* How many floating-point arguments a maths shim takes.  Only `pow` and
+ * `powf` take two; everything else in those two lists takes one. */
+static unsigned char uc_argc_for(const char *nm)
+{
+    return (!strcmp(nm, "_pow") || !strcmp(nm, "_powf") ||
+            !strcmp(nm, "_atan2") || !strcmp(nm, "_fmod")) ? 2u : 1u;
+}
+
 /* ---- trampolines ------------------------------------------------------- *
  * bind() writes the guest address of a slot into the engine's import pointer.
  * When the engine calls it, the slot's first byte (a nop) is where the code
@@ -334,6 +360,7 @@ static void *uc_tramp_make(void *fn, const char *nm, unsigned char rc, int missi
     g_slots[idx].fn      = fn;
     g_slots[idx].name    = nm;
     g_slots[idx].rc      = rc;
+    g_slots[idx].argc    = (rc == RC_DBL || rc == RC_FLT) ? uc_argc_for(nm) : 1u;
     g_slots[idx].missing = (unsigned char)missing;
     uc_write_slot(idx, rc == RC_DBL || rc == RC_FLT);
     return (void *)(uintptr_t)(g_uc_tramp + (unsigned)idx * UC_TRAMP_STRIDE);
@@ -371,6 +398,29 @@ typedef float    (__cdecl *fn_f)(unsigned,unsigned,unsigned,unsigned,unsigned,
     unsigned,unsigned,unsigned,unsigned,unsigned,unsigned,unsigned);
 
 #define UC_ARGS a[0],a[1],a[2],a[3],a[4],a[5],a[6],a[7],a[8],a[9],a[10],a[11]
+
+/* Maths, called with its arguments where the host's own ABI puts them. */
+typedef double (*fn_d1)(double);
+typedef double (*fn_dd)(double, double);
+typedef float  (*fn_f1)(float);
+typedef float  (*fn_ff)(float, float);
+
+/* A guest double is two words, low first; a guest float is one.  Read them as
+ * bits and reinterpret, rather than casting the integer -- `(double)a[0]`
+ * would convert the VALUE and hand `sin` the number 1078530011. */
+static double uc_argd(const unsigned *a, int i)
+{
+    unsigned long long bits = ((unsigned long long)a[i + 1] << 32) | a[i];
+    double d;
+    memcpy(&d, &bits, sizeof d);
+    return d;
+}
+static float uc_argf(const unsigned *a, int i)
+{
+    float f;
+    memcpy(&f, &a[i], sizeof f);
+    return f;
+}
 
 static int g_uc_missing_hits;   /* how many missing-shim calls, this session */
 static const char *g_uc_last_shim;   /* name of the last shim dispatched (debug) */
@@ -421,12 +471,29 @@ static void uc_dispatch(uc_engine *u, uint64_t address, uint32_t size,
         uc_reg_write(u, UC_X86_REG_EAX, &lo);
         uc_reg_write(u, UC_X86_REG_EDX, &hi);
         break; }
+    /* The maths shims are bound straight to the host's libm, so their
+     * arguments have to arrive the way libm expects them -- and on AArch64
+     * that is the FP registers, which forwarding twelve integer words never
+     * writes.  `sin` then read whatever was in d0.
+     *
+     * It is the ARGUMENT side of the same fact the return classes above
+     * describe, and it stayed hidden for the same reason ARMv7 did not show
+     * it: Android's armeabi-v7a is softfp, so there floats really do travel
+     * in the core registers, and forwarding words was right.  AArch64 has no
+     * such mode.
+     *
+     * Assembling the value from the guest's own words and calling through a
+     * typed pointer is correct on every host, which is why it is not
+     * conditional. */
     case RC_DBL: {
-        double d = ((fn_d)s->fn)(UC_ARGS);
+        double d = (s->argc == 2) ? ((fn_dd)s->fn)(uc_argd(a, 0), uc_argd(a, 2))
+                                  : ((fn_d1)s->fn)(uc_argd(a, 0));
         uc_mem_write(u, esp - 8, &d, 8);       /* the slot's `fld qword [esp-8]` */
         break; }
     case RC_FLT: {
-        double d = (double)((fn_f)s->fn)(UC_ARGS);
+        double d = (s->argc == 2)
+                     ? (double)((fn_ff)s->fn)(uc_argf(a, 0), uc_argf(a, 1))
+                     : (double)((fn_f1)s->fn)(uc_argf(a, 0));
         uc_mem_write(u, esp - 8, &d, 8);
         break; }
     }

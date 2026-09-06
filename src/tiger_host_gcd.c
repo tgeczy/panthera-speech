@@ -115,7 +115,7 @@ static void * __cdecl sh_Block_copy(void *block)
         InterlockedIncrement(&src->flags);
         return src;
     }
-    dst = (struct blk_layout *)malloc(src->descriptor->size);
+    dst = (struct blk_layout *)GMEM_ALLOC(src->descriptor->size);
     if (!dst) return NULL;
     memcpy(dst, src, src->descriptor->size);
     dst->flags = (src->flags & ~BLK_REFCOUNT_MASK) | BLK_NEEDS_FREE | 1;
@@ -133,7 +133,7 @@ static void __cdecl sh_Block_release(void *block)
         return;
     if (blk->flags & BLK_HAS_COPY_DISPOSE)
         blk->descriptor->dispose(blk);
-    free(blk);
+    GMEM_FREE(blk);
 }
 
 static void __cdecl sh_Block_object_assign(void *destAddr, const void *object,
@@ -145,11 +145,12 @@ static void __cdecl sh_Block_object_assign(void *destAddr, const void *object,
         struct blk_byref *heap;
         if (src->flags & BLK_NEEDS_FREE) {
             InterlockedIncrement(&src->flags);
-            *(void **)destAddr = src;
+            /* destAddr is a variable inside the guest's block: four bytes. */
+            *(gptr *)destAddr = GP(src);
             break;
         }
-        heap = (struct blk_byref *)malloc(src->size);
-        if (!heap) { *(void **)destAddr = src; break; }
+        heap = (struct blk_byref *)GMEM_ALLOC(src->size);
+        if (!heap) { *(gptr *)destAddr = GP(src); break; }
         memcpy(heap, src, src->size);
         heap->forwarding = heap;
         heap->flags = (heap->flags & ~BLK_REFCOUNT_MASK) | BLK_NEEDS_FREE | 1;
@@ -158,14 +159,14 @@ static void __cdecl sh_Block_object_assign(void *destAddr, const void *object,
         /* The stack copy forwards to the heap from now on, which is the
          * whole point of __block: everyone sees one variable. */
         src->forwarding = heap;
-        *(void **)destAddr = heap;
+        *(gptr *)destAddr = GP(heap);
         break;
     }
     case BLK_FIELD_IS_BLOCK:
-        *(void **)destAddr = sh_Block_copy((void *)object);
+        *(gptr *)destAddr = GP(sh_Block_copy((void *)object));
         break;
     default:
-        *(void **)destAddr = (void *)object;
+        *(gptr *)destAddr = GP((void *)object);
         break;
     }
 }
@@ -179,7 +180,7 @@ static void __cdecl sh_Block_object_dispose(const void *object, int flags)
         if (InterlockedDecrement(&b->flags) & BLK_REFCOUNT_MASK) return;
         if (b->flags & BLK_HAS_COPY_DISPOSE)
             b->destroy(b);
-        free(b);
+        GMEM_FREE(b);
         break;
     }
     case BLK_FIELD_IS_BLOCK:

@@ -52,22 +52,35 @@
 #define AAC_PRIMING     2112                   /* Apple's AAC-LC codec delay */
 #define kExtendedSoundData        (1 << 14)
 
+/* The ENGINE fills this in and hands over the address, so every field is the
+ * width an i386 compiler gave it: `long` is four bytes and so is a pointer.
+ * Spelled with the host's own types it is 96 bytes on arm64 rather than 52,
+ * and `buffer` is then read out of the middle of `sampleCount`.  The byte
+ * offsets in the comment above are the engine's, not this host's, and this
+ * is where that stops being true by accident. */
 typedef struct {
-    long           flags;
+    glong          flags;
     unsigned       format;
     short          numChannels;
     short          sampleSize;
     unsigned       sampleRate;
-    long           sampleCount;
-    unsigned char *buffer;
-    long           reserved;
+    glong          sampleCount;
+    gptr           buffer;              /* unsigned char *  */
+    glong          reserved;
     /* live only when flags & kExtendedSoundData */
-    long           recordSize;
-    long           extendedFlags;
-    long           bufferSize;
-    long           frameCount;
-    long          *frameSizes;
+    glong          recordSize;
+    glong          extendedFlags;
+    glong          bufferSize;
+    glong          frameCount;
+    gptr           frameSizes;          /* glong *          */
 } snd_data;
+
+/* Read the two pointers back at host width once, by name, rather than at
+ * every call site each remembering to. */
+static const unsigned char *snd_buffer(const snd_data *in)
+{ return (const unsigned char *)GHOST(in->buffer); }
+static const glong *snd_frame_sizes(const snd_data *in)
+{ return (const glong *)GHOST(in->frameSizes); }
 
 /* Boolean, so the callee only sets AL -- reading the whole of EAX would make
  * "no more data" look like "more data" whenever the high bytes held junk. */
@@ -162,7 +175,7 @@ static void aac_dump_adts(const snd_data *in)
     f = fopen(path, "wb");
     if (!f) return;
     for (i = 0; i < in->frameCount; i++) {
-        unsigned sz = (unsigned)in->frameSizes[i], len = sz + 7;
+        unsigned sz = (unsigned)snd_frame_sizes(in)[i], len = sz + 7;
         unsigned char h[7];
         if (!sz || off + sz > (unsigned)in->bufferSize) break;
         h[0] = 0xff;
@@ -174,11 +187,11 @@ static void aac_dump_adts(const snd_data *in)
         h[5] = (unsigned char)(((len & 7) << 5) | 0x1f);
         h[6] = 0xfc;
         fwrite(h, 1, 7, f);
-        fwrite(in->buffer + off, 1, sz, f);
+        fwrite(snd_buffer(in) + off, 1, sz, f);
         off += sz;
     }
     fclose(f);
-    if (g_verbose) printf("  [aac] wrote %ld access units to %s\n", in->frameCount, path);
+    if (g_verbose) printf("  [aac] wrote %ld access units to %s\n", (long)in->frameCount, path);
 }
 
 /* ---- the decoder itself, one backend per platform ---------------------- */
@@ -253,14 +266,14 @@ static void aac_run_unit(const snd_data *in)
     long i;
     aac_begin();
     for (i = 0; i < in->frameCount; i++) {
-        unsigned sz = (unsigned)in->frameSizes[i];
+        unsigned sz = (unsigned)snd_frame_sizes(in)[i];
         if (!sz || off + sz > (unsigned)in->bufferSize) break;
-        if (!aac_feed(in->buffer + off, sz)) g_sc.lost++;
+        if (!aac_feed(snd_buffer(in) + off, sz)) g_sc.lost++;
         lastoff = off;
         lastlen = sz;
         off += sz;
     }
-    aac_flush_delay(in->buffer + lastoff, lastlen);
+    aac_flush_delay(snd_buffer(in) + lastoff, lastlen);
     aac_end();
 }
 
@@ -327,12 +340,13 @@ static void aac_decode_unit(const snd_data *in)
                         "tiger_host: AAC decoder returned %u frames for %ld "
                         "units, expected %u (%u short); %u access unit(s) "
                         "refused. Vicki will sound wrong on this machine.\n",
-                        g_sc.pcm_n, in->frameCount, full, full - g_sc.pcm_n,
+                        g_sc.pcm_n, (long)in->frameCount, full,
+                        full - g_sc.pcm_n,
                         g_sc.lost);
             }
         } else if (g_verbose && g_sc.sessions <= 3) {
             if (g_verbose) printf("  [aac] unit %ld units -> %u frames, want %u, dropping %u\n",
-                   in->frameCount, g_sc.pcm_n, target, trim);
+                   (long)in->frameCount, g_sc.pcm_n, target, trim);
         }
     }
 }
@@ -472,7 +486,7 @@ static int __cdecl sh_SoundConverterFillBuffer(void *sc, fill_proc upp,
                 if (!g_sc.quiet++)
                     if (g_verbose) printf("  [snd] fill: flags %08lx recordSize %ld -- not the "
                            "extended VBR descriptor this expects\n",
-                           in->flags, in->recordSize);
+                           (unsigned long)in->flags, (long)in->recordSize);
             } else {
                 aac_decode_unit(in);
             }
@@ -543,7 +557,10 @@ static int __cdecl sh_SoundConverterEndConversion(void *sc, void *outbuf,
  */
 #define AC_MAGIC 0x41434e56u                   /* 'ACNV' */
 
-typedef struct { unsigned mNumberChannels, mDataByteSize; void *mData; } au_buffer;
+/* Also the engine's, and handed both ways: it allocates the output buffer,
+ * and its input callback fills in the one this host lends it. */
+typedef struct { unsigned mNumberChannels, mDataByteSize;
+                 gptr mData; /* void * */ } au_buffer;
 typedef struct { unsigned mNumberBuffers; au_buffer mBuffers[1]; } au_bufferlist;
 typedef struct {
     long long mStartOffset;
@@ -787,7 +804,7 @@ static int __cdecl sh_AudioConverterFillComplexBuffer_inner(void *conv,
             }
             if (packets && descs && in.mBuffers[0].mData) {
                 const unsigned char *base =
-                    (const unsigned char *)in.mBuffers[0].mData;
+                    (const unsigned char *)GHOST(in.mBuffers[0].mData);
                 unsigned i;
                 /* **Open the stream once, not once per refill.**
                  *
@@ -989,7 +1006,7 @@ static int __cdecl sh_AudioConverterFillComplexBuffer_inner(void *conv,
     {
         unsigned take = g_sc.pcm_n - g_sc.pcm_pos;
         if (take > want - give) take = want - give;
-        memcpy((unsigned char *)outdata->mBuffers[0].mData + give * 2,
+        memcpy((unsigned char *)GHOST(outdata->mBuffers[0].mData) + give * 2,
                g_sc.pcm + g_sc.pcm_pos, take * 2);
         g_sc.pcm_pos += take;
         g_frames_out += take;
@@ -1005,7 +1022,7 @@ static int __cdecl sh_AudioConverterFillComplexBuffer_inner(void *conv,
      * out audibly, as a render that differed run to run.  Silence is what a
      * short fill means, so write it down. */
     if (give < want)
-        memset((unsigned char *)outdata->mBuffers[0].mData + give * 2, 0,
+        memset((unsigned char *)GHOST(outdata->mBuffers[0].mData) + give * 2, 0,
                (want - give) * 2);
     outdata->mBuffers[0].mDataByteSize = give * 2;
     *iopackets = give;

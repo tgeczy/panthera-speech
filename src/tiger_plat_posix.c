@@ -626,6 +626,39 @@ static size_t view_take(void *base)
     return len;
 }
 
+/* Map a file where the guest can reach it.
+ *
+ * The same rule VirtualAlloc follows, and for the same reason: a 32-bit guest
+ * holds these addresses, so a mapping above 4 GB is not a slower answer, it is
+ * a wrong one.  A hint the kernel declines is only a hint, so the result is
+ * checked rather than trusted -- hand it back, aim higher, and try again.
+ *
+ * On a 32-bit host the test cannot fail and this is one `mmap64`. */
+static void *plat_mmap_low(size_t sz, int prot, int flags, int fd, off64_t off)
+{
+    int tries = 0;
+    for (;;) {
+        void *hint, *p;
+        pthread_mutex_lock(&g_hint_lk);
+        hint = (void *)g_low_hint;
+        pthread_mutex_unlock(&g_hint_lk);
+        p = mmap64(hint, sz, prot, flags, fd, off);
+        if (p == MAP_FAILED) return MAP_FAILED;
+        if (sizeof(void *) == 4 ||
+            (unsigned long long)(uintptr_t)p + sz <= 0xffffffffULL)
+            return p;
+        munmap(p, sz);
+        if (++tries > 64) return MAP_FAILED;
+        pthread_mutex_lock(&g_hint_lk);
+        {
+            uintptr_t next = g_low_hint + ((uintptr_t)tries << 24);  /* +16 MB */
+            if (next + sz > 0xffffffffu) next = 0x10000000u;
+            g_low_hint = next;
+        }
+        pthread_mutex_unlock(&g_hint_lk);
+    }
+}
+
 HANDLE CreateFileMappingA(HANDLE fho, void *sec, DWORD protect,
                           DWORD sizeHigh, DWORD sizeLow, const char *name)
 {
@@ -649,7 +682,13 @@ void *MapViewOfFile(HANDLE mho, DWORD access, DWORD offHigh, DWORD offLow,
     int prot = (access == FILE_MAP_COPY) ? (PROT_READ | PROT_WRITE) : PROT_READ;
     void *p;
     if (!mh || mho == INVALID_HANDLE_VALUE || nbytes == 0) return NULL;
-    p = mmap64(NULL, nbytes, prot, MAP_PRIVATE, mh->fd, off);
+    /* Low, for the same reason VirtualAlloc is, and this is the mapping that
+     * proved it: the engine memory-maps its dictionaries and its voice banks
+     * and then reads them through guest pointers.  bionic put a 67 KB
+     * CartNames at 0x7acde05000; the guest kept the low half, 0xcde05000, and
+     * faulted on the first byte.  Alex's bank comes through here too, all
+     * 670 MB of it, so this is not a small-file convenience. */
+    p = plat_mmap_low(nbytes, prot, MAP_PRIVATE, mh->fd, off);
     if (p == MAP_FAILED) return NULL;
     view_add(p, nbytes);
     return p;

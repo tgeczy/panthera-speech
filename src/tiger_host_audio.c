@@ -413,7 +413,7 @@ static int pacer_idle(void)
 static void collect_slice(unsigned char *slice)
 {
     unsigned frames = *(unsigned *)(slice + SLICE_FRAMES_OFF);
-    unsigned char *bl = *(unsigned char **)(slice + SLICE_BUFLIST_OFF);
+    unsigned char *bl = (unsigned char *)GHOST(*(gptr *)(slice + SLICE_BUFLIST_OFF));
     double stime = *(double *)(slice + SLICE_SAMPLETIME_OFF);
     unsigned tsflags = *(unsigned *)(slice + SLICE_TSFLAGS_OFF);
     unsigned nbufs, i;
@@ -473,7 +473,7 @@ static void collect_slice(unsigned char *slice)
     for (i = 0; i < nbufs; i++) {
         unsigned char *b = bl + 4 + i * 12;
         unsigned bytes = *(unsigned *)(b + 4);
-        const float *data = *(const float **)(b + 8);
+        const float *data = (const float *)GHOST(*(gptr *)(b + 8));
         unsigned n = bytes / sizeof(float), j, pos;
         if (i != 0 || !data) continue;
         if (frames < n) n = frames;
@@ -559,9 +559,12 @@ static void take_slice(unsigned char *slice)
     unsigned frames = *(unsigned *)(slice + SLICE_FRAMES_OFF);
     double stime = *(double *)(slice + SLICE_SAMPLETIME_OFF);
     unsigned tsflags = *(unsigned *)(slice + SLICE_TSFLAGS_OFF);
-    unsigned char *bl = *(unsigned char **)(slice + SLICE_BUFLIST_OFF);
-    slice_done_t done = *(slice_done_t *)(slice + SLICE_PROC_OFF);
-    void *udata = *(void **)(slice + SLICE_DATA_OFF);
+    unsigned char *bl = (unsigned char *)GHOST(*(gptr *)(slice + SLICE_BUFLIST_OFF));
+    /* The completion routine is a GUEST function pointer and its user data a
+     * guest address -- both four bytes, both read through a host-width type
+     * until now, which on arm64 fetched each of them glued to its neighbour. */
+    slice_done_t done = (slice_done_t)GHOST(*(gptr *)(slice + SLICE_PROC_OFF));
+    void *udata = GHOST(*(gptr *)(slice + SLICE_DATA_OFF));
     unsigned nbufs, i;
 
     g_slices++;
@@ -607,7 +610,7 @@ static void take_slice(unsigned char *slice)
     for (i = 0; i < nbufs; i++) {
         unsigned char *b = bl + 4 + i * 12;
         unsigned bytes = *(unsigned *)(b + 4);
-        const float *data = *(const float **)(b + 8);
+        const float *data = (const float *)GHOST(*(gptr *)(b + 8));
         unsigned n = bytes / sizeof(float), j;
         if (i == 0 && data) {
             /* The buffer's byte count is its capacity; `frames` is how much of

@@ -209,6 +209,100 @@ typedef struct {
 #define GUEST_STATIC_INIT(name) ((void)0)
 #endif
 
+/* ---- the guest's own widths -------------------------------------------- *
+ *
+ * A struct BOTH SIDES touch has to be laid out the way the engine lays it out,
+ * and the engine is i386: a pointer is four bytes, and so is `long`.  Written
+ * with the host's own types, every field after the first eight-byte one sits
+ * at the wrong offset on a 64-bit host -- and that is not a crash at the
+ * struct.  It is a crash much later, holding a value assembled from two
+ * unrelated halves, with nothing left to say where it came from.  The first
+ * three bugs of this port were all that shape.
+ *
+ * `gptr` is deliberately an INTEGER rather than a pointer type.  A `void *`
+ * that is secretly four bytes wide would keep compiling at every site and go
+ * on being wrong; an `unsigned` makes the compiler refuse each assignment and
+ * each dereference by name, which turns the audit from a reading exercise
+ * into a build log.
+ *
+ * On a 32-bit host `gptr` is exactly as wide as a pointer and every macro
+ * below is the identity, so the shipping ARMv7 build cannot change behaviour.
+ */
+typedef unsigned gptr;          /* a pointer as the guest holds it: 4 bytes */
+typedef int      glong;         /* the guest's `long`, likewise: 4 bytes    */
+
+#if GUEST_LOW
+/* Name the site that MADE the bad pointer, not the fault it becomes.
+ *
+ * A host-heap address handed to the guest truncates into a number that still
+ * looks like an address, and faults later somewhere with no memory of where
+ * it came from -- `strlen` inside an `fprintf` inside a bundle lookup, to
+ * pick the one that cost this afternoon.  So complain here, once per site,
+ * and carry on: one run then lists every offender instead of spending a whole
+ * build-push-run cycle discovering them one at a time. */
+static unsigned gp_check(const void *p, const char *file, int line)
+{
+    uintptr_t v = (uintptr_t)p;
+    if (v >> 32) {
+        static struct { const char *file; int line; } seen[64];
+        static int nseen;
+        int i;
+        for (i = 0; i < nseen; i++)
+            if (seen[i].line == line && seen[i].file == file) return (unsigned)v;
+        if (nseen < (int)(sizeof seen / sizeof seen[0])) {
+            seen[nseen].file = file;
+            seen[nseen].line = line;
+            nseen++;
+        }
+        fprintf(stderr, "tiger_host: %s:%d gave the guest a host pointer "
+                        "(%p) -- it does not fit in 32 bits\n", file, line, p);
+    }
+    return (unsigned)v;
+}
+#define GP(p)   gp_check((const void *)(p), __FILE__, __LINE__)
+#else
+#define GP(p)   ((gptr)(uintptr_t)(const void *)(p))
+#endif
+#define GHOST(g)    ((void *)(uintptr_t)(gptr)(g))
+
+/* A float the guest passed BY VALUE.
+ *
+ * The trampoline forwards i386 stack words as integers, and on a host whose
+ * ABI puts float arguments in the integer registers -- i386, and Android's
+ * softfp armeabi-v7a -- a shim can simply declare `float` and be handed the
+ * right bits.  AArch64 has no such mode: a `float` parameter is read from
+ * v0..v7, which nothing here ever wrote, and every argument after it shifts
+ * up by one.  `cblas_sscal(n, a, x, incx)` therefore took the bit pattern of
+ * `a` as its `x` pointer and dereferenced 0x38800000.
+ *
+ * So the shims that take a float by value take its BITS instead, and say so
+ * in their parameter names.  Reinterpret, never convert: `(float)bits` would
+ * turn the pattern into the number it spells. */
+static float GFLOAT(unsigned bits)
+{
+    float f;
+    memcpy(&f, &bits, sizeof f);
+    return f;
+}
+
+/* Memory whose ADDRESS the guest will hold.
+ *
+ * A shim returns its result in EAX, which is four bytes wide, so anything a
+ * shim hands back has to live below 4 GB.  On a 32-bit host every address
+ * already does and these are the libc functions unchanged; on a 64-bit host
+ * the library's heap is nowhere near it, so they come out of the same low
+ * arena the guest's own malloc uses.  Zeroed either way -- the call sites
+ * were written against `calloc` and one of them counts on it. */
+#if GUEST_LOW
+#define GMEM_ALLOC(n)       sh_uc_calloc(1, (n))
+#define GMEM_REALLOC(p, n)  sh_uc_realloc((p), (n))
+#define GMEM_FREE(p)        sh_uc_free((void *)(p))
+#else
+#define GMEM_ALLOC(n)       calloc(1, (n))
+#define GMEM_REALLOC(p, n)  realloc((p), (n))
+#define GMEM_FREE(p)        free((void *)(p))
+#endif
+
 /* ---- shared state ------------------------------------------------------ */
 static image *g_primary;        /* MacinTalk; the image addresses resolve against */
 static int g_verbose = 1;

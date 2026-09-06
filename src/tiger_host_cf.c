@@ -29,8 +29,14 @@
 #define CF_MAGIC 0x54494743u            /* 'TIGC' */
 #define CFPATH   512
 
-typedef struct { void *isa; unsigned flags; const char *cstr; unsigned len; }
+typedef struct { gptr isa; unsigned flags; gptr cstr; unsigned len; }
         cfstring;
+/* Sixteen bytes, because the ENGINE says sixteen.  Every constant string in
+ * the image is a __CFConstantString the engine hands us to read, laid out by
+ * an i386 compiler, so the widths here are not ours to choose -- written with
+ * host pointers this struct is 32 bytes on arm64 and `cstr` is read out of
+ * the middle of `isa`.  That was the fault at 0xa6d0d7c000000000: a real
+ * string address, shifted into the high word, reached through strlen. */
 /* The cfstring MUST come first: the engine holds these as opaque CFStringRefs
  * and our accessors cast straight to cfstring.  Burying it behind a header
  * made every lookup read `flags` as the char pointer and return NULL, which
@@ -112,7 +118,10 @@ GUEST_STATIC(void *, g_cfstring_class, 1);
 static cfobj *cf_make(const char *path, long rc)
 {
     size_t n;
-    cfobj *o = (cfobj *)calloc(1, sizeof(*o));
+    /* GMEM rather than calloc: the engine holds this object's address in
+     * four bytes, so on a 64-bit host it cannot live on the library's heap.
+     * Identical to calloc where the whole address space already fits. */
+    cfobj *o = (cfobj *)GMEM_ALLOC(sizeof(*o));
     if (!o) return NULL;
     o->magic = CF_MAGIC;
     o->rc    = rc;
@@ -125,14 +134,14 @@ static cfobj *cf_make(const char *path, long rc)
      * clipboard can be tens of kilobytes. */
     if (n < CFPATH) {
         memcpy(o->buf, path, n + 1);
-        o->str.cstr = o->buf;
+        o->str.cstr = GP(o->buf);
     } else {
-        o->big = (char *)malloc(n + 1);
-        if (!o->big) { free(o); return NULL; }
+        o->big = (char *)GMEM_ALLOC(n + 1);
+        if (!o->big) { GMEM_FREE(o); return NULL; }
         memcpy(o->big, path, n + 1);
-        o->str.cstr = o->big;
+        o->str.cstr = GP(o->big);
     }
-    o->str.isa  = g_cfstring_class;
+    o->str.isa  = GP(g_cfstring_class);
     o->str.len  = (unsigned)n;
     return o;
 }
@@ -153,13 +162,13 @@ static cfobj *cf_text(const char *s)
 
 static int cf_ours(const void *o)
 {
-    return o && ((const cfstring *)o)->isa == g_cfstring_class &&
+    return o && ((const cfstring *)o)->isa == GP(g_cfstring_class) &&
            ((const cfobj *)o)->magic == CF_MAGIC;
 }
 
 static const char *cf_cstr(const void *s)
 {
-    return s ? ((const cfstring *)s)->cstr : NULL;
+    return s ? (const char *)GHOST(((const cfstring *)s)->cstr) : NULL;
 }
 
 /* MacRoman 0x80-0xFF as Unicode, for the one caller that needs it.
@@ -328,11 +337,11 @@ static void   __cdecl sh_CFRelease(void *o)
                 void **slots = (void **)co->bytes;
                 for (k = 0; k < n; k++)
                     sh_CFRelease(slots[k]);
-                free(co->bytes);
+                GMEM_FREE(co->bytes);
             }
-            free(co->big);
+            GMEM_FREE(co->big);
         }
-        free(old);
+        GMEM_FREE(old);
     }
 }
 
@@ -420,7 +429,7 @@ static cfobj *cf_data(const char *path)
     o = cf_new(path);
     if (!o) { fclose(f); return NULL; }
     o->kind = CF_DATA;
-    o->bytes = (unsigned char *)malloc(n > 0 ? (size_t)n : 1);
+    o->bytes = (unsigned char *)GMEM_ALLOC(n > 0 ? (size_t)n : 1);
     if (!o->bytes) { fclose(f); return NULL; }
     o->nbytes = (unsigned)fread(o->bytes, 1, (size_t)n, f);
     fclose(f);
@@ -519,8 +528,8 @@ static void * __cdecl sh_CFDataCreateWithBytesNoCopy(void *alloc,
     o = cf_new("");
     if (!o) return NULL;
     o->kind  = CF_DATA;
-    o->bytes = (unsigned char *)malloc(n ? (size_t)n : 1);
-    if (!o->bytes) { free(o); return NULL; }
+    o->bytes = (unsigned char *)GMEM_ALLOC(n ? (size_t)n : 1);
+    if (!o->bytes) { GMEM_FREE(o); return NULL; }
     memcpy(o->bytes, b, (size_t)n);
     o->nbytes = (unsigned)n;
     return o;
@@ -560,9 +569,9 @@ static cfobj *cf_container(int kind, unsigned count)
     if (!o) return NULL;
     o->kind = kind;
     if (count) {
-        o->bytes = (unsigned char *)calloc(
-            count * (kind == CF_DICT ? 2u : 1u), sizeof(void *));
-        if (!o->bytes) { free(o); return NULL; }
+        o->bytes = (unsigned char *)GMEM_ALLOC(
+            count * (kind == CF_DICT ? 2u : 1u) * sizeof(void *));
+        if (!o->bytes) { GMEM_FREE(o); return NULL; }
     }
     o->nbytes = 0;                       /* filled as slots are written */
     return o;
@@ -630,7 +639,7 @@ static void __cdecl sh_CFArrayAppendValue(void *arr, const void *value)
     cfobj *a = (cfobj *)arr;
     void **grown;
     if (!cf_ours(arr) || a->kind != CF_ARRAY) return;
-    grown = (void **)realloc(a->bytes, (a->nbytes + 1) * sizeof(void *));
+    grown = (void **)GMEM_REALLOC(a->bytes, (a->nbytes + 1) * sizeof(void *));
     if (!grown) return;
     a->bytes = (unsigned char *)grown;
     grown[a->nbytes++] = sh_CFRetain((void *)value);
@@ -1293,6 +1302,18 @@ static int __cdecl sh_CFNumberGetValue(const void *o, int type, void *out)
 }
 
 /* ---- --cf-check ------------------------------------------------------- */
+/* A literal, copied somewhere the guest could hold the address of.  Only the
+ * self-test needs this: the real paths all come through `cf_make`, which
+ * already allocates the same way. */
+static gptr cf_guest_lit(const char *lit)
+{
+    size_t n = strlen(lit) + 1;
+    char *g = (char *)GMEM_ALLOC(n);
+    if (!g) return 0;
+    memcpy(g, lit, n);
+    return GP(g);
+}
+
 /*
  * The formatter, on the four names Lion's dictionary cannot open without,
  * needing no tree -- like `--regex-check`.  See
@@ -1309,7 +1330,11 @@ static int cf_check(void)
      * with an isa that is not ours.  Every argument at every real call site
      * looks like this and none of them look like a `cfobj`, so a check built
      * only from `cf_new` would prove nothing about the calls being fixed. */
-    static void *not_our_class;
+    /* Guest-visible, like everything else that ends up inside a cfstring.
+     * A static in this library and a literal in its .rodata both sit far
+     * above 4 GB on a 64-bit host, and a check that quietly truncated them
+     * would be testing the truncation rather than the formatter. */
+    void *notclass = GMEM_ALLOC(4);
     static const struct { const char *name, *want; } tables[] = {
         { "PrefixDictionary", "PrefixDictionaryEng" },
         { "CartLite",         "CartLiteEng"         },
@@ -1320,14 +1345,14 @@ static int cf_check(void)
     int i, fails = 0;
     void *r;
 
-    fmt.isa = &not_our_class;
-    fmt.cstr = "%@Eng";
+    fmt.isa = GP(notclass);
+    fmt.cstr = cf_guest_lit("%@Eng");
     fmt.len = 5;
-    arg.isa = &not_our_class;
+    arg.isa = GP(notclass);
 
     for (i = 0; i < (int)(sizeof(tables) / sizeof(tables[0])); i++) {
-        arg.cstr = tables[i].name;
-        arg.len  = (unsigned)strlen(arg.cstr);
+        arg.cstr = cf_guest_lit(tables[i].name);
+        arg.len  = (unsigned)strlen(tables[i].name);
         r = sh_CFStringCreateWithFormat(NULL, NULL, &fmt, &arg);
         fprintf(stdout, "[cf-check] constant \"%%@Eng\" + \"%s\" -> \"%s\"\n",
                 tables[i].name, r ? cf_cstr(r) : "(null)");
@@ -1335,7 +1360,7 @@ static int cf_check(void)
             fprintf(stdout, "FAIL  wanted \"%s\"\n", tables[i].want);
             fails++;
         }
-        if (r) free(r);
+        if (r) GMEM_FREE(r);
     }
 
     /* An object this host made, formatted through the same path: the two
@@ -1350,8 +1375,8 @@ static int cf_check(void)
             fprintf(stdout, "FAIL  wanted \"HomophonesEng\"\n");
             fails++;
         }
-        if (r) free(r);
-        free(o);
+        if (r) GMEM_FREE(r);
+        GMEM_FREE(o);
     }
 
     /* Literal percent, and a conversion nothing in either binary uses.  The
@@ -1359,8 +1384,8 @@ static int cf_check(void)
      * plausible half-rendered string. */
     {
         cfstring pct = { 0 };
-        pct.isa = &not_our_class;
-        pct.cstr = "100%% sure";
+        pct.isa = GP(notclass);
+        pct.cstr = cf_guest_lit("100%% sure");
         pct.len = 10;
         r = sh_CFStringCreateWithFormat(NULL, NULL, &pct);
         fprintf(stdout, "[cf-check] \"100%%%% sure\" -> \"%s\"\n",
@@ -1369,9 +1394,9 @@ static int cf_check(void)
             fprintf(stdout, "FAIL  wanted \"100%% sure\"\n");
             fails++;
         }
-        if (r) free(r);
+        if (r) GMEM_FREE(r);
 
-        pct.cstr = "%d items";
+        pct.cstr = cf_guest_lit("%d items");
         pct.len = 8;
         r = sh_CFStringCreateWithFormat(NULL, NULL, &pct, 3);
         fprintf(stdout, "[cf-check] \"%%d items\" -> %s (unsupported "
@@ -1379,7 +1404,7 @@ static int cf_check(void)
         if (r) {
             fprintf(stdout, "FAIL  an unsupported conversion was guessed at\n");
             fails++;
-            free(r);
+            GMEM_FREE(r);
         }
     }
 
@@ -1408,7 +1433,7 @@ static int cf_check(void)
                 fprintf(stdout, "FAIL  an index past the end read memory\n");
                 fails++;
             }
-            free(r);
+            GMEM_FREE(r);
         }
 
         r = sh_CFStringCreateWithCharactersNoCopy(NULL, WIDE, 4, NULL);
@@ -1418,7 +1443,7 @@ static int cf_check(void)
                             "terminator\n");
             fails++;
         }
-        if (r) free(r);
+        if (r) GMEM_FREE(r);
     }
 
     /* An utterance is MacRoman and a path is not, and the only difference
@@ -1464,7 +1489,7 @@ static int cf_check(void)
             fprintf(stdout, "FAIL  the two character accessors disagree\n");
             fails++;
         }
-        free(t); free(p); free(c);
+        GMEM_FREE(t); GMEM_FREE(p); GMEM_FREE(c);
     }
 
     {
@@ -1479,7 +1504,7 @@ static int cf_check(void)
             fprintf(stdout, "FAIL  a CFData did not read back as written\n");
             fails++;
         }
-        if (d) { free(d->bytes); free(d); }
+        if (d) { GMEM_FREE(d->bytes); GMEM_FREE(d); }
     }
 
     fprintf(stdout, "[cf-check] %d failure(s)\n", fails);

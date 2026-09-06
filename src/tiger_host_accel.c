@@ -274,9 +274,9 @@ static void __cdecl sh_vDSP_hann_window(float *C, vdsp_length N, int flag)
 
 /* lrintf: round to nearest, ties to even, which is what the default rounding
  * mode gives. Reached twice, so nothing here is worth optimising. */
-static long __cdecl sh_lrintf(float x)
+static long __cdecl sh_lrintf(unsigned xbits)
 {
-    double d = (double)x;
+    double d = (double)GFLOAT(xbits);
     double r = floor(d + 0.5);
     if (r - d == 0.5) {                 /* a tie: go to even */
         double half = r / 2.0;
@@ -744,8 +744,9 @@ static void __cdecl sh_vDSP_vramp(const float *A, const float *B,
 
 /* catlas_sset(N, alpha, X, incX): fill.  The BLAS-adjacent spelling Apple
  * ships rather than a vDSP one. */
-static void __cdecl sh_catlas_sset(int N, float alpha, float *X, int incX)
+static void __cdecl sh_catlas_sset(int N, unsigned alphabits, float *X, int incX)
 {
+    float alpha = GFLOAT(alphabits);
     int n;
     for (n = 0; n < N; n++) X[n * incX] = alpha;
 }

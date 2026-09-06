@@ -289,12 +289,17 @@ static int __cdecl sh_once(unsigned *ctl, void (__cdecl *fn)(void))
 
 /* Multiprocessing Services critical regions, which are just mutexes with a
  * timeout argument the engine always passes as kDurationForever. */
-static int __cdecl sh_mp_create_region(void **id)
+/* The engine keeps the ID in a four-byte variable of its own and hands it
+ * back, so both halves of this matter: the object has to LIVE somewhere the
+ * guest can address, and the store into its slot has to be four bytes wide.
+ * A host `void **` write puts eight there and takes the next variable with
+ * it -- the same bug as the loader's pointer slots, one layer up. */
+static int __cdecl sh_mp_create_region(gptr *id)
 {
-    CRITICAL_SECTION *cs = (CRITICAL_SECTION *)calloc(1, sizeof(*cs));
+    CRITICAL_SECTION *cs = (CRITICAL_SECTION *)GMEM_ALLOC(sizeof(*cs));
     if (!cs) return -108;               /* memFullErr */
     InitializeCriticalSection(cs);
-    if (id) *id = cs;
+    if (id) *id = GP(cs);
     return 0;
 }
 static int __cdecl sh_mp_enter_region(void *id, int timeout)
@@ -324,11 +329,11 @@ typedef struct {
 
 static int __cdecl sh_mp_create_queue(mpqueue **out)
 {
-    mpqueue *q = (mpqueue *)calloc(1, sizeof(*q));
+    mpqueue *q = (mpqueue *)GMEM_ALLOC(sizeof(*q));
     if (!q) return -108;
     InitializeCriticalSection(&q->cs);
     q->sem = CreateSemaphoreA(NULL, 0, MPQ_CAP, NULL);
-    if (!q->sem) { free(q); return -108; }
+    if (!q->sem) { GMEM_FREE(q); return -108; }
     if (out) *out = q;
     if (g_verbose) printf("  [mp] CreateQueue -> %p\n", (void *)q);
     return 0;
@@ -389,8 +394,8 @@ static DWORD duration_ms(int d)
     return (DWORD)(ms + 0.999);
 }
 
-static int __cdecl sh_mp_wait_on_queue(mpqueue *q, void **p1, void **p2,
-                                       void **p3, int timeout)
+static int __cdecl sh_mp_wait_on_queue(mpqueue *q, gptr *p1, gptr *p2,
+                                       gptr *p3, int timeout)
 {
     if (!q) return -50;
     if (g_mp_waits++ < 6)
@@ -404,9 +409,11 @@ static int __cdecl sh_mp_wait_on_queue(mpqueue *q, void **p1, void **p2,
             return -30988;                      /* kMPTimeoutErr */
     }
     EnterCriticalSection(&q->cs);
-    if (p1) *p1 = q->msg[q->head][0];
-    if (p2) *p2 = q->msg[q->head][1];
-    if (p3) *p3 = q->msg[q->head][2];
+    /* Three guest variables, four bytes each.  The messages came FROM the
+     * guest, so they fit; it is the width of the store that did not. */
+    if (p1) *p1 = GP(q->msg[q->head][0]);
+    if (p2) *p2 = GP(q->msg[q->head][1]);
+    if (p3) *p3 = GP(q->msg[q->head][2]);
     q->head = (q->head + 1) % MPQ_CAP;
     q->count--;
     LeaveCriticalSection(&q->cs);
@@ -603,7 +610,7 @@ static int __cdecl sh_mp_create_task(mp_taskproc entry, void *param,
     mptask *t;
     (void)options;
     if (!entry) return -50;
-    t = (mptask *)calloc(1, sizeof(*t));
+    t = (mptask *)GMEM_ALLOC(sizeof(*t));
     if (!t) return -108;
     t->entry = entry; t->param = param;
     t->notify = notify; t->t1 = t1; t->t2 = t2;
@@ -614,7 +621,7 @@ static int __cdecl sh_mp_create_task(mp_taskproc entry, void *param,
      * shared memory (see uc_ensure_engine).  So the native path is right for
      * both builds. */
     t->thread = CreateThread(NULL, stacksize, mp_thunk, t, 0, NULL);
-    if (!t->thread) { free(t); return -108; }
+    if (!t->thread) { GMEM_FREE(t); return -108; }
     if (out) *out = t;
     return 0;
 }
@@ -787,8 +794,9 @@ static int __cdecl sh_isamax(int n, const float *x, int incx)
     }
     return best;
 }
-static void __cdecl sh_sscal(int n, float a, float *x, int incx)
+static void __cdecl sh_sscal(int n, unsigned abits, float *x, int incx)
 {
+    float a = GFLOAT(abits);
     int i;
     if (n < 1 || incx <= 0 || !x) return;
     for (i = 0; i < n; i++) x[i * incx] *= a;
@@ -799,9 +807,10 @@ static void __cdecl sh_scopy(int n, const float *x, int incx, float *y, int incy
     if (!x || !y) return;
     for (i = 0; i < n; i++) y[i * incy] = x[i * incx];
 }
-static void __cdecl sh_saxpy(int n, float a, const float *x, int incx,
+static void __cdecl sh_saxpy(int n, unsigned abits, const float *x, int incx,
                              float *y, int incy)
 {
+    float a = GFLOAT(abits);
     int i;
     if (!x || !y) return;
     for (i = 0; i < n; i++) y[i * incy] += a * x[i * incx];
@@ -821,10 +830,12 @@ static float __cdecl sh_snrm2(int n, const float *x, int incx)
     for (i = 0; i < n; i++) { double v = x[i * incx]; s += v * v; }
     return (float)sqrt(s);
 }
-static void __cdecl sh_sgemv(int order, int trans, int m, int n, float alpha,
+static void __cdecl sh_sgemv(int order, int trans, int m, int n,
+                             unsigned alphabits,
                              const float *a, int lda, const float *x, int incx,
-                             float beta, float *y, int incy)
+                             unsigned betabits, float *y, int incy)
 {
+    float alpha = GFLOAT(alphabits), beta = GFLOAT(betabits);
     int i, j;
     int leny = (trans == CBLAS_NOTRANS) ? m : n;
     int lenx = (trans == CBLAS_NOTRANS) ? n : m;
