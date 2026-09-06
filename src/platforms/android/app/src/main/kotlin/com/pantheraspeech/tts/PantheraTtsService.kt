@@ -28,16 +28,17 @@ class PantheraTtsService : TextToSpeechService() {
 
     // Every Mac voice at least speaks English; a few also carry other locales,
     // but v1 reports en-US, which is what Fred and the core Tiger voices are.
-    private fun langAvailability(lang: String?): Int = when (lang) {
-        "eng", "en" -> TextToSpeech.LANG_AVAILABLE
-        else -> TextToSpeech.LANG_NOT_SUPPORTED
+    private fun langAvailability(lang: String?, country: String?): Int = when {
+        lang != "eng" && lang != "en" -> TextToSpeech.LANG_NOT_SUPPORTED
+        country == "USA" || country == "US" -> TextToSpeech.LANG_COUNTRY_AVAILABLE
+        else -> TextToSpeech.LANG_AVAILABLE
     }
 
     override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int {
         // The gate: until the user has run Check Engine and the data is present,
         // the engine has no usable voices, so it reports its language missing.
         if (!PantheraEngine.verified(this)) return TextToSpeech.LANG_MISSING_DATA
-        return langAvailability(lang)
+        return langAvailability(lang, country)
     }
 
     override fun onGetLanguage(): Array<String> = arrayOf("eng", "USA", "")
@@ -53,12 +54,14 @@ class PantheraTtsService : TextToSpeechService() {
     }
 
     override fun onIsValidVoiceName(name: String?): Int =
-        if (PantheraEngine.voiceById(this, name) != null) TextToSpeech.SUCCESS
+        if (PantheraEngine.verified(this) && PantheraEngine.voiceById(this, name) != null) TextToSpeech.SUCCESS
         else TextToSpeech.ERROR
 
     override fun onLoadVoice(name: String?): Int = onIsValidVoiceName(name)
 
     override fun onGetDefaultVoiceNameFor(lang: String?, country: String?, variant: String?): String? {
+        if (!PantheraEngine.verified(this)) return null
+        if (lang != null && langAvailability(lang, country) < 0) return null
         val saved = PantheraEngine.prefs(this).getString(PantheraEngine.PREF_DEFAULT_VOICE, null)
         val voices = PantheraEngine.allVoices(this)
         return voices.firstOrNull { it.name.equals(saved, true) }?.id
@@ -78,6 +81,12 @@ class PantheraTtsService : TextToSpeechService() {
 
     override fun onSynthesizeText(request: SynthesisRequest, callback: SynthesisCallback) {
         stopRequested = false
+        PantheraEngine.withSynthesis {
+            if (!stopRequested) synthesize(request, callback)
+        }
+    }
+
+    private fun synthesize(request: SynthesisRequest, callback: SynthesisCallback) {
 
         val text = request.charSequenceText?.toString() ?: ""
         Log.i("PantheraTts", "synth: voice=${request.voiceName} lang=${request.language} " +
@@ -107,19 +116,35 @@ class PantheraTtsService : TextToSpeechService() {
             Log.w("PantheraTts", "speakStart -> $started")
             callback.error(TextToSpeech.ERROR_SYNTHESIS); return
         }
-        val samples = ShortArray(4096)             // ~186 ms per pull at 22050 Hz
+        val sampleCapacity = minOf(4096, callback.maxBufferSize / 2)
+        if (sampleCapacity <= 0) {
+            PantheraEngine.stop()
+            callback.error(TextToSpeech.ERROR_OUTPUT)
+            return
+        }
+        val samples = ShortArray(sampleCapacity)
         val bytes = ByteArray(samples.size * 2)
         var total = 0
         while (!stopRequested) {
             val n = PantheraEngine.pull(samples)
-            if (n <= 0) break
+            if (n < 0) {
+                Log.e("PantheraTts", "nativePull failed: $n")
+                PantheraEngine.stop()
+                callback.error(TextToSpeech.ERROR_SYNTHESIS)
+                return
+            }
+            if (n == 0) break
             var bi = 0
             for (i in 0 until n) {
                 val s = samples[i].toInt()
                 bytes[bi++] = (s and 0xff).toByte()
                 bytes[bi++] = ((s shr 8) and 0xff).toByte()
             }
-            if (callback.audioAvailable(bytes, 0, n * 2) != TextToSpeech.SUCCESS) break
+            if (callback.audioAvailable(bytes, 0, n * 2) != TextToSpeech.SUCCESS) {
+                Log.i("PantheraTts", "audio callback stopped after $total samples")
+                PantheraEngine.stop()
+                return
+            }
             total += n
         }
         Log.i("PantheraTts", "synth ${voice.name} streamed $total samples, stop=$stopRequested")

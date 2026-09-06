@@ -12,9 +12,9 @@ import android.speech.tts.TextToSpeech
 class CheckVoiceDataActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val voices = if (PantheraEngine.verified(this))
-            PantheraEngine.allVoices(this).map { it.id } else emptyList()
-        val pass = voices.isNotEmpty()
+        // CHECK_TTS_DATA uses ISO-3 locales, not the IDs returned by getVoices().
+        val pass = PantheraEngine.verified(this)
+        val voices = if (pass) listOf("eng-USA") else emptyList()
         val data = Intent().apply {
             putStringArrayListExtra(
                 TextToSpeech.Engine.EXTRA_AVAILABLE_VOICES, ArrayList(voices))

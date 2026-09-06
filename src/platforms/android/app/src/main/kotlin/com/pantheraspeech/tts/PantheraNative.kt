@@ -34,6 +34,9 @@ object PantheraNative {
      * nativeRender / nativePull return early.  Safe from another thread. */
     external fun nativeStop()
 
+    /** Complete cancellation on the synthesis thread before releasing ownership. */
+    external fun nativeFinish()
+
     /** PCM sample rate nativeRender produces, in Hz. */
     external fun nativeSampleRate(): Int
 

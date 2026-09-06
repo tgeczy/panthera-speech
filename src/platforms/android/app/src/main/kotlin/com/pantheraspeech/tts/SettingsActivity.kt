@@ -221,12 +221,19 @@ class SettingsActivity : Activity() {
         var off = 0
         while (off < pcm.size) {
             val w = track.write(pcm, off, pcm.size - off)   // blocks, pacing playback
-            if (w < 0) { Log.e("Panthera", "AudioTrack.write -> $w"); break }
+            if (w <= 0) { Log.e("Panthera", "AudioTrack.write -> $w"); break }
             off += w
         }
         Log.i("Panthera", "wrote $off/${pcm.size} samples, playState=${track.playState}")
-        try { Thread.sleep(300) } catch (e: InterruptedException) {}   // drain the tail
-        try { track.stop(); track.release() } catch (e: Exception) {}
+        // A successful write only queues audio. Wait for the playback head,
+        // with a deadline, before releasing the remaining buffered speech.
+        val deadline = android.os.SystemClock.elapsedRealtime() + off * 1000L / rate + 2000
+        while (track.playbackHeadPosition.toLong() < off &&
+            android.os.SystemClock.elapsedRealtime() < deadline) {
+            try { Thread.sleep(20) } catch (e: InterruptedException) { break }
+        }
+        Log.i("Panthera", "playback head=${track.playbackHeadPosition}/$off routed=${track.routedDevice?.type}")
+        try { track.stop() } finally { track.release() }
     }
 
     private fun toast(t: String) = Toast.makeText(this, t, Toast.LENGTH_SHORT).show()

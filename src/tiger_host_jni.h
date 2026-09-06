@@ -35,11 +35,11 @@ int  panthera_render(const char *voiceDir, unsigned creator, int voiceId,
  * whole utterance before any sound (which makes a screen reader give up
  * waiting), begin the utterance and then pull PCM as the engine produces it:
  *   panthera_speak_start(...);            // returns as soon as it is accepted
- *   while ((n = panthera_pull(buf, cap))) // n samples ready; 0 = finished
+ *   while ((n = panthera_pull(buf, cap)) > 0) // n samples ready; 0 = finished
  *       hand buf[0..n) to the framework;
  * so audio starts within one chunk.  speak_start returns 0 or an OSErr; pull
- * returns int16 samples written to out (0 when the utterance is done, or the
- * engine has produced nothing for ~10 s, or a stop was asked for). */
+ * returns int16 samples written to out (0 when the utterance is done, or
+ * a stop was asked for). A negative value reports a synthesis timeout/error. */
 int  panthera_speak_start(const char *voiceDir, unsigned creator, int voiceId,
                           const char *text, int wpm);
 int  panthera_pull(short *out, int maxSamples);
@@ -48,6 +48,11 @@ int  panthera_pull(short *out, int maxSamples);
  * panthera_render / panthera_pull return with whatever it has.  Safe from
  * another thread. */
 void panthera_stop(void);
+
+/* Finish a cancelled stream on its owning synthesis thread, before starting
+ * the next utterance. Required after pulling stops or the consumer declines
+ * audio. panthera_render performs this cleanup itself. */
+void panthera_finish(void);
 
 /* The PCM sample rate panthera_render produces (Hz). */
 int  panthera_sample_rate(void);

@@ -11,6 +11,7 @@ android {
         applicationId = "com.pantheraspeech.tts"
         minSdk = 26
         targetSdk = 35
+        testInstrumentationRunner = "com.pantheraspeech.tts.EngineSmokeTest"
         versionCode = 1
         versionName = "0.1.0"
 

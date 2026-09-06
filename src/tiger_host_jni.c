@@ -9,7 +9,7 @@
 
 /* host_open maps every image and is a once-per-process step; guard it. */
 static int          g_pt_ready;
-static volatile int g_pt_stop;      /* set by panthera_stop, read by the poll */
+static volatile LONG g_pt_stop;      /* set by panthera_stop, read by the poll */
 
 /* In an app, the engine's stderr diagnostics (its "[au] slice" commentary and
  * every error) go nowhere.  Pump them into logcat so a silent render can be
@@ -150,11 +150,27 @@ int panthera_voice_spec(const char *voiceDir, unsigned *creator, int *voiceId)
 
 void panthera_stop(void)
 {
-    PT_ENSURE_ENGINE();
-    g_pt_stop = 1;
-    if (g_pt_ready) {
-        SEStop_t stop = (SEStop_t)find_export(&g_mt, "_SEStopSpeechAt");
-        if (stop) call_aligned2((void *)stop, g_chan, (void *)0); /* stop now */
+    /* The Binder caller must never enter the shared guest channel concurrently
+     * with the synthesis thread. It only posts a cancellation request. */
+    InterlockedExchange(&g_pt_stop, 1);
+}
+
+void panthera_finish(void)
+{
+    if (g_pt_ready && g_pt_stop) {
+        unsigned last = g_slices, quiet = 0;
+        int spin;
+        SEStop_t stop;
+        PT_ENSURE_ENGINE();
+        stop = (SEStop_t)find_export(&g_mt, "_SEStopSpeechAt");
+        if (stop) call_aligned2((void *)stop, g_chan, (void *)0);
+        /* Stop is asynchronous. Let its outstanding slices settle before the
+         * next request resets the shared timeline (same rule as serve mode). */
+        for (spin = 0; spin < 100 && quiet < 15; spin++) {
+            Sleep(2);
+            if (g_slices != last || !pacer_idle()) { last = g_slices; quiet = 0; }
+            else quiet++;
+        }
     }
 }
 
@@ -167,7 +183,7 @@ int panthera_speak_start(const char *voiceDir, unsigned creator, int voiceId,
     int err;
     PT_ENSURE_ENGINE();
     if (!g_pt_ready) return -1;
-    g_pt_stop = 0;
+    InterlockedExchange(&g_pt_stop, 0);
     pt_utterance_reset();
     err = pt_use_voice(voiceDir, creator, voiceId);
     if (err) return err;
@@ -186,7 +202,11 @@ int panthera_pull(short *out, int maxSamples)
      * on this thread. */
     if (!g_pt_ready || maxSamples <= 0) return 0;
     for (;;) {
-        unsigned avail = (g_pcm_n > g_pull_pos) ? (g_pcm_n - g_pull_pos) : 0;
+        int finished = g_stopped && pacer_idle();
+        unsigned end = g_pcm_n;
+        /* Match serve mode: the newest probe slice may still be overwritten. */
+        if (!finished) end = end > STREAM_LOOKBEHIND ? end - STREAM_LOOKBEHIND : 0;
+        unsigned avail = end > g_pull_pos ? end - g_pull_pos : 0;
         if (g_pt_stop) return 0;
         if (avail > 0) {
             unsigned n = avail < (unsigned)maxSamples ? avail : (unsigned)maxSamples;
@@ -195,9 +215,13 @@ int panthera_pull(short *out, int maxSamples)
             g_pull_pos += n;
             return (int)n;
         }
-        if (g_stopped) return 0;              /* utterance finished, all drained */
+        if (g_stopped && pacer_idle()) return 0;              /* utterance finished, all drained */
         Sleep(5);
-        if (++idle > 2000) return 0;          /* ~10 s with no audio: give up */
+        if (++idle > 2000) {
+            fprintf(stderr, "panthera: pull timeout pcm=%u cursor=%u slices=%u stopped=%ld pending=%d busy=%ld\n",
+                    g_pcm_n, g_pull_pos, g_slices, g_stopped, g_p_count, (long)g_p_busy);
+            return -1;
+        }          /* ~10 s with no audio: give up */
     }
 }
 
@@ -212,7 +236,7 @@ int panthera_render(const char *voiceDir, unsigned creator, int voiceId,
     if (outFrames) *outFrames = 0;
     PT_ENSURE_ENGINE();
     if (!g_pt_ready) return -1;
-    g_pt_stop = 0;
+    InterlockedExchange(&g_pt_stop, 0);
 
     pt_utterance_reset();
     err = pt_use_voice(voiceDir, creator, voiceId);
@@ -244,6 +268,11 @@ int panthera_render(const char *voiceDir, unsigned creator, int voiceId,
         }
     }
 
+    panthera_finish();
+    {
+        unsigned ticks;
+        for (ticks = 0; !pacer_idle() && ticks < 500; ticks++) Sleep(2);
+    }
     {
         unsigned n = g_pcm_n;
         short *buf = (short *)malloc((size_t)(n ? n : 1) * sizeof(short));

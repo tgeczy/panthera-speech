@@ -60,11 +60,10 @@ static __declspec(thread) uc_engine *t_uc;
 static __declspec(thread) unsigned   t_stack_top;
 static __declspec(thread) int        t_running;   /* guards non-nested re-entry */
 
-/* Return class of a shim.  Arguments never need a class: i386 cdecl passes
- * everything on the stack as words, so the trampoline copies stack words
- * verbatim whatever the types are.  Only where the *result* lands differs --
- * EAX, EDX:EAX, or ST(0) -- and that is all this encodes. */
-enum { RC_INT = 0, RC_VOID, RC_I64, RC_DBL, RC_FLT };
+/* Most shims forward i386 stack words and classify the return location.
+ * Mixed-width clock calls also need an argument signature: ARM aligns their
+ * 64-bit argument differently from the packed i386 stack. */
+enum { RC_INT = 0, RC_VOID, RC_I64, RC_I64_I_I64, RC_DBL, RC_FLT };
 
 typedef struct { void *fn; const char *name; unsigned char rc; unsigned char missing; }
         uc_slot;
@@ -187,6 +186,11 @@ static unsigned char uc_rc_for(const char *nm)
     static const char *i64[] = { "_UpTime","___divdi3","___udivdi3","___moddi3",
         "___umoddi3", NULL };
     int i;
+    /* These return EDX:EAX and their i386 arguments are packed as i32,i64.
+     * ARM AAPCS aligns the i64 to an even register pair, so forwarding three
+     * untyped words corrupts the timestamp as well as losing its high return. */
+    if (!strcmp(nm, "_AddDurationToAbsolute") ||
+        !strcmp(nm, "_SubDurationFromAbsolute")) return RC_I64_I_I64;
     for (i = 0; dbl[i]; i++) if (!strcmp(dbl[i], nm)) return RC_DBL;
     for (i = 0; flt[i]; i++) if (!strcmp(flt[i], nm)) return RC_FLT;
     for (i = 0; i64[i]; i++) if (!strcmp(i64[i], nm)) return RC_I64;
@@ -296,6 +300,14 @@ static void uc_dispatch(uc_engine *u, uint64_t address, uint32_t size,
     case RC_INT: {
         unsigned r = ((fn_i)s->fn)(UC_ARGS);
         uc_reg_write(u, UC_X86_REG_EAX, &r);
+        break; }
+    case RC_I64_I_I64: {
+        long long absolute = (long long)((unsigned long long)a[1] |
+                                         ((unsigned long long)a[2] << 32));
+        long long q = ((long long (__cdecl *)(int, long long))s->fn)((int)a[0], absolute);
+        unsigned lo = (unsigned)q, hi = (unsigned)((unsigned long long)q >> 32);
+        uc_reg_write(u, UC_X86_REG_EAX, &lo);
+        uc_reg_write(u, UC_X86_REG_EDX, &hi);
         break; }
     case RC_I64: {
         unsigned long long q = ((fn_q)s->fn)(UC_ARGS);

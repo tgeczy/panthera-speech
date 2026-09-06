@@ -124,6 +124,12 @@ object PantheraEngine {
     private val lock = Any()
     private var opened = false
 
+    // Hold ownership for the entire stream; the preview uses this same lock.
+    // stop() stays outside it so cancellation can interrupt the owner.
+    fun <T> withSynthesis(block: () -> T): T = synchronized(lock) {
+        try { block() } finally { if (opened) PantheraNative.nativeFinish() }
+    }
+
     private fun open(ctx: Context): Boolean {
         synchronized(lock) {
             if (opened) return true
@@ -170,7 +176,7 @@ object PantheraEngine {
      * Not under [lock] -- it only reads the worker's output buffer, and a
      * concurrent stop must be able to interrupt it. */
     fun pull(out: ShortArray): Int =
-        try { PantheraNative.nativePull(out) } catch (e: Throwable) { 0 }
+        try { PantheraNative.nativePull(out) } catch (e: Throwable) { -1 }
 
     /** Interrupt the utterance in progress. NOT under [lock]. */
     fun stop() {

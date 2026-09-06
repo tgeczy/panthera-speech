@@ -80,6 +80,11 @@ Java_com_pantheraspeech_tts_PantheraNative_nativeStop(JNIEnv *, jclass) {
     panthera_stop();
 }
 
+JNIEXPORT void JNICALL
+Java_com_pantheraspeech_tts_PantheraNative_nativeFinish(JNIEnv *, jclass) {
+    panthera_finish();
+}
+
 JNIEXPORT jint JNICALL
 Java_com_pantheraspeech_tts_PantheraNative_nativeSampleRate(JNIEnv *, jclass) {
     return panthera_sample_rate();
