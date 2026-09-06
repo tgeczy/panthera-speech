@@ -57,6 +57,13 @@
 #include <sys/stat.h>
 #include <ctype.h>
 
+/* The in-process synthesis API the Android JNI layer calls -- declared up here
+ * so main()'s --jni-check sees the prototypes; defined at the end of the TU
+ * (tiger_host_jni.c), after host_open and the engine internals it uses. */
+#ifdef TIGER_UC
+#include "tiger_host_jni.h"
+#endif
+
 /* Every diagnostic in this file goes to stderr, without exception: in serve
  * mode stdout carries raw PCM to the driver, and one stray character would
  * corrupt an utterance in a way that is very hard to trace back to a printf.
@@ -458,8 +465,9 @@ static int host_open(const char *mtpath, const char *sdpath)
 
 /* The executable's entry point only.  The DLL build has its own, in
  * tiger_host_api.c, and a DLL with a `main` in it links but confuses every
- * tool that looks at one. */
-#ifndef PT_DLL
+ * tool that looks at one.  The JNI shared library likewise carries no `main`;
+ * it is entered through the panthera_* API in tiger_host_jni.c. */
+#if !defined(PT_DLL) && !defined(TIGER_JNI)
 
 int main(int argc, char **argv)
 {
@@ -484,6 +492,29 @@ int main(int argc, char **argv)
         setvbuf(stderr, NULL, _IONBF, 0);
         return re_check();
     }
+#ifdef TIGER_UC
+    /* Render through the Android synthesis API (tiger_host_jni.c) rather than
+     * inline, and write the same wav -- so the on-device APK path is exercised
+     * on the desktop and its output can be byte-diffed against the oracle.
+     *   --jni-check <MacinTalk> <SpeechDictionary> <Voice.SpeechVoice> [creator-hex] [voice-id] */
+    if (argc > 4 && !strcmp(argv[1], "--jni-check")) {
+        unsigned creator = (argc > 5) ? (unsigned)strtoul(argv[5], NULL, 16)
+                                      : (unsigned)'mtk3';
+        int voiceid = (argc > 6) ? atoi(argv[6]) : 1;
+        const char *e = getenv("TIGER_TEXT");
+        const char *txt = (e && *e) ? e : "Hello there.";
+        short *pcm = 0; unsigned nf = 0;
+        int rc = panthera_init(argv[2], argv[3]);
+        if (rc) { fprintf(stderr, "panthera_init -> %d\n", rc); return 2; }
+        rc = panthera_render(argv[4], creator, voiceid, txt, 0, &pcm, &nf);
+        if (rc) { fprintf(stderr, "panthera_render -> %d\n", rc); return 2; }
+        free(pcm);
+        if (g_pcm_n) write_wav("tiger-out.wav");
+        fprintf(stderr, "jni-check: %u frames at %d Hz\n",
+                nf, panthera_sample_rate());
+        return 0;
+    }
+#endif
     /* The CFString formatter, on the four table names Lion's dictionary is
      * built out of; see panthera/tests/test_cf_format.py. */
     if (argc > 1 && !strcmp(argv[1], "--cf-check")) {
@@ -712,4 +743,11 @@ report:
  * `serve` and this is one translation unit. */
 #ifdef PT_DLL
 #include "tiger_host_api.c"
+#endif
+
+/* The in-process synthesis API the Android JNI layer calls.  Present in every
+ * emulated build: the .so binds to it, and the desktop build reaches it through
+ * --jni-check so the same render can be checked against the WAV oracle. */
+#ifdef TIGER_UC
+#include "tiger_host_jni.c"
 #endif

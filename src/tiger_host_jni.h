@@ -1,0 +1,45 @@
+/* tiger_host_jni.h -- the in-process synthesis API the Android JNI layer calls.
+ *
+ * The engine host is one translation unit built around process-global state
+ * (one set of images, one channel), and host_open maps the images once per
+ * process.  So this API is a thin front for that single engine: init once,
+ * render an utterance to PCM, stop.  It is what panthera_jni.cpp binds to
+ * Kotlin, and what the desktop build exercises via --jni-check so the same
+ * bytes can be checked against the WAV oracle before any device is involved.
+ *
+ * Declared with C linkage so the C++ JNI unit can call into the C host.
+ */
+#ifndef TIGER_HOST_JNI_H
+#define TIGER_HOST_JNI_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Bring the engine up: map the MacinTalk synthesizer at mtPath and the
+ * SpeechDictionary at sdPath, open a speech channel.  Once per process --
+ * a second call is a no-op that returns 0.  Returns 0, or the engine's OSErr. */
+int  panthera_init(const char *mtPath, const char *sdPath);
+
+/* Render one utterance with the given voice to signed 16-bit mono PCM at
+ * panthera_sample_rate().  creator/voiceId are the VoiceSpec (e.g. 'mtk3'/1 for
+ * Fred); voiceDir is the .SpeechVoice bundle; wpm <= 0 keeps the engine default
+ * rate.  On success returns 0 and hands back a malloc'd buffer in *outPcm (the
+ * caller frees it) and its length in frames in *outFrames.  Nonzero is an
+ * OSErr or a negative host error. */
+int  panthera_render(const char *voiceDir, unsigned creator, int voiceId,
+                     const char *text, int wpm,
+                     short **outPcm, unsigned *outFrames);
+
+/* Ask the engine to stop the utterance in progress; makes a blocked
+ * panthera_render return with whatever it has.  Safe from another thread. */
+void panthera_stop(void);
+
+/* The PCM sample rate panthera_render produces (Hz). */
+int  panthera_sample_rate(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* TIGER_HOST_JNI_H */
