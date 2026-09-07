@@ -44,6 +44,14 @@ int  panthera_speak_start(const char *voiceDir, unsigned creator, int voiceId,
                           const char *text, int wpm);
 int  panthera_pull(short *out, int maxSamples);
 
+/* How to read numbers the engine gets wrong: "off", "fix" (the default) or
+ * "words".  See tiger_host_numbers.c -- the rules are the NVDA driver's, and
+ * they live in the host so that every front end reaches the same ones.
+ *
+ * A setting rather than an argument because it is a preference, not a property
+ * of the utterance; it applies from the next utterance onwards. */
+void panthera_set_number_style(const char *style);
+
 /* Ask the engine to stop the utterance in progress; makes a blocked
  * panthera_render / panthera_pull return with whatever it has.  Safe from
  * another thread. */

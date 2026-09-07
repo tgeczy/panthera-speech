@@ -231,11 +231,42 @@ void panthera_finish(void)
 
 /* ---- streaming synthesis (the low-latency TTS path) -------------------- */
 
+/* The number style, and the one place the rewriting happens on this path.
+ *
+ * The NVDA driver and the SAPI bridge do this themselves, before the text
+ * reaches here, so nothing is applied twice: this is for the front ends that
+ * have no rewriting of their own, which today means Android.  When those two
+ * hand the job over, they simply stop doing it and this keeps working.
+ *
+ * (Applying it twice would in fact be harmless -- "1,234,567" regroups to
+ * itself and words contain no digits -- but "harmless" is a poor thing to
+ * depend on, so the pipeline says who owns the step.) */
+static int g_pt_number_style = NUM_STYLE_FIX;
+
+void panthera_set_number_style(const char *style)
+{
+    g_pt_number_style = num_style_of(style);
+}
+
+/* Returns either a rewritten copy to free, or NULL meaning "use the original".
+ * NULL on allocation failure too: speaking the text unrewritten is better than
+ * not speaking it. */
+static char *pt_numbers(const char *text)
+{
+    char *out;
+    if (!text || g_pt_number_style == NUM_STYLE_OFF) return NULL;
+    out = num_expand(text, g_pt_number_style);
+    if (!out) return NULL;
+    if (!strcmp(out, text)) { free(out); return NULL; }   /* nothing to change */
+    return out;
+}
+
 int panthera_speak_start(const char *voiceDir, unsigned creator, int voiceId,
                          const char *text, int wpm)
 {
     speech_api api;
     int err;
+    char *rewritten;
     /* The synthesis thread runs speak_text and the pull loop, so it wants the
      * fast core too.  Asked per utterance rather than once: this thread belongs
      * to the framework, which may hand a different one over. */
@@ -249,7 +280,10 @@ int panthera_speak_start(const char *voiceDir, unsigned creator, int voiceId,
     if (err) return err;
     api = speech_api_of(&g_mt);
     if (wpm > 0) set_param(&api, g_chan, PARAM_RATE, (unsigned)wpm << 16);
+    rewritten = pt_numbers(text);
+    if (rewritten) text = rewritten;
     err = speak_text(&api, g_chan, text, (unsigned)strlen(text));
+    free(rewritten);
     if (err) fprintf(stderr, "panthera: SESpeakBuffer -> OSErr %d\n", err);
     return err;   /* synthesis now runs on the engine's worker; drain with pull */
 }

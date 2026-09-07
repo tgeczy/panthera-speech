@@ -524,6 +524,32 @@ static int call_aligned4(void *fn, void *a, void *b, void *c, void *d)
 { return uc_call4(fn, a, b, c, d); }
 static int call_aligned5(void *fn, void *a, void *b, void *c, void *d, void *e)
 { return uc_call5(fn, a, b, c, d, e); }
+#elif !defined(_MSC_VER)
+/* Native i386, but not MSVC -- which is every Unix build of this host, and the
+ * one Devin's Linux port needs.
+ *
+ * These are plain calls, and that is not a shortcut.  The naked thunks below
+ * exist because **MSVC aligns the stack to four bytes** and the Mach-O i386
+ * ABI wants sixteen at the call, so somebody has to insert the alignment by
+ * hand.  GCC and Clang on i386 already keep a sixteen-byte boundary at every
+ * call site (`-mpreferred-stack-boundary=4` is their default), so the
+ * alignment the assembly below constructs is one the compiler has already
+ * guaranteed.  Writing it out again in a second dialect of inline assembly
+ * would add a way to be wrong and nothing else.
+ *
+ * If a toolchain ever turns that default off, `movaps` inside the engine
+ * faults immediately and loudly at the first worker task -- the failure this
+ * whole comment block describes -- so it cannot degrade quietly. */
+static int call_aligned1(void *fn, void *a)
+{ return ((int (*)(void *))fn)(a); }
+static int call_aligned2(void *fn, void *a, void *b)
+{ return ((int (*)(void *, void *))fn)(a, b); }
+static int call_aligned3(void *fn, void *a, void *b, void *c)
+{ return ((int (*)(void *, void *, void *))fn)(a, b, c); }
+static int call_aligned4(void *fn, void *a, void *b, void *c, void *d)
+{ return ((int (*)(void *, void *, void *, void *))fn)(a, b, c, d); }
+static int call_aligned5(void *fn, void *a, void *b, void *c, void *d, void *e)
+{ return ((int (*)(void *, void *, void *, void *, void *))fn)(a, b, c, d, e); }
 #else
 static __declspec(naked) int call_aligned1(void *fn, void *a)
 {

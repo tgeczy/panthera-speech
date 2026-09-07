@@ -677,7 +677,16 @@ static int host_open(const char *mtpath, const char *sdpath)
      * uc_emu_start error.  A first-priority host handler here would intercept
      * that fault first and report a host crash for what is really a guest one --
      * so the guest's faults surface through uc (and uc_on_badmem) instead. */
+#ifdef _WIN32
     AddVectoredExceptionHandler(1, on_fault);
+#else
+    /* No equivalent installed on POSIX, and deliberately so.  A vectored
+     * handler is a Windows facility; the honest translation is a sigaction,
+     * and a native build has no Unicorn handler to conflict with -- but a
+     * crash reporter that has never run is worse than none, because it is
+     * believed.  Left out until it can be tested on the platform that needs
+     * it, where the default disposition still gives a core file. */
+#endif
 #endif
 
     /* The optional runtime images, loaded before the engines so their
