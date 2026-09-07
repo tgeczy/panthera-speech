@@ -15,7 +15,7 @@ needed again is the wrong day to rebuild it.
 """
 import pytest
 
-from synthDrivers._panthera import pantheradriver
+import pantheradriver
 
 
 def test_every_generation_answers_for_its_input_modes():
@@ -25,10 +25,10 @@ def test_every_generation_answers_for_its_input_modes():
     `lionspeech.py` and panthera-speech#6, and the flag stays a per-generation
     answer so the next generation has to earn its True the same way.
     """
-    from synthDrivers import leopardspeech
-    from synthDrivers import lionspeech
-    from synthDrivers import snowleopardspeech
-    from synthDrivers import tigerspeech
+    import leopardspeech
+    import lionspeech
+    import snowleopardspeech
+    import tigerspeech
     for mod in (tigerspeech, leopardspeech, snowleopardspeech, lionspeech):
         assert mod.SynthDriver.INPUT_MODES_WORK is True, mod.__name__
 

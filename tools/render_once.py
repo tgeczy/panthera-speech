@@ -30,31 +30,7 @@ REQ = 0x54475233        # 'TGR3'
 RSP = 0x54475253        # 'TGRS'
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-
-def find_host():
-    """The host binary, on whichever platform this is.
-
-    TIGER_HOST wins; failing that, the Windows build, then any Linux one.
-    This used to name `build/tiger_host.exe` and nothing else, which made
-    every diagnosis tool in here quietly Windows-only -- and a second platform
-    is precisely where diagnosis tools earn their keep.
-    """
-    named = os.environ.get("TIGER_HOST")
-    if named:
-        return named
-    cands = [os.path.join(ROOT, "build", "tiger_host.exe")]
-    build = os.path.join(ROOT, "build")
-    if os.path.isdir(build):
-        cands += [os.path.join(build, d, "tiger_host")
-                  for d in sorted(os.listdir(build)) if d.startswith("linux-")]
-    for c in cands:
-        if os.path.exists(c):
-            return c
-    raise SystemExit("no host binary found; build one, or set TIGER_HOST")
-
-
-HOST = find_host()
+HOST = os.path.join(ROOT, "build", "tiger_host.exe")
 TREE = os.environ.get("TIGER_TREE")
 
 if not TREE:

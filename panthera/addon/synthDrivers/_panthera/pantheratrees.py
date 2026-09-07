@@ -25,62 +25,21 @@ all need these, and only one of those four is inside NVDA.
 import os
 
 
-def _config_from_own_path():
-    """-> the configuration directory this file is installed under, or None.
-
-    An add-on always lives at `<config>/addons/<name>/synthDrivers/_panthera/`,
-    so four levels up from here *is* the configuration directory in use --
-    whichever one that is, a portable copy and NVDA's `systemConfig` included.
-    `addonHandler` fixes that shape, so this is derived rather than guessed.
-
-    None unless the shape matches, so that running from the source tree or
-    from a command line falls through to the ordinary answer.
-    """
-    here = os.path.dirname(os.path.abspath(__file__))
-    parts = here.split(os.sep)
-    #        <config> / addons / <name> / synthDrivers / _panthera
-    if len(parts) < 5 or parts[-4].lower() != "addons":
-        return None
-    root = os.sep.join(parts[:-4])
-    return root if os.path.isdir(root) else None
-
-
 def config_base():
     """NVDA's user configuration directory, or a stand-in outside NVDA.
 
-    `globalVars.appArgs.configPath` is normally the only correct source. NVDA's
-    own `NVDAState.WritePaths.configDir` is a property wrapping exactly this
-    value, so it already accounts for a portable copy and for a configuration
-    directory given on the command line with `-c`. Expanding `%APPDATA%`
-    ourselves would be right on one machine and wrong on every portable one.
+    `globalVars.appArgs.configPath` is the only correct source. NVDA's own
+    `NVDAState.WritePaths.configDir` is a property wrapping exactly this value,
+    so it already accounts for a portable copy and for a config directory given
+    on the command line with `-c`. Expanding `%APPDATA%` ourselves would be
+    right on one machine and wrong on every portable one.
 
-    **Except inside NVDA's own 32-bit synth-driver host, where it is a lie.**
-    `_bridge/runtimes/synthDriverHost/globalVars.py` is a stub, and it says
-
-        appArgs.configPath = "."
-
-    -- the host process's working directory, under a comment reading "very
-    basic values to allow things to run". That host is how this add-on speaks
-    on a secure screen, so there every generation looked for its engine in
-    `./macintalk/<generation>`, found nothing, and reported that it had no
-    speech data. Which is exactly what the first real sign-in screen did: all
-    four synthesizers listed, and not one of them would load.
-
-    So an answer that is not an absolute path is not believed, and the
-    directory this add-on is installed in answers instead. `os.path.isabs(".")`
-    is False, which is the whole of the test.
-
-    The last fallback is for running outside NVDA -- the tests, and anything
+    The fallback exists for running outside NVDA -- the tests, and anything
     driven from a command line -- and for nothing else.
     """
     try:
         import globalVars
         path = globalVars.appArgs.configPath
-        if path and os.path.isabs(str(path)):
-            return str(path)
-        own = _config_from_own_path()
-        if own:
-            return own
         if path:
             return str(path)
     except Exception:
@@ -90,62 +49,6 @@ def config_base():
 
 def is_tree(path):
     return bool(path) and os.path.isdir(os.path.join(path, "Speech", "Voices"))
-
-
-def common_base():
-    """-> the machine-wide place for speech data, or None.
-
-    `%ProgramData%`, named rather than hard-coded because a Windows install is
-    not obliged to put it on C:.
-    """
-    return os.environ.get("ProgramData") or os.environ.get("ALLUSERSPROFILE")
-
-
-def common_dir(config_dirname):
-    """-> the machine-wide twin of `config_dir()`, or None.
-
-    `%ProgramData%\\macintalk\\<generation>` -- the *same* folder name NVDA's
-    configuration directory uses, which is the whole point.  The SAPI world's
-    `macintalk-data` was already reachable through `sapi_roots`, and that near
-    miss is what made this worth writing: Tomi moved his `macintalk` folder to
-    `%ProgramData%`, restarted, and got "5 Macintosh speech engines are
-    missing" -- because the only machine-wide root anybody looked in was
-    spelled `macintalk-data`.  One folder name apart, and nothing said so.
-
-    **A tree here is readable from the sign-in screen without being copied
-    there.**  Data inside NVDA's configuration directory reaches the secure
-    desktop only because NVDA copies that whole directory into `systemConfig`
-    -- 1.6 GB of voice banks included, on every save.  An absolute path under
-    `%ProgramData%` is read by SYSTEM directly.  The trade is the portable
-    copy, which carries the configuration folder and nothing outside it.
-
-    **This folder must not be writable by ordinary accounts.**  What
-    `%ProgramData%` grants by inheritance is `BUILTIN\\Users:(CI)(WD,AD,...)`,
-    and the host *maps and executes* the Mach-O in a tree, as SYSTEM, on the
-    sign-in screen.  `sapi/settings.ps1` locks the ACL when it migrates; a
-    folder made by hand has not been locked, and should be.
-    """
-    base = common_base()
-    return os.path.join(base, config_dirname) if base else None
-
-
-def tree_candidates(root):
-    """-> `root` and its immediate subdirectories, for `is_tree` to sort out.
-
-    One level down as well, because dropping the extracted folder in whole is
-    what people actually do.  Absent or unreadable is an empty list rather
-    than an error: this is a search, and a place that is not there simply is
-    not one of the answers.
-    """
-    if not root:
-        return []
-    out = [root]
-    try:
-        out += [os.path.join(root, d) for d in sorted(os.listdir(root))
-                if os.path.isdir(os.path.join(root, d))]
-    except OSError:
-        pass
-    return out
 
 
 def sapi_roots(generation):
@@ -162,118 +65,21 @@ def sapi_roots(generation):
     settings tool can change it while NVDA is running.  Case of the
     generation folder does not matter on Windows, so the SAPI side's
     title-case folders match these lowercase names as they are.
-
-    **A machine-wide answer is what makes a secure screen work.**  On the
-    sign-in desktop NVDA runs as SYSTEM: `HKEY_CURRENT_USER` is SYSTEM's,
-    `%APPDATA%` is SYSTEM's, and a tree the signed-in person extracted under
-    their own profile is reachable through neither.  The SAPI side's voice
-    tokens are registered in `HKLM` already, so they are visible there -- it
-    is the *data* behind them that has not been.  A root under `%ProgramData%`
-    is readable by every account on the machine, which is the whole point of
-    putting one there.
-
-    The per-user answers stay, and keep working, for everybody who already has
-    a tree in one of them.
     """
     roots = []
     try:
         import winreg
-    except ImportError:
-        winreg = None
-
-    def _fromRegistry(hiveName):
-        """One hive's remembered folder, from both registry views.
-
-        The hive is fetched by name rather than referenced directly so that a
-        `winreg` without it -- a stand-in, or a future Python -- is simply a
-        hive with nothing in it rather than an `AttributeError` that takes the
-        whole lookup down.
-
-        **Both views, because `HKLM\\Software` is redirected under WOW64 and
-        `HKCU\\Software` is not.**  NVDA is 32-bit and would otherwise see
-        `Wow6432Node` alone, so a machine-wide folder set by a 64-bit tool --
-        or by somebody in `regedit` -- would be invisible here while being
-        perfectly present.  The SAPI settings tool writes through both views
-        for the same reason; this is the reading half of that agreement, and
-        the same two-view dance `aac_available` already does below.
-        """
-        hive = getattr(winreg, hiveName, None)
-        if hive is None:
-            return
-        access = getattr(winreg, "KEY_READ", 0)
-        for view in (getattr(winreg, "KEY_WOW64_32KEY", 0),
-                     getattr(winreg, "KEY_WOW64_64KEY", 0)):
-            try:
-                with winreg.OpenKey(hive, r"Software\Panthera SAPI", 0,
-                                    access | view) as key:
-                    value, kind = winreg.QueryValueEx(key, "DataPath")
-            except OSError:
-                continue
-            if kind != winreg.REG_SZ or not value:
-                continue
-            candidate = os.path.join(value, generation)
-            # The two views usually answer the same thing, and a folder
-            # offered twice would have every caller looking in it twice.
-            if candidate not in roots:
-                roots.append(candidate)
-
-    # The folder this user chose, then the one set for the machine.  Both are
-    # explicit choices and outrank any default; the machine-wide one is the
-    # only one of the two a secure screen can read.
-    if winreg is not None:
-        _fromRegistry("HKEY_CURRENT_USER")
-        _fromRegistry("HKEY_LOCAL_MACHINE")
-
-    #: `%ProgramData%`, the standalone default that survives the account
-    #: changing underneath it.  Named rather than hard-coded because a Windows
-    #: install is not obliged to put it on C:.
-    common = os.environ.get("ProgramData") or os.environ.get("ALLUSERSPROFILE")
-    if common:
-        roots.append(os.path.join(common, "macintalk-data", generation))
-
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Panthera SAPI") as key:
+            value, kind = winreg.QueryValueEx(key, "DataPath")
+            if kind == winreg.REG_SZ and value:
+                roots.append(os.path.join(value, generation))
+    except OSError:
+        pass
     appdata = os.environ.get("APPDATA")
     if appdata:
-        #: **Bare `%APPDATA%\\macintalk`, with no `nvda` and no `-data`.**
-        #: A real arrangement rather than a hypothetical one: people keep the
-        #: tree there as part of a SAPI install instead of inside NVDA's
-        #: configuration folder, and Tomi's own machine had it there.  It was
-        #: the one place neither side looked, which is how a tool that lists
-        #: the "usual places" managed to miss a folder sitting in one.
-        roots.append(os.path.join(appdata, "macintalk", generation))
         roots.append(os.path.join(appdata, "macintalk-data", generation))
     return roots
-
-
-def unreadable(paths):
-    """-> (path, why) for the first folder that is there and will not open.
-
-    A folder that exists and refuses to open is, everywhere else in this
-    add-on, indistinguishable from a folder that was never there: `is_tree`
-    asks `os.path.isdir` about `Speech\\Voices` inside it, and "access denied"
-    and "not there" both answer False.  The generation then hides itself, the
-    placeholder synthesizer stands in, and the person is told no speech data
-    is installed -- a confident, wrong and unactionable answer for somebody
-    whose data is sitting on the disk where they put it.
-
-    Getting told the truth instead is what lets them act: the folder can be
-    moved somewhere every account can read.  That is the one case Tomi
-    described where a person would otherwise be left with no speech and no
-    explanation, and it is reachable today by pointing the SAPI tool's data
-    location at a folder under another profile.
-
-    Absence stays silent, because absence is the ordinary case and this is
-    only interesting when it is *not* what happened.
-    """
-    for path in paths:
-        if not path:
-            continue
-        try:
-            os.listdir(path)
-        except (FileNotFoundError, NotADirectoryError):
-            continue
-        except OSError as e:
-            return path, (getattr(e, "strerror", None) or str(e))
-    return None, None
 
 
 def find_runtime(tree, names):

@@ -1,6 +1,28 @@
-/* SAPI COM adapter. Runtime/process ownership, typed settings, diagnostics
- * and lexical preparation live in separately compiled modules. Speak keeps
- * each fragment list whole so host scheduling and Alex's breaths are preserved.
+/* Panthera's voices as a SAPI 5 engine, 32- and 64-bit.
+ *
+ * The engine process stays resident.  Until now every utterance spawned its
+ * own panthera_host.exe and killed it at the end, which cost 25-30 ms of
+ * cold start each time -- 36 ms to first sound for Fred and 41 for Alex,
+ * against 11 warm -- and, less obviously, made the process itself the
+ * answer to three awkward questions: cancel was TerminateProcess, a
+ * settings change took effect because the next spawn read the environment
+ * afresh, and an embedded command could not outlive the channel it was
+ * sent to because neither outlived the utterance.
+ *
+ * Keeping the host re-opens all three, and each is answered where it
+ * arises below.  Two of the answers are the NVDA driver's, which has been
+ * resident since it was written; the third is not.  An interruption still
+ * kills the host, because Panthera's cold start turned out to be cheaper
+ * than its engine's own graceful cancel -- measured, and argued at the
+ * abort path.
+ *
+ * What it buys, measured on Tomi's machine, request to first sound:
+ *
+ *     Tiger  Fred    19 ms cold -> 11 warm      Leopard Fred  29 -> 11
+ *     Snow   Fred    26 ms cold -> 10 warm      Lion    Alex  47 -> 21
+ *
+ * An interrupted utterance costs exactly what it did before.  Everything
+ * else got two to three times faster to first sound.
  */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -11,22 +33,387 @@
 #include <vector>
 #include <cmath>
 #include <cwctype>
+#include <regex>
 #include <cstdio>
-#include "runtime.h"
-#include "settings.h"
-#include "diagnostics.h"
-#include "text.h"
+#include <cstdarg>
 
-using namespace panthera_sapi;
+static HMODULE g_module;
 static long g_objects;
 static const CLSID CLSID_Panthera = {0xc1f7fc55,0x3512,0x4f5d,{0xa6,0xeb,0xf5,0x32,0x20,0xbe,0x46,0x93}};
 static const unsigned REQ_MAGIC_STREAM = 0x54475234, RSP_MAGIC = 0x54475253;
 static const GUID PantheraWaveFormatEx = {0xc31adbae,0x527f,0x4ff5,{0xa2,0x30,0xf6,0x2b,0xb6,0x1f,0xf7,0x0c}};
 
+static bool exact(HANDLE h, void *p, DWORD n, bool write) {
+    BYTE *b=(BYTE*)p; DWORD done=0, x;
+    while(done<n) {
+        BOOL ok=write?WriteFile(h,b+done,n-done,&x,0):ReadFile(h,b+done,n-done,&x,0);
+        if(!ok || !x) return false; done+=x;
+    }
+    return true;
+}
+static std::wstring module_dir() {
+    wchar_t p[MAX_PATH]; GetModuleFileNameW(g_module,p,MAX_PATH);
+    wchar_t *s=wcsrchr(p,L'\\'); if(s)*s=0; return p;
+}
+static std::string utf8(const std::wstring &s) {
+    int n=WideCharToMultiByte(CP_UTF8,0,s.data(),(int)s.size(),0,0,0,0);
+    std::string r(n,0); if(n) WideCharToMultiByte(CP_UTF8,0,s.data(),(int)s.size(),&r[0],n,0,0); return r;
+}
 static std::wstring token_string(ISpObjectToken *t, const wchar_t *name) {
     wchar_t *v=0; std::wstring r;
     if(t && SUCCEEDED(t->GetStringValue(name,&v)) && v) { r=v; CoTaskMemFree(v); }
     return r;
+}
+
+static DWORD setting_dword(const wchar_t *name, DWORD def);
+
+/* The black box -- **off unless somebody asks for it.**
+ *
+ * outSPOKEN's afternoon of four COM-layer bugs was settled by exactly this
+ * file and nothing else: three theories died of it, and the log convicted
+ * in one reading.  That earned it a place here.  It did not earn the place
+ * it first took, which was on, always, for everyone.
+ *
+ * A line per utterance is a line per keystroke, appended forever to a file
+ * in %TEMP% that never rotates -- and the line carried the first forty
+ * characters of the text.  For a screen reader that is a running
+ * transcript of somebody's mail, their messages and their bank, written to
+ * a folder anything running as them can read.  Nobody asked for that and
+ * nobody would have been told.
+ *
+ * So: `Diagnostics` in HKCU, default 0, nothing written and no file
+ * created.  1 writes the measurements -- counts, bytes, flags, which is
+ * what actually convicted -- and 2 adds a slice of the text, for the rare
+ * report that is about particular words.  Two deliberate steps to reach
+ * the thing with words in it.  Even then the file is capped, because a
+ * diagnostic nobody turns off is a disk that fills. */
+static const DWORD LOG_CAP = 4u * 1024u * 1024u;
+
+static int diagLevel() {
+    return (int)setting_dword(L"Diagnostics", 0);
+}
+
+/* And clear up after the version that wrote without asking.
+ *
+ * Anyone who ran a build before this one has a log in %TEMP% still growing
+ * a line per utterance, and turning the tap off does not empty the bucket.
+ * Once per process, with diagnostics off, our own files go -- only the
+ * names this engine writes, only in the temp folder, and only when nothing
+ * is meant to be being collected. */
+static void sweep_logs() {
+    static LONG done;
+    if(InterlockedExchange(&done,1)||diagLevel())return;
+    wchar_t dir[MAX_PATH];
+    DWORD n=GetEnvironmentVariableW(L"TEMP",dir,MAX_PATH);
+    if(!n||n>=MAX_PATH-48)return;
+    const wchar_t *globs[]={L"\\panthera_sapi.log",L"\\panthera_sapi_host-*.log"};
+    for(int g=0;g<2;g++){
+        wchar_t pat[MAX_PATH]; lstrcpyW(pat,dir); lstrcatW(pat,globs[g]);
+        WIN32_FIND_DATAW fd; HANDLE h=FindFirstFileW(pat,&fd);
+        if(h==INVALID_HANDLE_VALUE)continue;
+        do{
+            if(fd.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY)continue;
+            wchar_t victim[MAX_PATH];
+            lstrcpyW(victim,dir); lstrcatW(victim,L"\\"); lstrcatW(victim,fd.cFileName);
+            DeleteFileW(victim);
+        }while(FindNextFileW(h,&fd));
+        FindClose(h);
+    }
+}
+static void logline(const wchar_t *fmt, ...) {
+    if(!diagLevel())return;
+    wchar_t path[MAX_PATH];
+    DWORD n=GetEnvironmentVariableW(L"TEMP",path,MAX_PATH);
+    if(!n||n>=MAX_PATH-24)return;
+    lstrcatW(path,L"\\panthera_sapi.log");
+    HANDLE f=CreateFileW(path,FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,
+                         0,OPEN_ALWAYS,0,0);
+    if(f==INVALID_HANDLE_VALUE)return;
+    {   /* Start over rather than grow without end. */
+        LARGE_INTEGER sz;
+        if(GetFileSizeEx(f,&sz)&&sz.QuadPart>(LONGLONG)LOG_CAP){
+            CloseHandle(f);
+            f=CreateFileW(path,GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,
+                          0,CREATE_ALWAYS,0,0);
+            if(f==INVALID_HANDLE_VALUE)return;
+        }
+    }
+    wchar_t line[512];
+    va_list ap; va_start(ap,fmt);
+    int len=_vsnwprintf_s(line,512,_TRUNCATE,fmt,ap);
+    va_end(ap);
+    if(len<0)len=511;
+    char out[1100]; int m=WideCharToMultiByte(CP_UTF8,0,line,len,out,1060,0,0);
+    SYSTEMTIME st; GetLocalTime(&st);
+    char stamp[32];
+    int sn=sprintf_s(stamp,32,"%02d:%02d:%02d.%03d ",st.wHour,st.wMinute,
+                     st.wSecond,st.wMilliseconds);
+    DWORD w;
+    WriteFile(f,stamp,sn,&w,0);
+    WriteFile(f,out,m,&w,0);
+    WriteFile(f,"\r\n",2,&w,0);
+    CloseHandle(f);
+}
+
+/* ---- the resident host ------------------------------------------------ */
+
+static CRITICAL_SECTION g_hostLock;
+static bool g_lockReady;
+static HANDLE g_proc, g_in, g_out;
+/* What the live host was started with.
+ *
+ * The engine reads TIGER_PARAMS and TIGER_NO_ABBREV once, in main, before
+ * serve mode begins (tiger_host.c ~347) -- they are inherited at spawn and
+ * a resident child cannot be told they changed.  Left alone, that makes the
+ * Phrasing and Expand-abbreviations controls quietly stop working, which is
+ * the one failure this project keeps meeting: a setting that does nothing.
+ * So they are remembered here and a difference respawns the host, exactly
+ * as pantheradriver.py's _restartHost does for the same two settings.  The
+ * tree is here for the same reason -- a generation is a different engine
+ * with different data, not a different argument. */
+static std::wstring g_hostTree, g_hostParams, g_hostAbbrev;
+/* Inflection is an embedded [[pmod]] command, and once the channel outlives
+ * the utterance, so does the command.  Sending nothing at the default
+ * therefore does not mean "the default", it means "whatever was set last".
+ * The driver learned that from a user whose volume went to zero and stayed
+ * there -- its own comment calls it the worst failure it has had -- so the
+ * return to the default is *said*, once, and then not again. */
+static bool g_inflSent;
+
+static void host_drop() {
+    if(g_proc){TerminateProcess(g_proc,0);CloseHandle(g_proc);g_proc=0;}
+    if(g_in){CloseHandle(g_in);g_in=0;}
+    if(g_out){CloseHandle(g_out);g_out=0;}
+    g_hostTree.clear();g_hostParams.clear();g_hostAbbrev.clear();
+    g_inflSent=false;            /* a new channel starts at the default */
+}
+static bool host_alive() {
+    if(!g_proc)return false;
+    DWORD code=0;
+    if(!GetExitCodeProcess(g_proc,&code)||code!=STILL_ACTIVE){host_drop();return false;}
+    return true;
+}
+/* The host's diagnostics need somewhere that cannot fill up.
+ *
+ * The NVDA driver hands the child a pipe and spends a thread draining it; a
+ * SAPI DLL has no thread to spare, and an undrained pipe stops the writer
+ * dead the moment it fills.  For a process that lived one utterance that
+ * was unreachable.  For one that lives all session it is a wedge waiting to
+ * happen, and it would present as speech stopping for good.
+ *
+ * So the child never gets a pipe.  With diagnostics off it gets NUL, which
+ * discards and cannot block; with them on it gets a file named for the
+ * client process, because a 32-bit and a 64-bit SAPI client can be running
+ * at once and each has its own host.  What the engine writes there is its
+ * own commentary about voices and parameters -- never anything the user
+ * asked to have spoken -- but it is off by default all the same, so that a
+ * machine nobody is debugging accumulates nothing. */
+static HANDLE host_stderr() {
+    SECURITY_ATTRIBUTES sa={sizeof(sa),0,TRUE};
+    wchar_t path[MAX_PATH];
+    DWORD n=GetEnvironmentVariableW(L"TEMP",path,MAX_PATH);
+    if(!diagLevel()||!n||n>=MAX_PATH-48)
+        return CreateFileW(L"NUL",GENERIC_WRITE,
+                           FILE_SHARE_READ|FILE_SHARE_WRITE,&sa,OPEN_EXISTING,
+                           0,0);
+    wchar_t leaf[48];
+    swprintf_s(leaf,48,L"\\panthera_sapi_host-%u.log",
+               (unsigned)GetCurrentProcessId());
+    lstrcatW(path,leaf);
+    return CreateFileW(path,FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,
+                       &sa,OPEN_ALWAYS,0,0);
+}
+static bool host_ensure(const std::wstring &tree, const std::wstring &mt,
+                        const std::wstring &sd, const std::wstring &vd,
+                        const std::wstring &params, const std::wstring &abbrev) {
+    sweep_logs();
+    if(host_alive()&&tree==g_hostTree&&params==g_hostParams&&abbrev==g_hostAbbrev)
+        return true;
+    host_drop();
+    SetEnvironmentVariableW(L"TIGER_PARAMS",params.empty()?NULL:params.c_str());
+    SetEnvironmentVariableW(L"TIGER_NO_ABBREV",abbrev.empty()?NULL:abbrev.c_str());
+    std::wstring cmd=L"\""+module_dir()+L"\\panthera_host.exe\" --serve \""+mt+
+                     L"\" \""+sd+L"\" \""+vd+L"\"";
+    SECURITY_ATTRIBUTES sa={sizeof(sa),0,TRUE}; HANDLE inR,inW,outR,outW;
+    if(!CreatePipe(&inR,&inW,&sa,0)||!CreatePipe(&outR,&outW,&sa,0))return false;
+    SetHandleInformation(inW,HANDLE_FLAG_INHERIT,0);SetHandleInformation(outR,HANDLE_FLAG_INHERIT,0);
+    HANDLE err=host_stderr();
+    STARTUPINFOW si={sizeof(si)};si.dwFlags=STARTF_USESTDHANDLES|STARTF_USESHOWWINDOW;si.wShowWindow=SW_HIDE;
+    si.hStdInput=inR;si.hStdOutput=outW;
+    si.hStdError=err!=INVALID_HANDLE_VALUE?err:GetStdHandle(STD_ERROR_HANDLE);
+    PROCESS_INFORMATION pi={}; std::vector<wchar_t> mutableCmd(cmd.begin(),cmd.end());mutableCmd.push_back(0);
+    BOOL made=CreateProcessW(0,mutableCmd.data(),0,0,TRUE,CREATE_NO_WINDOW,0,module_dir().c_str(),&si,&pi);
+    CloseHandle(inR);CloseHandle(outW);
+    if(err!=INVALID_HANDLE_VALUE)CloseHandle(err);
+    if(!made){CloseHandle(inW);CloseHandle(outR);return false;}
+    CloseHandle(pi.hThread);
+    g_proc=pi.hProcess;g_in=inW;g_out=outR;
+    g_hostTree=tree;g_hostParams=params;g_hostAbbrev=abbrev;
+    logline(L"host started: pid=%u params=\"%.40s\" abbrev=%s tree=\"%.80s\"",
+            (unsigned)pi.dwProcessId,params.c_str(),
+            abbrev.empty()?L"expand":L"OFF",tree.c_str());
+    return true;
+}
+
+/* The user settings the NVDA driver has and SAPI users were living without,
+ * kept in HKCU by the settings program and read afresh on every Speak, so a
+ * change takes effect on the very next thing spoken.  The two the *engine*
+ * reads rather than this code -- phrasing and abbreviations -- take effect
+ * by replacing the engine; see host_ensure. */
+static DWORD setting_dword(const wchar_t *name, DWORD def) {
+    HKEY k; DWORD v=def, n=sizeof v, t;
+    if(!RegOpenKeyExW(HKEY_CURRENT_USER,L"Software\\Panthera SAPI",0,KEY_READ,&k)){
+        if(RegQueryValueExW(k,name,0,&t,(BYTE*)&v,&n)||t!=REG_DWORD)v=def;
+        RegCloseKey(k);
+    }
+    return v;
+}
+static std::wstring setting_string(const wchar_t *name, const wchar_t *def) {
+    HKEY k; wchar_t buf[64]; DWORD n=sizeof buf-sizeof(wchar_t), t; std::wstring r=def;
+    if(!RegOpenKeyExW(HKEY_CURRENT_USER,L"Software\\Panthera SAPI",0,KEY_READ,&k)){
+        if(!RegQueryValueExW(k,name,0,&t,(BYTE*)buf,&n)&&t==REG_SZ){
+            buf[n/sizeof(wchar_t)]=0; r=buf;
+        }
+        RegCloseKey(k);
+    }
+    return r;
+}
+
+/* The engine really parses [[...]] in any text it is handed, and a wiki
+ * page's [[Main Page]] does not merely change how things sound -- measured,
+ * the engine eats the bracketed words entirely.  Same bounds as the NVDA
+ * driver's COMMAND_RE: a close within 64 characters, and an unclosed "[["
+ * stays literal rather than swallowing the paragraph. */
+static void strip_commands(std::wstring &t) {
+    size_t i=0;
+    while((i=t.find(L"[[",i))!=std::wstring::npos){
+        size_t close=t.find(L"]]",i+2);
+        if(close==std::wstring::npos||close-(i+2)>64){i+=2;continue;}
+        t.erase(i,close+2-i);
+    }
+}
+
+/* The engine reads numbers well up to six digits and spells them out one
+ * digit at a time from seven -- and grouped digits read correctly, so the
+ * repair is the NVDA driver's: put the separators back.  Runs only, so
+ * "0.7.3" (three one-digit runs) is untouched, and never inside a [[...]]
+ * command, where a comma would corrupt it. */
+static void fix_long_numbers(std::wstring &t) {
+    size_t i=0;
+    while(i<t.size()){
+        if(t.compare(i,2,L"[[")==0){
+            size_t close=t.find(L"]]",i+2);
+            if(close!=std::wstring::npos&&close-(i+2)<=64){i=close+2;continue;}
+        }
+        if(iswdigit(t[i])){
+            size_t start=i;
+            while(i<t.size()&&iswdigit(t[i]))i++;
+            size_t len=i-start;
+            if(len>=7){
+                for(size_t pos=i-3;pos>start;pos-=3){
+                    t.insert(pos,1,L',');
+                    i++;
+                    if(pos<start+4)break;
+                }
+            }
+            continue;
+        }
+        i++;
+    }
+}
+
+/* The abbreviation rules, ported from pantheraabbrev.py -- that module and
+ * its tests are the spec; nothing here decides anything the Python side has
+ * not measured.  Authored without lookbehind on both sides, because
+ * std::wregex has none.
+ *
+ * `regex_replace` cannot compute a replacement, so the spaced-letters
+ * rewrites walk matches by hand. */
+static void spell_out(std::wstring &t, const std::wregex &re, bool upper) {
+    std::wstring out; out.reserve(t.size()+8);
+    auto it=std::wsregex_iterator(t.begin(),t.end(),re), end=std::wsregex_iterator();
+    size_t last=0;
+    for(;it!=end;++it){
+        out.append(t,last,it->position(1)-last);
+        const std::wstring tok=it->str(1);
+        for(size_t j=0;j<tok.size();++j){
+            if(j)out.push_back(L' ');
+            out.push_back(upper?towupper(tok[j]):tok[j]);
+        }
+        last=it->position(1)+it->length(1);
+    }
+    out.append(t,last,std::wstring::npos);
+    t.swap(out);
+}
+
+/* The engine's measured wrong guesses, settled whichever way the setting
+ * points: "<proper noun> Dr." read as a street, and "X's" after a
+ * camel-case split read as the roman numeral ("SpaceX's" was
+ * "space ten's").  The Doctor rewrite only with expansion on -- with it
+ * off, despelling reads "Dr." as letters and writing "Doctor" would be an
+ * expansion the user declined. */
+static void disambiguate(std::wstring &t, bool expand) {
+    static const std::wregex ex(L"\\bX(['\x2019]s)\\b");
+    t=std::regex_replace(t,ex,L"ex$1");
+    if(expand){
+        static const std::wregex doc(L"\\bDr\\.(\\s+)(?=[A-Z][a-z])");
+        t=std::regex_replace(t,doc,L"Doctor$1");
+    }
+}
+
+/* "Expand abbreviations" off: the engine's own lexicon expands DR, Dr.,
+ * St., and on 10.7 digit-adjacent units, none of which TIGER_NO_ABBREV
+ * reaches -- so the abbreviation-shaped forms despell in the text.
+ * Case-sensitive exactly as the Python side: lowercase prose ("vs",
+ * "etc", "dr") is never touched. */
+static void despell(std::wstring &t) {
+    static const std::wregex acronyms(
+        L"\\b(CT|DR|ETC|FT|JR|MRS?|RD|SR|ST|VS)\\b");
+    static const std::wregex titles(
+        L"\\b(Blvd|Capt|Prof|Mrs|Ave|Gen|Gov|Rep|Sen|Ct|Dr|Ft|Jr|Lt|Mr|Ms"
+        L"|Rd|Sr|St)\\b");
+    static const std::wregex units(L"\\b(\\d+) ?(mm|cm|km|kg|g|m)\\b");
+    static const std::wregex roman(
+        L"\\b(?=[MDCLXVI]{2,}\\b)"
+        L"(M{0,3}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3}))\\b");
+    spell_out(t,acronyms,false);
+    spell_out(t,titles,true);
+    {   /* units keep their number: "4mm" -> "4 M M" */
+        std::wstring out; out.reserve(t.size()+8);
+        auto it=std::wsregex_iterator(t.begin(),t.end(),units), end=std::wsregex_iterator();
+        size_t last=0;
+        for(;it!=end;++it){
+            out.append(t,last,it->position(0)-last);
+            out.append(it->str(1)); out.push_back(L' ');
+            const std::wstring u=it->str(2);
+            for(size_t j=0;j<u.size();++j){
+                if(j)out.push_back(L' ');
+                out.push_back(towupper(u[j]));
+            }
+            last=it->position(0)+it->length(0);
+        }
+        out.append(t,last,std::wstring::npos);
+        t.swap(out);
+    }
+    {   /* MIX is M+IX, 1009, and the one English word the strict pattern
+         * claims; everything else spaced out is the setting keeping its
+         * word.  See the Python module for the whole argument. */
+        std::wstring out; out.reserve(t.size()+8);
+        auto it=std::wsregex_iterator(t.begin(),t.end(),roman), end=std::wsregex_iterator();
+        size_t last=0;
+        for(;it!=end;++it){
+            out.append(t,last,it->position(1)-last);
+            const std::wstring tok=it->str(1);
+            if(tok==L"MIX")out.append(tok);
+            else for(size_t j=0;j<tok.size();++j){
+                if(j)out.push_back(L' ');
+                out.push_back(tok[j]);
+            }
+            last=it->position(1)+it->length(1);
+        }
+        out.append(t,last,std::wstring::npos);
+        t.swap(out);
+    }
 }
 
 class Engine : public ISpTTSEngine, public ISpObjectWithToken {
@@ -42,50 +429,7 @@ public:
     }
     STDMETHODIMP_(ULONG) AddRef(){return InterlockedIncrement(&refs);}
     STDMETHODIMP_(ULONG) Release(){ULONG n=InterlockedDecrement(&refs);if(!n)delete this;return n;}
-    /* **A voice whose data is not there must fail here, not go quiet later.**
-     *
-     * Each token carries a DataPath written once, at registration.  Move the
-     * folder afterwards -- by hand, or with an installer -- and every token
-     * still names the old one.  Until this check the engine took the voice
-     * anyway, accepted the text, rendered nothing and returned, so all
-     * ninety-six voices stayed in every program's list and every one of them
-     * was silent.  Measured from Tomi's sign-in screen: 24 utterances, each
-     * returning its bookmark in 21-23 ms flat whatever the words were, where
-     * a working voice on the same screen took 216 to 2164 ms.  A constant is
-     * not slow rendering, it is no rendering, and nothing said so.
-     *
-     * Failing the token is the honest answer: the caller is choosing a voice
-     * that cannot speak, and a screen reader told "no" falls back to one that
-     * can.  Silence is the one failure a screen reader cannot recover from.
-     *
-     * Only the engine binary is checked, and only for existence.  This runs
-     * on every voice selection, so it may not be expensive, and a tree that
-     * is present but broken is the host's business to report -- not a reason
-     * to make choosing the voice impossible. */
-    STDMETHODIMP SetObjectToken(ISpObjectToken *t){
-        if(!t)return E_INVALIDARG;
-        if(token)return E_UNEXPECTED;
-        token=t;t->AddRef();
-        std::wstring root=token_string(token,L"DataPath"),
-                     gen=token_string(token,L"Generation");
-        if(!root.empty()&&!gen.empty()){
-            std::wstring mt=root+L"\\"+gen+
-                L"\\Speech\\Synthesizers\\MacinTalk.SpeechSynthesizer"
-                L"\\Contents\\MacOS\\MacinTalk";
-            if(GetFileAttributesW(mt.c_str())==INVALID_FILE_ATTRIBUTES){
-                logline(L"voice refused: no engine at %.160s",mt.c_str());
-                token->Release();token=0;
-                /* Not an SPERR: the SAPI-specific codes for "this token
-                 * names something that is not there" are not all declared by
-                 * every SDK, and a build that fails on somebody else's
-                 * machine helps nobody.  0x80070002 says "the system cannot
-                 * find the file specified", which is both true and legible
-                 * wherever it surfaces. */
-                return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
-            }
-        }
-        return S_OK;
-    }
+    STDMETHODIMP SetObjectToken(ISpObjectToken *t){if(!t)return E_INVALIDARG;if(token)return E_UNEXPECTED;token=t;t->AddRef();return S_OK;}
     STDMETHODIMP GetObjectToken(ISpObjectToken **t){if(!t)return E_POINTER;*t=token;if(token)token->AddRef();return token?S_OK:S_FALSE;}
     STDMETHODIMP GetOutputFormat(const GUID*,const WAVEFORMATEX*,GUID *id,WAVEFORMATEX **wf){
         if(!id||!wf)return E_POINTER; *id=PantheraWaveFormatEx;
@@ -93,23 +437,6 @@ public:
         *wf=(WAVEFORMATEX*)CoTaskMemAlloc(sizeof f);if(!*wf)return E_OUTOFMEMORY;**wf=f;return S_OK;
     }
     STDMETHODIMP Speak(DWORD,REFGUID,const WAVEFORMATEX*,const SPVTEXTFRAG *frags,ISpTTSEngineSite *site){
-        /* A COM method must never let an exception out: SAPI has no handler
-         * for one and the client application dies of it.  That is not
-         * hypothetical -- a desynced pipe once produced a frame count in the
-         * billions, the resize threw bad_alloc, and a game crashed.  The
-         * count is now clamped and the stream defended, but the guarantee
-         * belongs at the boundary, whatever the cause. */
-        try {
-            return speakInner(frags,site);
-        } catch(...) {
-            if(g_lockReady){
-                CsLock lock(&g_hostLock);
-                host_drop();       /* mid-protocol unwind = desynced pipe */
-            }
-            return E_FAIL;
-        }
-    }
-    HRESULT speakInner(const SPVTEXTFRAG *frags,ISpTTSEngineSite *site){
         if(!token||!site)return E_UNEXPECTED;
         std::wstring text;
         /* JAWS sends each word as its own SPVA_Speak fragment with an
@@ -152,9 +479,17 @@ public:
          * where it is cheapest to forget. */
         if(text.empty()&&marks.empty())return S_OK;
         size_t textChars=text.size();
+        if(!setting_dword(L"AcceptCommands",0))
+            strip_commands(text);
+        if(setting_string(L"NumberStyle",L"fix")==L"fix")
+            fix_long_numbers(text);
+        /* Same rules, same order as the NVDA driver: the wrong-guess
+         * rewrites whichever way the abbreviations setting points, then
+         * despelling only when it is off. */
         bool expand=setting_dword(L"ExpandAbbreviations",1)!=0;
-        std::wstring gen=token_string(token,L"Generation");
-        text=prepare_text(text,setting_dword(L"AcceptCommands",0)!=0,expand,gen);
+        disambiguate(text,expand);
+        if(!expand)
+            despell(text);
         /* Phrasing rides the same TIGER_PARAMS the NVDA host reads, and
          * abbreviations the same TIGER_NO_ABBREV -- but the host reads its
          * environment once, at startup, so with a resident engine these are
@@ -168,7 +503,7 @@ public:
                                  ph==L"more"?L"0":ph==L"most"?L"5":NULL;
             if(thr)params=std::wstring(L"Boundaries.SilThreshold=")+thr;
         }
-        std::wstring root=token_string(token,L"DataPath"), voice=token_string(token,L"EngineVoiceName");
+        std::wstring root=token_string(token,L"DataPath"), gen=token_string(token,L"Generation"), voice=token_string(token,L"EngineVoiceName");
         /* New registrations expose a generation-qualified VoiceName because
          * some clients incorrectly use it as the token identity.  Old tokens
          * and the resident test only have VoiceName, so retain that fallback. */
@@ -197,10 +532,8 @@ public:
             if(pa<-10)pa=-10;if(pa>10)pa=10;
             pitch=(int)(pa*12);
         }
-        std::wstring numberStyle=setting_string(L"NumberStyle",L"fix");
-        unsigned request=REQ_MAGIC_STREAM;
-        unsigned flags=numberStyle==L"fix"?2u:numberStyle==L"words"?4u:0u;
-        CsLock lock(&g_hostLock);
+        unsigned request=REQ_MAGIC_STREAM,flags=0;
+        EnterCriticalSection(&g_hostLock);
         bool ok=true;int status=0;bool aborted=false;
         unsigned long long total=0;
         if(!text.empty()){
@@ -244,48 +577,17 @@ public:
             unsigned nv=(unsigned)v.size(),nt=(unsigned)u.size();
             ok=ok&&exact(g_in,&request,4,true)&&exact(g_in,&rate,4,true)&&exact(g_in,&pitch,4,true)&&exact(g_in,&flags,4,true)&&exact(g_in,&nv,4,true)&&exact(g_in,&nt,4,true)&&exact(g_in,(void*)v.data(),nv,true)&&exact(g_in,(void*)u.data(),nt,true);
             unsigned magic=0;status=-1;
-            /* Response reads wait rather than block: exact_wait watches the
-             * abort flag, the host's death and a no-progress deadline, so a
-             * wedged host costs one failed utterance instead of the session.
-             * An abort while waiting takes the same door as the mid-stream
-             * one below -- kill the host, boot the replacement. */
-            if(ok){
-                ReadWait r=exact_wait(g_out,&magic,4,site);
-                if(r==RW_OK)r=exact_wait(g_out,&status,4,site);
-                if(r==RW_ABORT){
-                    aborted=true;host_drop();
-                    host_ensure(tree,mt,sd,vd,params,noAbbrev);
-                }else if(r!=RW_OK||magic!=RSP_MAGIC)ok=false;
-            }
+            ok=ok&&exact(g_out,&magic,4,false)&&exact(g_out,&status,4,false)&&magic==RSP_MAGIC;
             std::vector<BYTE> audio;
             /* Not `while(ok&&!status)`: the host answers every request with
              * a terminator, an errored one included, and a resident pipe
              * that skips those four bytes is desynced for good. */
-            while(ok&&!aborted){
+            while(ok){
                 unsigned frames=0;
-                ReadWait r=exact_wait(g_out,&frames,4,site);
-                if(r==RW_ABORT){
-                    aborted=true;host_drop();
-                    host_ensure(tree,mt,sd,vd,params,noAbbrev);
-                    break;
-                }
-                if(r!=RW_OK){ok=false;break;}
+                if(!exact(g_out,&frames,4,false)){ok=false;break;}
                 if(!frames)break;
-                if(frames>MAX_CHUNK_FRAMES){
-                    /* Two hundred times the host's own chunk cap is not a
-                     * chunk, it is a desynced stream read as one; see the
-                     * constant.  The pipe is unusable from here. */
-                    logline(L"desync: frame count %u refused",frames);
-                    ok=false;break;
-                }
                 unsigned bytes=frames*2; audio.resize(bytes);
-                r=exact_wait(g_out,audio.data(),bytes,site);
-                if(r==RW_ABORT){
-                    aborted=true;host_drop();
-                    host_ensure(tree,mt,sd,vd,params,noAbbrev);
-                    break;
-                }
-                if(r!=RW_OK){ok=false;break;}
+                if(!exact(g_out,audio.data(),bytes,false)){ok=false;break;}
                 if(site->GetActions()&SPVES_ABORT){
                     /* An interruption still kills the host, and that is a
                      * measurement rather than an oversight.
@@ -315,18 +617,6 @@ public:
                     host_drop();
                     host_ensure(tree,mt,sd,vd,params,noAbbrev);
                     break;         /* g_out belongs to the replacement now */
-                }
-                /* SAPI owns the application slider; the engine applies its
-                 * gain. Read it per chunk so a change during a paragraph
-                 * does not restart synthesis or disturb Alex's breaths.
-                 * Scaling the final PCM also preserves embedded volm commands. */
-                USHORT volume=100;
-                if(FAILED(site->GetVolume(&volume))){ok=false;break;}
-                if(volume>100)volume=100;
-                if(volume!=100){
-                    short *samples=(short*)audio.data();
-                    for(unsigned i=0;i<frames;i++)
-                        samples[i]=(short)((int)samples[i]*volume/100);
                 }
                 ULONG wrote=0;if(FAILED(site->Write(audio.data(),bytes,&wrote))){ok=false;break;}
                 total+=bytes;
@@ -363,6 +653,7 @@ public:
                     L"aborted=%d voice=%.24s",
                     (unsigned)text.size(),(unsigned)marks.size(),(unsigned)total,
                     ok?1:0,status,aborted?1:0,voice.c_str());
+        LeaveCriticalSection(&g_hostLock);
         return aborted||(ok&&status==0)?S_OK:E_FAIL;
     }
 };

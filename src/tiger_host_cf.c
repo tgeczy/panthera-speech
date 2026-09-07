@@ -29,14 +29,8 @@
 #define CF_MAGIC 0x54494743u            /* 'TIGC' */
 #define CFPATH   512
 
-typedef struct { gptr isa; unsigned flags; gptr cstr; unsigned len; }
+typedef struct { void *isa; unsigned flags; const char *cstr; unsigned len; }
         cfstring;
-/* Sixteen bytes, because the ENGINE says sixteen.  Every constant string in
- * the image is a __CFConstantString the engine hands us to read, laid out by
- * an i386 compiler, so the widths here are not ours to choose -- written with
- * host pointers this struct is 32 bytes on arm64 and `cstr` is read out of
- * the middle of `isa`.  That was the fault at 0xa6d0d7c000000000: a real
- * string address, shifted into the high word, reached through strlen. */
 /* The cfstring MUST come first: the engine holds these as opaque CFStringRefs
  * and our accessors cast straight to cfstring.  Burying it behind a header
  * made every lookup read `flags` as the char pointer and return NULL, which
@@ -110,18 +104,12 @@ typedef struct { cfstring str; unsigned magic; long rc; char buf[CFPATH];
  * that cannot reach zero. */
 #define CF_PINNED 0x40000000
 
-/* ___CFConstantStringClassReference.  Only its ADDRESS is ever used -- it is
- * an identity rather than a value -- and the engine holds and compares that
- * address, so it has to be one the guest can hold. */
-GUEST_STATIC(void *, g_cfstring_class, 1);
+static void *g_cfstring_class;           /* ___CFConstantStringClassReference */
 
 static cfobj *cf_make(const char *path, long rc)
 {
     size_t n;
-    /* GMEM rather than calloc: the engine holds this object's address in
-     * four bytes, so on a 64-bit host it cannot live on the library's heap.
-     * Identical to calloc where the whole address space already fits. */
-    cfobj *o = (cfobj *)GMEM_ALLOC(sizeof(*o));
+    cfobj *o = (cfobj *)calloc(1, sizeof(*o));
     if (!o) return NULL;
     o->magic = CF_MAGIC;
     o->rc    = rc;
@@ -134,14 +122,14 @@ static cfobj *cf_make(const char *path, long rc)
      * clipboard can be tens of kilobytes. */
     if (n < CFPATH) {
         memcpy(o->buf, path, n + 1);
-        o->str.cstr = GP(o->buf);
+        o->str.cstr = o->buf;
     } else {
-        o->big = (char *)GMEM_ALLOC(n + 1);
-        if (!o->big) { GMEM_FREE(o); return NULL; }
+        o->big = (char *)malloc(n + 1);
+        if (!o->big) { free(o); return NULL; }
         memcpy(o->big, path, n + 1);
-        o->str.cstr = GP(o->big);
+        o->str.cstr = o->big;
     }
-    o->str.isa  = GP(g_cfstring_class);
+    o->str.isa  = &g_cfstring_class;
     o->str.len  = (unsigned)n;
     return o;
 }
@@ -162,13 +150,13 @@ static cfobj *cf_text(const char *s)
 
 static int cf_ours(const void *o)
 {
-    return o && ((const cfstring *)o)->isa == GP(g_cfstring_class) &&
+    return o && ((const cfstring *)o)->isa == &g_cfstring_class &&
            ((const cfobj *)o)->magic == CF_MAGIC;
 }
 
 static const char *cf_cstr(const void *s)
 {
-    return s ? (const char *)GHOST(((const cfstring *)s)->cstr) : NULL;
+    return s ? ((const cfstring *)s)->cstr : NULL;
 }
 
 /* MacRoman 0x80-0xFF as Unicode, for the one caller that needs it.
@@ -337,11 +325,11 @@ static void   __cdecl sh_CFRelease(void *o)
                 void **slots = (void **)co->bytes;
                 for (k = 0; k < n; k++)
                     sh_CFRelease(slots[k]);
-                GMEM_FREE(co->bytes);
+                free(co->bytes);
             }
-            GMEM_FREE(co->big);
+            free(co->big);
         }
-        GMEM_FREE(old);
+        free(old);
     }
 }
 
@@ -429,7 +417,7 @@ static cfobj *cf_data(const char *path)
     o = cf_new(path);
     if (!o) { fclose(f); return NULL; }
     o->kind = CF_DATA;
-    o->bytes = (unsigned char *)GMEM_ALLOC(n > 0 ? (size_t)n : 1);
+    o->bytes = (unsigned char *)malloc(n > 0 ? (size_t)n : 1);
     if (!o->bytes) { fclose(f); return NULL; }
     o->nbytes = (unsigned)fread(o->bytes, 1, (size_t)n, f);
     fclose(f);
@@ -437,13 +425,13 @@ static cfobj *cf_data(const char *path)
 }
 
 static int __cdecl sh_CFURLCreateDataAndPropertiesFromResource(
-        void *alloc, const void *url, gptr *outData, gptr *outProps,
+        void *alloc, const void *url, void **outData, void **outProps,
         const void *desired, int *errorCode)
 {
     const char *path = cf_cstr(url);
     cfobj *d;
     (void)alloc; (void)desired;
-    if (outProps) *outProps = 0;
+    if (outProps) *outProps = NULL;
     if (!path || !outData) {
         if (errorCode) *errorCode = -10;            /* unknown scheme */
         return 0;
@@ -456,7 +444,7 @@ static int __cdecl sh_CFURLCreateDataAndPropertiesFromResource(
     }
     if (g_verbose)
         printf("  [cf] read %u bytes of %s\n", d->nbytes, path);
-    *outData = GP(d);
+    *outData = d;
     if (errorCode) *errorCode = 0;
     return 1;
 }
@@ -528,8 +516,8 @@ static void * __cdecl sh_CFDataCreateWithBytesNoCopy(void *alloc,
     o = cf_new("");
     if (!o) return NULL;
     o->kind  = CF_DATA;
-    o->bytes = (unsigned char *)GMEM_ALLOC(n ? (size_t)n : 1);
-    if (!o->bytes) { GMEM_FREE(o); return NULL; }
+    o->bytes = (unsigned char *)malloc(n ? (size_t)n : 1);
+    if (!o->bytes) { free(o); return NULL; }
     memcpy(o->bytes, b, (size_t)n);
     o->nbytes = (unsigned)n;
     return o;
@@ -569,16 +557,16 @@ static cfobj *cf_container(int kind, unsigned count)
     if (!o) return NULL;
     o->kind = kind;
     if (count) {
-        o->bytes = (unsigned char *)GMEM_ALLOC(
-            count * (kind == CF_DICT ? 2u : 1u) * sizeof(void *));
-        if (!o->bytes) { GMEM_FREE(o); return NULL; }
+        o->bytes = (unsigned char *)calloc(
+            count * (kind == CF_DICT ? 2u : 1u), sizeof(void *));
+        if (!o->bytes) { free(o); return NULL; }
     }
     o->nbytes = 0;                       /* filled as slots are written */
     return o;
 }
 
-static void * __cdecl sh_CFDictionaryCreate(void *alloc, const gptr *keys,
-                                            const gptr *values, int count,
+static void * __cdecl sh_CFDictionaryCreate(void *alloc, const void **keys,
+                                            const void **values, int count,
                                             const void *kcb, const void *vcb)
 {
     cfobj *o;
@@ -589,8 +577,8 @@ static void * __cdecl sh_CFDictionaryCreate(void *alloc, const gptr *keys,
     if (!o) return NULL;
     for (i = 0; i < count; i++) {
         void **slots = (void **)o->bytes;
-        slots[i * 2]     = sh_CFRetain(GHOST(keys[i]));
-        slots[i * 2 + 1] = sh_CFRetain(GHOST(values[i]));
+        slots[i * 2]     = sh_CFRetain((void *)keys[i]);
+        slots[i * 2 + 1] = sh_CFRetain((void *)values[i]);
         o->nbytes++;
     }
     return o;
@@ -611,7 +599,7 @@ static void * __cdecl sh_CFDictionaryCreateCopy(void *alloc, const void *dict)
     return o;
 }
 
-static void * __cdecl sh_CFArrayCreate(void *alloc, const gptr *values,
+static void * __cdecl sh_CFArrayCreate(void *alloc, const void **values,
                                        int count, const void *cb)
 {
     cfobj *o;
@@ -621,7 +609,7 @@ static void * __cdecl sh_CFArrayCreate(void *alloc, const gptr *values,
     o = cf_container(CF_ARRAY, (unsigned)count);
     if (!o) return NULL;
     for (i = 0; i < count; i++) {
-        ((void **)o->bytes)[i] = sh_CFRetain(GHOST(values[i]));
+        ((void **)o->bytes)[i] = sh_CFRetain((void *)values[i]);
         o->nbytes++;
     }
     return o;
@@ -639,7 +627,7 @@ static void __cdecl sh_CFArrayAppendValue(void *arr, const void *value)
     cfobj *a = (cfobj *)arr;
     void **grown;
     if (!cf_ours(arr) || a->kind != CF_ARRAY) return;
-    grown = (void **)GMEM_REALLOC(a->bytes, (a->nbytes + 1) * sizeof(void *));
+    grown = (void **)realloc(a->bytes, (a->nbytes + 1) * sizeof(void *));
     if (!grown) return;
     a->bytes = (unsigned char *)grown;
     grown[a->nbytes++] = sh_CFRetain((void *)value);
@@ -684,10 +672,10 @@ static const void *cf_dict_lookup(const void *dict, const void *key)
 
 static int __cdecl sh_CFDictionaryGetValueIfPresent(const void *dict,
                                                     const void *key,
-                                                    gptr *value)
+                                                    const void **value)
 {
     const void *v = cf_dict_lookup(dict, key);
-    if (value) *value = GP(v);
+    if (value) *value = v;
     return v != NULL;
 }
 
@@ -1018,12 +1006,6 @@ static void cf_params_init(void)
     }
 }
 
-/* In-process clients can override this one preference without changing the
- * process environment or the user's extracted tree. NULL means engine default. */
-static int g_phrase_override_set;
-static int g_phrase_mode;
-static cfobj *g_phrase_override;
-
 static void * __cdecl sh_CFPreferencesCopyAppValue(const void *key,
                                                    const void *appid)
 {
@@ -1044,12 +1026,6 @@ static void * __cdecl sh_CFPreferencesCopyAppValue(const void *key,
         fprintf(stderr, "  [pref] asked for %s\n",
                 k ? k : "(unreadable key)");
     if (!k) return NULL;
-    if (g_phrase_override_set && !strcmp(k, "Boundaries.SilThreshold")) {
-        static const double values[] = { 0, -8, -4, 0, 5 };
-        if (!g_phrase_mode) return NULL;
-        if (!g_phrase_override) g_phrase_override = cf_value(CF_NUMBER, values[g_phrase_mode]);
-        return g_phrase_override;
-    }
     for (i = 0; i < g_nparams; i++)
         if (!strcmp(g_params[i].key, k)) {
             if (g_verbose)
@@ -1127,12 +1103,7 @@ static int __cdecl sh_CFBooleanGetValue(const void *o)
  * is a label rather than a protocol. If a path ever compares against an
  * internal literal instead, a wrong value here would present as a property
  * that silently does nothing, which is why they are the real ones anyway. */
-/* The `obj` slot used to live in this table, and it is the one field the engine
- * ever sees: cf_data_symbol hands back its ADDRESS, and the engine loads
- * through it.  So it moves somewhere the guest can hold, and the table -- whose
- * sym and text are host-side labels -- stays exactly where it was.  Splitting
- * the one field out beats moving fifty rows of string literals into an arena. */
-typedef struct { const char *sym, *text; } speech_const;
+typedef struct { const char *sym, *text; void *obj; } speech_const;
 
 static speech_const g_speech_consts[] = {
     { "_kSpeechRateProperty",             "rate" },
@@ -1197,10 +1168,6 @@ static speech_const g_speech_consts[] = {
 #define SPEECH_CONST_N \
         (int)(sizeof(g_speech_consts) / sizeof(g_speech_consts[0]))
 
-/* One slot per constant, declared here so the table's own count is the only
- * count -- a second literal would be one more thing to keep in step. */
-GUEST_STATIC(gptr, g_speech_obj, SPEECH_CONST_N);
-
 /* The named ones, by index into the table above. */
 #define SPK_RATE       0
 #define SPK_PITCHBASE  1
@@ -1217,10 +1184,10 @@ static void speech_keys_init(void)
 {
     int i;
     for (i = 0; i < SPEECH_CONST_N; i++)
-        if (!g_speech_obj[i])
-            g_speech_obj[i] = GP(cf_pinned(g_speech_consts[i].text));
+        if (!g_speech_consts[i].obj)
+            g_speech_consts[i].obj = cf_pinned(g_speech_consts[i].text);
     for (i = 0; i < 6; i++)
-        g_speech_key[i] = GHOST(g_speech_obj[i]);
+        g_speech_key[i] = g_speech_consts[i].obj;
 }
 
 /* -> the address of the slot holding the constant, which is what an imported
@@ -1239,7 +1206,7 @@ static void *speech_const_lookup(const char *name)
     speech_keys_init();
     for (i = 0; i < SPEECH_CONST_N; i++)
         if (!strcmp(g_speech_consts[i].sym, name))
-            return &g_speech_obj[i];
+            return &g_speech_consts[i].obj;
     /* Named the family but not a member: say so. Being thunked from here is
      * how the first attempt at this crashed. */
     printf("  [cf] no constant for %s -- it will be thunked\n", name);
@@ -1275,7 +1242,7 @@ static void * __cdecl sh_CFNumberCreate(void *alloc, int type,
     case 2:  case 8:  v = *(const short *)value;     break;
     case 3:  case 9:  case 14: case 15:
                       v = *(const int *)value;       break;
-    case 10:          v = (double)*(const glong *)value;    break;
+    case 10:          v = (double)*(const long *)value;    break;
     case 4:  case 11: v = (double)*(const __int64 *)value; break;
     case 5:  case 12: case 16:
                       v = *(const float *)value;     break;
@@ -1300,7 +1267,7 @@ static int __cdecl sh_CFNumberGetValue(const void *o, int type, void *out)
     case 2:  case 8:  *(short *)out          = (short)v;     break;
     case 3:  case 9:  case 14: case 15:
                       *(int *)out            = (int)v;       break;
-    case 10:          *(glong *)out          = (glong)v;      break;
+    case 10:          *(long *)out           = (long)v;      break;
     case 4:  case 11: *(__int64 *)out        = (__int64)v;   break;
     case 5:  case 12: case 16:
                       *(float *)out          = (float)v;     break;
@@ -1314,18 +1281,6 @@ static int __cdecl sh_CFNumberGetValue(const void *o, int type, void *out)
 }
 
 /* ---- --cf-check ------------------------------------------------------- */
-/* A literal, copied somewhere the guest could hold the address of.  Only the
- * self-test needs this: the real paths all come through `cf_make`, which
- * already allocates the same way. */
-static gptr cf_guest_lit(const char *lit)
-{
-    size_t n = strlen(lit) + 1;
-    char *g = (char *)GMEM_ALLOC(n);
-    if (!g) return 0;
-    memcpy(g, lit, n);
-    return GP(g);
-}
-
 /*
  * The formatter, on the four names Lion's dictionary cannot open without,
  * needing no tree -- like `--regex-check`.  See
@@ -1342,11 +1297,7 @@ static int cf_check(void)
      * with an isa that is not ours.  Every argument at every real call site
      * looks like this and none of them look like a `cfobj`, so a check built
      * only from `cf_new` would prove nothing about the calls being fixed. */
-    /* Guest-visible, like everything else that ends up inside a cfstring.
-     * A static in this library and a literal in its .rodata both sit far
-     * above 4 GB on a 64-bit host, and a check that quietly truncated them
-     * would be testing the truncation rather than the formatter. */
-    void *notclass = GMEM_ALLOC(4);
+    static void *not_our_class;
     static const struct { const char *name, *want; } tables[] = {
         { "PrefixDictionary", "PrefixDictionaryEng" },
         { "CartLite",         "CartLiteEng"         },
@@ -1357,14 +1308,14 @@ static int cf_check(void)
     int i, fails = 0;
     void *r;
 
-    fmt.isa = GP(notclass);
-    fmt.cstr = cf_guest_lit("%@Eng");
+    fmt.isa = &not_our_class;
+    fmt.cstr = "%@Eng";
     fmt.len = 5;
-    arg.isa = GP(notclass);
+    arg.isa = &not_our_class;
 
     for (i = 0; i < (int)(sizeof(tables) / sizeof(tables[0])); i++) {
-        arg.cstr = cf_guest_lit(tables[i].name);
-        arg.len  = (unsigned)strlen(tables[i].name);
+        arg.cstr = tables[i].name;
+        arg.len  = (unsigned)strlen(arg.cstr);
         r = sh_CFStringCreateWithFormat(NULL, NULL, &fmt, &arg);
         fprintf(stdout, "[cf-check] constant \"%%@Eng\" + \"%s\" -> \"%s\"\n",
                 tables[i].name, r ? cf_cstr(r) : "(null)");
@@ -1372,7 +1323,7 @@ static int cf_check(void)
             fprintf(stdout, "FAIL  wanted \"%s\"\n", tables[i].want);
             fails++;
         }
-        if (r) GMEM_FREE(r);
+        if (r) free(r);
     }
 
     /* An object this host made, formatted through the same path: the two
@@ -1387,8 +1338,8 @@ static int cf_check(void)
             fprintf(stdout, "FAIL  wanted \"HomophonesEng\"\n");
             fails++;
         }
-        if (r) GMEM_FREE(r);
-        GMEM_FREE(o);
+        if (r) free(r);
+        free(o);
     }
 
     /* Literal percent, and a conversion nothing in either binary uses.  The
@@ -1396,8 +1347,8 @@ static int cf_check(void)
      * plausible half-rendered string. */
     {
         cfstring pct = { 0 };
-        pct.isa = GP(notclass);
-        pct.cstr = cf_guest_lit("100%% sure");
+        pct.isa = &not_our_class;
+        pct.cstr = "100%% sure";
         pct.len = 10;
         r = sh_CFStringCreateWithFormat(NULL, NULL, &pct);
         fprintf(stdout, "[cf-check] \"100%%%% sure\" -> \"%s\"\n",
@@ -1406,9 +1357,9 @@ static int cf_check(void)
             fprintf(stdout, "FAIL  wanted \"100%% sure\"\n");
             fails++;
         }
-        if (r) GMEM_FREE(r);
+        if (r) free(r);
 
-        pct.cstr = cf_guest_lit("%d items");
+        pct.cstr = "%d items";
         pct.len = 8;
         r = sh_CFStringCreateWithFormat(NULL, NULL, &pct, 3);
         fprintf(stdout, "[cf-check] \"%%d items\" -> %s (unsupported "
@@ -1416,7 +1367,7 @@ static int cf_check(void)
         if (r) {
             fprintf(stdout, "FAIL  an unsupported conversion was guessed at\n");
             fails++;
-            GMEM_FREE(r);
+            free(r);
         }
     }
 
@@ -1445,7 +1396,7 @@ static int cf_check(void)
                 fprintf(stdout, "FAIL  an index past the end read memory\n");
                 fails++;
             }
-            GMEM_FREE(r);
+            free(r);
         }
 
         r = sh_CFStringCreateWithCharactersNoCopy(NULL, WIDE, 4, NULL);
@@ -1455,7 +1406,7 @@ static int cf_check(void)
                             "terminator\n");
             fails++;
         }
-        if (r) GMEM_FREE(r);
+        if (r) free(r);
     }
 
     /* An utterance is MacRoman and a path is not, and the only difference
@@ -1501,7 +1452,7 @@ static int cf_check(void)
             fprintf(stdout, "FAIL  the two character accessors disagree\n");
             fails++;
         }
-        GMEM_FREE(t); GMEM_FREE(p); GMEM_FREE(c);
+        free(t); free(p); free(c);
     }
 
     {
@@ -1516,7 +1467,7 @@ static int cf_check(void)
             fprintf(stdout, "FAIL  a CFData did not read back as written\n");
             fails++;
         }
-        if (d) { GMEM_FREE(d->bytes); GMEM_FREE(d); }
+        if (d) { free(d->bytes); free(d); }
     }
 
     fprintf(stdout, "[cf-check] %d failure(s)\n", fails);

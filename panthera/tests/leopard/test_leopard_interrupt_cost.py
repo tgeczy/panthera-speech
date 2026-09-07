@@ -144,9 +144,9 @@ def test_the_handoff_answer_is_per_generation():
     so a generation added later cannot inherit a retirement policy nobody
     measured on it.
     """
-    from synthDrivers import leopardspeech
-    from synthDrivers import lionspeech
-    from synthDrivers import snowleopardspeech
+    import leopardspeech
+    import lionspeech
+    import snowleopardspeech
     base = leopardspeech.pantheradriver.PantheraDriver
 
     assert base.HANDOFF_GRACE is None

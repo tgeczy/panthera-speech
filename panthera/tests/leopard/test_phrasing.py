@@ -12,7 +12,7 @@ those plus the unanswered mode, and all five are byte-distinct.
 """
 import pytest
 
-from synthDrivers import leopardspeech
+import leopardspeech
 
 
 #: Long enough to have phrasing decisions in it.  The short-phrase case cannot

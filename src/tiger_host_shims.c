@@ -31,78 +31,6 @@ static void  __cdecl sh_bcopy(const void *s, void *d, size_t n) { memmove(d, s, 
 static void  __cdecl sh_bzero(void *d, size_t n)                { memset(d, 0, n); }
 static int   __cdecl sh_abort_(void) { die("engine called abort()"); return 0; }
 
-#ifndef TIGER_UC
-/* The guest's malloc, which is the host's, plus one instrument.
- *
- * TIGER_MALLOC_FILL=<byte> poisons every block the engine is handed, so that
- * "does the engine read memory before writing it?" becomes a question with an
- * answer instead of a worry.  Unset -- always, in shipping -- nothing is
- * filled and this is the host allocator with one predictable branch in front
- * of it.
- *
- * The measured answer, for Leopard's Vicki through the serve path: 17887
- * frames and the same md5 poisoned as clean, on Windows and on Linux.  The
- * engine does not read what it has not written, so nothing here zeroes
- * anything -- and a wrapper that quietly did would have made every render
- * depend on the host allocator being generous, which is the accident it would
- * have been meant to cure.  See [[bugs-that-work-by-accident]]. */
-/* Read once and cached.  The MP workers allocate, so several guest threads
- * can reach this at once -- a benign race: every racer computes the same
- * value from the same environment and stores an int.  Left rather than locked
- * because a lock here would sit on the allocator's hot path to protect a
- * constant. */
-static int guest_fill(void)
-{
-    static int fill = -2;               /* -2 unread, -1 no fill, else byte */
-    if (fill == -2) {
-        const char *e = getenv("TIGER_MALLOC_FILL");
-        fill = (e && *e) ? (int)(strtoul(e, NULL, 0) & 0xff) : -1;
-        if (fill >= 0 && g_verbose)
-            printf("  [mem] guest malloc poisoned with 0x%02x\n", fill);
-    }
-    return fill;
-}
-
-static void * __cdecl sh_guest_malloc(size_t n)
-{
-    void *p = malloc(n ? n : 1);
-    int f = guest_fill();
-    if (p && f >= 0) memset(p, f, n);
-    return p;
-}
-
-/* realloc fills only what it grew by: the old bytes are the engine's and have
- * to survive.  `guest_usable` asks the allocator how large the old block
- * really was, because the slack between the requested size and the usable
- * size is memory the engine may already hold. */
-static size_t guest_usable(void *p)
-{
-#if defined(_MSC_VER)
-    return p ? _msize(p) : 0;
-#elif defined(__GLIBC__) || defined(__ANDROID__)
-    return p ? malloc_usable_size(p) : 0;
-#else
-    (void)p; return 0;
-#endif
-}
-
-static void * __cdecl sh_guest_realloc(void *old, size_t n)
-{
-    size_t had;
-    void *p;
-    int f = guest_fill();
-    if (f < 0) return realloc(old, n ? n : 1);   /* before guest_usable: the
-                                                  * shipping path must not pay
-                                                  * an _msize per realloc for
-                                                  * an instrument it is not
-                                                  * using */
-    had = guest_usable(old);
-    p = realloc(old, n ? n : 1);
-    if (p && n > had) memset((char *)p + had, f, n - had);
-    return p;
-}
-#endif  /* !TIGER_UC */
-
 /* Thread-local storage, which libstdc++ keeps its locale and exception state
  * in.
  *
@@ -152,113 +80,27 @@ static void __cdecl sh_stack_chk_fail(void)
  * MSVC generates the same operations inline for `long long`, so each of these
  * is one line and exactly right rather than approximately so.
  */
-/* Four words in, eight bytes out.  These are the compiler's own 64-bit
- * division helpers, so the engine reaches them for every 64-bit divide it
- * performs -- and declared with `long long` parameters they read the dividend
- * as the divisor on AArch64, which is a wrong ANSWER rather than a crash and
- * so travels a long way before anything notices.  It surfaced as a divide by
- * zero inside MTFEFrameFiller::GetDiphthongs, four calls downstream. */
-static long long __cdecl sh_divdi3(unsigned alo, unsigned ahi,
-                                   unsigned blo, unsigned bhi)
-{ long long a = GI64(alo, ahi), b = GI64(blo, bhi); return b ? a / b : 0; }
-static unsigned long long __cdecl sh_udivdi3(unsigned alo, unsigned ahi,
-                                             unsigned blo, unsigned bhi)
-{ unsigned long long a = GU64(alo, ahi), b = GU64(blo, bhi);
-  return b ? a / b : 0; }
-static long long __cdecl sh_moddi3(unsigned alo, unsigned ahi,
-                                   unsigned blo, unsigned bhi)
-{ long long a = GI64(alo, ahi), b = GI64(blo, bhi); return b ? a % b : 0; }
-static unsigned long long __cdecl sh_umoddi3(unsigned alo, unsigned ahi,
-                                             unsigned blo, unsigned bhi)
-{ unsigned long long a = GU64(alo, ahi), b = GU64(blo, bhi);
-  return b ? a % b : 0; }
+static long long __cdecl sh_divdi3(long long a, long long b)
+{ return b ? a / b : 0; }
+static unsigned long long __cdecl sh_udivdi3(unsigned long long a,
+                                             unsigned long long b)
+{ return b ? a / b : 0; }
+static long long __cdecl sh_moddi3(long long a, long long b)
+{ return b ? a % b : 0; }
+static unsigned long long __cdecl sh_umoddi3(unsigned long long a,
+                                             unsigned long long b)
+{ return b ? a % b : 0; }
 
 /* pthreads, on top of critical sections.
  *
- * Darwin i386's pthread_mutex_t is 44 bytes of opaque storage. On a 32-bit
- * host that fits our wrapper; Bionic arm64 needs 48 bytes including magic
- * and alignment, so 64-bit hosts keep native objects in a side table.  The magic
+ * Darwin's pthread_mutex_t is 44 bytes of opaque storage, which is room enough
+ * to keep a CRITICAL_SECTION inside it rather than off to the side.  The magic
  * word means a mutex that was never passed to pthread_mutex_init -- a static
  * PTHREAD_MUTEX_INITIALIZER -- still works, because lock initialises it on
  * first use. */
 #define MTX_MAGIC 0x5449474d            /* 'TIGM' */
-#if GUEST_SYNC_SIDE
-/* Native synchronization objects do not fit the guest's opaque storage.
- * Key them by guest address rather than storing a native pointer in the
- * guest: its C++ objects can copy opaque bytes, which must not alias or
- * double-destroy a native lock belonging to another address. */
-/* Its own lock, not the arena's.
- *
- * Borrowing `g_arena_cs` worked while this table existed only under emulation,
- * where the arena always exists -- but a native build has no arena at all, and
- * on glibc this table is exactly what a native build needs.  It was also the
- * wrong lock on merit: every mutex acquire in the engine would contend with
- * every allocation. */
-#ifdef _WIN32
-static CRITICAL_SECTION g_guest_sync_cs;
-static LONG g_guest_sync_ready;
-#define GUEST_SYNC_LOCK()                                                      do { if (InterlockedCompareExchange(&g_guest_sync_ready, 1, 0) == 0)                InitializeCriticalSection(&g_guest_sync_cs);                           EnterCriticalSection(&g_guest_sync_cs); } while (0)
-#define GUEST_SYNC_UNLOCK() LeaveCriticalSection(&g_guest_sync_cs)
-#else
-/* Statically initialised, so there is no bring-up order to get wrong: a shim
- * may be the first thing the engine calls. */
-static pthread_mutex_t g_guest_sync_lk = PTHREAD_MUTEX_INITIALIZER;
-#define GUEST_SYNC_LOCK()   pthread_mutex_lock(&g_guest_sync_lk)
-#define GUEST_SYNC_UNLOCK() pthread_mutex_unlock(&g_guest_sync_lk)
-#endif
-
-typedef struct guest_sync {
-    struct guest_sync *next;
-    const void *address;
-    int condition;
-    union { CRITICAL_SECTION mutex; CONDITION_VARIABLE cond; } native;
-} guest_sync;
-static guest_sync *g_guest_sync;
-
-static guest_sync *guest_sync_get(const void *address, int condition)
-{
-    guest_sync *entry;
-    GUEST_SYNC_LOCK();
-    for (entry = g_guest_sync; entry; entry = entry->next)
-        if (entry->address == address && entry->condition == condition) break;
-    if (!entry) {
-        entry = (guest_sync *)calloc(1, sizeof(*entry));
-        if (!entry) die("no memory for guest synchronization object");
-        entry->address = address;
-        entry->condition = condition;
-        if (condition) InitializeConditionVariable(&entry->native.cond);
-        else InitializeCriticalSection(&entry->native.mutex);
-        entry->next = g_guest_sync;
-        g_guest_sync = entry;
-    }
-    GUEST_SYNC_UNLOCK();
-    return entry;
-}
-static void guest_sync_destroy(const void *address, int condition)
-{
-    guest_sync **link, *entry;
-    GUEST_SYNC_LOCK();
-    for (link = &g_guest_sync; (entry = *link) != NULL; link = &entry->next) {
-        if (entry->address != address || entry->condition != condition) continue;
-        *link = entry->next;
-        if (!condition) DeleteCriticalSection(&entry->native.mutex);
-#ifndef _WIN32
-        else pthread_cond_destroy(&entry->native.cond);
-#endif
-        free(entry);
-        break;
-    }
-    GUEST_SYNC_UNLOCK();
-}
-typedef struct { unsigned magic; } mtx;
-static CRITICAL_SECTION *mtx_native(mtx *m)
-{ return &guest_sync_get(m, 0)->native.mutex; }
-static void mtx_ready(mtx *m) { (void)mtx_native(m); m->magic = MTX_MAGIC; }
-static int __cdecl sh_mutex_init(void *m, void *attr)
-{ (void)attr; guest_sync_destroy(m, 0); mtx_ready((mtx *)m); return 0; }
-#else
 typedef struct { unsigned magic; CRITICAL_SECTION cs; } mtx;
-static CRITICAL_SECTION *mtx_native(mtx *m) { return &m->cs; }
+
 static void mtx_ready(mtx *m)
 {
     if (m->magic != MTX_MAGIC) {
@@ -268,12 +110,10 @@ static void mtx_ready(mtx *m)
 }
 static int __cdecl sh_mutex_init(void *m, void *attr)
 { (void)attr; ((mtx *)m)->magic = 0; mtx_ready((mtx *)m); return 0; }
-#endif
-typedef char guest_mutex_must_fit[sizeof(mtx) <= 44 ? 1 : -1];
 static int __cdecl sh_mutex_lock(void *m)
-{ mtx_ready((mtx *)m); EnterCriticalSection(mtx_native((mtx *)m)); return 0; }
+{ mtx_ready((mtx *)m); EnterCriticalSection(&((mtx *)m)->cs); return 0; }
 static int __cdecl sh_mutex_unlock(void *m)
-{ mtx_ready((mtx *)m); LeaveCriticalSection(mtx_native((mtx *)m)); return 0; }
+{ mtx_ready((mtx *)m); LeaveCriticalSection(&((mtx *)m)->cs); return 0; }
 static int __cdecl sh_mutexattr_init(void *a) { (void)a; return 0; }
 /* The attribute is only ever set to PTHREAD_MUTEX_RECURSIVE, and every mutex
  * here is a CRITICAL_SECTION, which is recursive already. */
@@ -289,20 +129,17 @@ static int __cdecl sh_mutexattr_settype(void *a, int t)
  * So hand back the address of a real object.  Nothing dereferences it, and if
  * anything ever does it finds zeroes rather than an address that was never
  * mapped. */
-/* Handed to the engine, which reads it, so it lives where the guest can see
- * it.  Named rather than anonymous only because GUEST_STATIC needs a type. */
-typedef struct { int mask; char name[32]; } tiger_locale;
-GUEST_STATIC(tiger_locale, g_the_locale, 1);
+static struct { int mask; char name[32]; } g_the_locale;
 
 static void * __cdecl sh_newlocale(int mask, const char *name, void *base)
 {
     (void)base;
-    g_the_locale->mask = mask;
+    g_the_locale.mask = mask;
     if (name) {
-        strncpy(g_the_locale->name, name, sizeof(g_the_locale->name) - 1);
-        g_the_locale->name[sizeof(g_the_locale->name) - 1] = 0;
+        strncpy(g_the_locale.name, name, sizeof(g_the_locale.name) - 1);
+        g_the_locale.name[sizeof(g_the_locale.name) - 1] = 0;
     }
-    return g_the_locale;
+    return &g_the_locale;
 }
 static void __cdecl sh_freelocale(void *loc) { (void)loc; }
 
@@ -437,29 +274,19 @@ static int __cdecl sh_once(unsigned *ctl, void (__cdecl *fn)(void))
     if (!ctl) return 0;
     if (*ctl != ONCE_SIG_DONE) {
         *ctl = ONCE_SIG_DONE;           /* before the call, against recursion */
-#ifdef TIGER_UC
-        /* fn is a guest address: run it on the guest, not as a native call. */
-        if (fn) uc_call_nested((void *)fn);
-#else
         if (fn) fn();
-#endif
     }
     return 0;
 }
 
 /* Multiprocessing Services critical regions, which are just mutexes with a
  * timeout argument the engine always passes as kDurationForever. */
-/* The engine keeps the ID in a four-byte variable of its own and hands it
- * back, so both halves of this matter: the object has to LIVE somewhere the
- * guest can address, and the store into its slot has to be four bytes wide.
- * A host `void **` write puts eight there and takes the next variable with
- * it -- the same bug as the loader's pointer slots, one layer up. */
-static int __cdecl sh_mp_create_region(gptr *id)
+static int __cdecl sh_mp_create_region(void **id)
 {
-    CRITICAL_SECTION *cs = (CRITICAL_SECTION *)GMEM_ALLOC(sizeof(*cs));
+    CRITICAL_SECTION *cs = (CRITICAL_SECTION *)calloc(1, sizeof(*cs));
     if (!cs) return -108;               /* memFullErr */
     InitializeCriticalSection(cs);
-    if (id) *id = GP(cs);
+    if (id) *id = cs;
     return 0;
 }
 static int __cdecl sh_mp_enter_region(void *id, int timeout)
@@ -487,14 +314,14 @@ typedef struct {
     int              head, tail, count;
 } mpqueue;
 
-static int __cdecl sh_mp_create_queue(gptr *out)
+static int __cdecl sh_mp_create_queue(mpqueue **out)
 {
-    mpqueue *q = (mpqueue *)GMEM_ALLOC(sizeof(*q));
+    mpqueue *q = (mpqueue *)calloc(1, sizeof(*q));
     if (!q) return -108;
     InitializeCriticalSection(&q->cs);
     q->sem = CreateSemaphoreA(NULL, 0, MPQ_CAP, NULL);
-    if (!q->sem) { GMEM_FREE(q); return -108; }
-    if (out) *out = GP(q);
+    if (!q->sem) { free(q); return -108; }
+    if (out) *out = q;
     if (g_verbose) printf("  [mp] CreateQueue -> %p\n", (void *)q);
     return 0;
 }
@@ -554,8 +381,8 @@ static DWORD duration_ms(int d)
     return (DWORD)(ms + 0.999);
 }
 
-static int __cdecl sh_mp_wait_on_queue(mpqueue *q, gptr *p1, gptr *p2,
-                                       gptr *p3, int timeout)
+static int __cdecl sh_mp_wait_on_queue(mpqueue *q, void **p1, void **p2,
+                                       void **p3, int timeout)
 {
     if (!q) return -50;
     if (g_mp_waits++ < 6)
@@ -569,11 +396,9 @@ static int __cdecl sh_mp_wait_on_queue(mpqueue *q, gptr *p1, gptr *p2,
             return -30988;                      /* kMPTimeoutErr */
     }
     EnterCriticalSection(&q->cs);
-    /* Three guest variables, four bytes each.  The messages came FROM the
-     * guest, so they fit; it is the width of the store that did not. */
-    if (p1) *p1 = GP(q->msg[q->head][0]);
-    if (p2) *p2 = GP(q->msg[q->head][1]);
-    if (p3) *p3 = GP(q->msg[q->head][2]);
+    if (p1) *p1 = q->msg[q->head][0];
+    if (p2) *p2 = q->msg[q->head][1];
+    if (p3) *p3 = q->msg[q->head][2];
     q->head = (q->head + 1) % MPQ_CAP;
     q->count--;
     LeaveCriticalSection(&q->cs);
@@ -604,44 +429,6 @@ typedef struct {
  * Tiger's engine never showed this.  That is not evidence that it was safe --
  * only that one compiler declined to vectorise one function.
  */
-#ifdef TIGER_UC
-/* Under emulation there is no host stack to align: every entry into the guest
- * goes through uc_call, which sets up the guest stack and runs to RET_MAGIC.
- * See tiger_host_uc.c. */
-static int call_aligned1(void *fn, void *a) { return uc_call1(fn, a); }
-static int call_aligned2(void *fn, void *a, void *b) { return uc_call2(fn, a, b); }
-static int call_aligned3(void *fn, void *a, void *b, void *c)
-{ return uc_call3(fn, a, b, c); }
-static int call_aligned4(void *fn, void *a, void *b, void *c, void *d)
-{ return uc_call4(fn, a, b, c, d); }
-static int call_aligned5(void *fn, void *a, void *b, void *c, void *d, void *e)
-{ return uc_call5(fn, a, b, c, d, e); }
-#elif !defined(_MSC_VER)
-/* Native i386 with a compiler that supplies the required stack alignment.
- *
- * These are plain calls, and that is not a shortcut.  The naked thunks below
- * exist because **MSVC aligns the stack to four bytes** and the Mach-O i386
- * ABI wants sixteen at the call, so somebody has to insert the alignment by
- * hand.  GCC and Clang on i386 already keep a sixteen-byte boundary at every
- * call site (`-mpreferred-stack-boundary=4` is their default), so the
- * alignment the assembly below constructs is one the compiler has already
- * guaranteed.  Writing it out again in a second dialect of inline assembly
- * would add a way to be wrong and nothing else.
- *
- * If a toolchain ever turns that default off, `movaps` inside the engine
- * faults immediately and loudly at the first worker task -- the failure this
- * whole comment block describes -- so it cannot degrade quietly. */
-static int call_aligned1(void *fn, void *a)
-{ return ((int (*)(void *))fn)(a); }
-static int call_aligned2(void *fn, void *a, void *b)
-{ return ((int (*)(void *, void *))fn)(a, b); }
-static int call_aligned3(void *fn, void *a, void *b, void *c)
-{ return ((int (*)(void *, void *, void *))fn)(a, b, c); }
-static int call_aligned4(void *fn, void *a, void *b, void *c, void *d)
-{ return ((int (*)(void *, void *, void *, void *))fn)(a, b, c, d); }
-static int call_aligned5(void *fn, void *a, void *b, void *c, void *d, void *e)
-{ return ((int (*)(void *, void *, void *, void *, void *))fn)(a, b, c, d, e); }
-#else
 static __declspec(naked) int call_aligned1(void *fn, void *a)
 {
     __asm {
@@ -740,38 +527,6 @@ static __declspec(naked) int call_aligned4(void *fn, void *a, void *b, void *c,
         ret
     }
 }
-/* Five arguments, for the AudioConverter input callback.  Same shape as
- * call_aligned4: 5 words is 20 bytes, so reserve 32 to land the call on a
- * 16-byte boundary. */
-static __declspec(naked) int call_aligned5(void *fn, void *a, void *b, void *c,
-                                           void *d, void *e)
-{
-    __asm {
-        push ebp
-        mov  ebp, esp
-        push ebx
-        mov  ebx, esp
-        mov  eax, [ebp + 8]
-        and  esp, -16
-        sub  esp, 32
-        mov  ecx, [ebp + 12]
-        mov  edx, [ebp + 16]
-        mov  [esp], ecx
-        mov  [esp + 4], edx
-        mov  ecx, [ebp + 20]
-        mov  edx, [ebp + 24]
-        mov  [esp + 8], ecx
-        mov  [esp + 12], edx
-        mov  ecx, [ebp + 28]
-        mov  [esp + 16], ecx
-        call eax
-        mov  esp, ebx
-        pop  ebx
-        pop  ebp
-        ret
-    }
-}
-#endif  /* TIGER_UC */
 
 /* CreateThread wants __stdcall; the engine's entry point is Mach-O i386 and so
  * is __cdecl.  This trampoline is the whole reason it exists -- and the place
@@ -779,12 +534,7 @@ static __declspec(naked) int call_aligned5(void *fn, void *a, void *b, void *c,
 static DWORD WINAPI mp_thunk(LPVOID arg)
 {
     mptask *t = (mptask *)arg;
-    tiger_thread_is_audio("mp worker");
-    tiger_thread_wants_fast_core("mp worker");
     int status = call_aligned1(t->entry, t->param);
-#ifdef TIGER_UC
-    uc_release_thread();
-#endif
     if (t->notify)
         sh_mp_notify_queue(t->notify, t->t1, t->t2, (void *)(intptr_t)status);
     return (DWORD)status;
@@ -793,24 +543,20 @@ static DWORD WINAPI mp_thunk(LPVOID arg)
 static int __cdecl sh_mp_create_task(mp_taskproc entry, void *param,
                                      unsigned stacksize, mpqueue *notify,
                                      void *t1, void *t2, unsigned options,
-                                     gptr *out)
+                                     mptask **out)
 {
     mptask *t;
     (void)options;
     if (!entry) return -50;
-    t = (mptask *)GMEM_ALLOC(sizeof(*t));
+    t = (mptask *)calloc(1, sizeof(*t));
     if (!t) return -108;
     t->entry = entry; t->param = param;
     t->notify = notify; t->t1 = t1; t->t2 = t2;
     if (g_verbose) printf("  [mp] CreateTask entry=%p param=%p notify=%p\n",
            (void *)entry, param, (void *)notify);
-    /* Under TIGER_UC the worker runs the guest on its own thread; mp_thunk's
-     * first call_aligned lazily creates that thread's own uc_engine over the
-     * shared memory (see uc_ensure_engine).  So the native path is right for
-     * both builds. */
     t->thread = CreateThread(NULL, stacksize, mp_thunk, t, 0, NULL);
-    if (!t->thread) { GMEM_FREE(t); return -108; }
-    if (out) *out = GP(t);
+    if (!t->thread) { free(t); return -108; }
+    if (out) *out = t;
     return 0;
 }
 
@@ -859,14 +605,10 @@ static long long duration_to_ticks(int d)
  * Declaring it with one made the worker compute a wake-up 52 hours out and
  * sleep through every utterance, which presents as an engine that runs
  * perfectly and emits nothing. */
-static int __cdecl sh_abs_delta_to_duration(unsigned alo, unsigned ahi,
-                                            unsigned blo, unsigned bhi)
-{ return ticks_to_duration(GI64(alo, ahi) - GI64(blo, bhi)); }
-static int __cdecl sh_abs_to_duration(unsigned lo, unsigned hi)
-{ return ticks_to_duration(GI64(lo, hi)); }
-/* These two keep their `long long`: the dispatcher gives them a return class
- * of their own (RC_I64_I_I64) and hands them an assembled value, because
- * their result is 64-bit as well as their argument. */
+static int __cdecl sh_abs_delta_to_duration(long long a, long long b)
+{ return ticks_to_duration(a - b); }
+static int __cdecl sh_abs_to_duration(long long a)
+{ return ticks_to_duration(a); }
 static long long __cdecl sh_add_duration(int d, long long a)
 { return a + duration_to_ticks(d); }
 static long long __cdecl sh_sub_duration(int d, long long a)
@@ -986,9 +728,8 @@ static int __cdecl sh_isamax(int n, const float *x, int incx)
     }
     return best;
 }
-static void __cdecl sh_sscal(int n, unsigned abits, float *x, int incx)
+static void __cdecl sh_sscal(int n, float a, float *x, int incx)
 {
-    float a = GFLOAT(abits);
     int i;
     if (n < 1 || incx <= 0 || !x) return;
     for (i = 0; i < n; i++) x[i * incx] *= a;
@@ -999,10 +740,9 @@ static void __cdecl sh_scopy(int n, const float *x, int incx, float *y, int incy
     if (!x || !y) return;
     for (i = 0; i < n; i++) y[i * incy] = x[i * incx];
 }
-static void __cdecl sh_saxpy(int n, unsigned abits, const float *x, int incx,
+static void __cdecl sh_saxpy(int n, float a, const float *x, int incx,
                              float *y, int incy)
 {
-    float a = GFLOAT(abits);
     int i;
     if (!x || !y) return;
     for (i = 0; i < n; i++) y[i * incy] += a * x[i * incx];
@@ -1022,12 +762,10 @@ static float __cdecl sh_snrm2(int n, const float *x, int incx)
     for (i = 0; i < n; i++) { double v = x[i * incx]; s += v * v; }
     return (float)sqrt(s);
 }
-static void __cdecl sh_sgemv(int order, int trans, int m, int n,
-                             unsigned alphabits,
+static void __cdecl sh_sgemv(int order, int trans, int m, int n, float alpha,
                              const float *a, int lda, const float *x, int incx,
-                             unsigned betabits, float *y, int incy)
+                             float beta, float *y, int incy)
 {
-    float alpha = GFLOAT(alphabits), beta = GFLOAT(betabits);
     int i, j;
     int leny = (trans == CBLAS_NOTRANS) ? m : n;
     int lenx = (trans == CBLAS_NOTRANS) ? n : m;

@@ -117,11 +117,6 @@ static void map_image(image *im)
                         im->path, sc->segname, at);
                 if (sc->filesize)
                     memcpy(at, im->slice + sc->fileoff, sc->filesize);
-#ifdef TIGER_UC
-                /* Give the guest the very same bytes at the very same
-                 * address; the engine runs out of this memory under Unicorn. */
-                uc_map_segment(at, sc->vmsize);
-#endif
             }
             /* Unfiltered, and in load-command order: this is the list the
              * dyld info streams index by. */
@@ -333,9 +328,6 @@ static void apply_ext_relocs(image *im, image *dep)
         if (symnum >= im->nsyms) { missed++; continue; }
         nm = im->strs + im->syms[symnum].n_strx;
         target = lookup_shim(nm);
-#ifdef TIGER_UC
-        if (target) target = uc_bind_target(nm, target);
-#endif
         if (!target) target = lookup_in(im, nm);      /* self first */
         if (!target) target = lookup_loaded(im, nm);
         if (!target) { missed++; continue; }
@@ -391,11 +383,7 @@ static void bind(image *im, image *dep)
         n = s->size / stride;
         for (j = 0; j < n; j++) {
             unsigned isym = ind[s->reserved1 + j];
-            /* A guest slot is four bytes wide.  Writing a host pointer
-             * through it would store eight and take the next slot with
-             * it -- silently, and only on a 64-bit host. */
-            unsigned *slot =
-                (unsigned *)(uintptr_t)(s->addr + im->slide + j * stride);
+            void **slot = (void **)(s->addr + im->slide + j * stride);
             const char *nm;
             void *fn;
             if (stride == 5) {
@@ -406,9 +394,6 @@ static void bind(image *im, image *dep)
                 if (isym >= im->nsyms) continue;
                 nm = im->strs + im->syms[isym].n_strx;
                 fn = lookup_shim(nm);
-#ifdef TIGER_UC
-                if (fn) fn = uc_bind_target(nm, fn);  /* host shim -> trampoline */
-#endif
                 if (!fn) fn = lookup_in(im, nm);
                 if (!fn) { fn = lookup_loaded(im, nm); if (fn) fromdep++; }
                 if (fn) { bound++; stubs++; }
@@ -440,9 +425,6 @@ static void bind(image *im, image *dep)
             if (isym >= im->nsyms) continue;
             nm = im->strs + im->syms[isym].n_strx;
             fn = lookup_shim(nm);
-#ifdef TIGER_UC
-            if (fn) fn = uc_bind_target(nm, fn);  /* host shim -> trampoline/arena */
-#endif
             /* An image resolves against ITSELF first.  PIC code calls its own
              * functions through __picsymbolstub2 so they can be interposed, so
              * a large share of these slots are intra-image -- and binding
@@ -460,11 +442,7 @@ static void bind(image *im, image *dep)
                 fn = make_thunk(nm);
                 thunked++;
             }
-            /* Narrowed deliberately: the slot is the guest's and four bytes
-             * wide.  Everything the engine can reach lives below 4 GB, so this
-             * cannot lose anything -- and if it ever could, the reservation in
-             * tiger_plat_posix.c would have failed first. */
-            *slot = (unsigned)(uintptr_t)fn;
+            *slot = fn;
         }
     }
     if (g_verbose)
@@ -479,23 +457,11 @@ static void run_initializers(image *im)
         const section *s = &im->sects[i];
         if ((s->flags & 0xff) != S_MOD_INIT_FUNC) continue;
         {
-            /* Four bytes an entry, which `size / 4` already knew and
-             * `void **` did not.  On a 64-bit host that read two entries
-             * at a time and handed the engine a function pointer built
-             * from two unrelated halves -- "initializer 0 ->
-             * 0x17074f9017074f78", and then a fault at a real address
-             * shifted into the high word. */
             unsigned n = s->size / 4, j;
-            const unsigned *fns =
-                (const unsigned *)(uintptr_t)(s->addr + im->slide);
+            void **fns = (void **)(s->addr + im->slide);
             for (j = 0; j < n; j++) {
-                void *fn = (void *)(uintptr_t)fns[j];
-                if (g_verbose) printf("  initializer %u -> %p\n", j, fn);
-#ifdef TIGER_UC
-                uc_run_init(fn);
-#else
-                ((void (__cdecl *)(void))fn)();
-#endif
+                if (g_verbose) printf("  initializer %u -> %p\n", j, fns[j]);
+                ((void (__cdecl *)(void))fns[j])();
             }
         }
     }
@@ -519,10 +485,7 @@ static void load(image *im, const char *path)
 {
     size_t len;
     memset(im, 0, sizeof(*im));
-    /* JNI releases its input strings when nativeOpen returns. */
-    { char *owned = (char *)malloc(strlen(path) + 1);
-      if (!owned) die("no memory for image path");
-      strcpy(owned, path); im->path = owned; }
+    im->path  = path;
     im->file  = read_file(path, &len);
     im->slice = find_i386(im->file, len);
     if (g_verbose) printf("%s\n", path);

@@ -62,20 +62,10 @@ add-on, each by breaking it and being told.  They apply here unchanged.
    the confirmation of it.
 """
 import codecs
-#: `logging.DEBUG`, never `log.DEBUG`.
-#:
-#: NVDA's own logger takes `DEBUG` into its class body with `from
-#: logging import DEBUG`, so the two are the same number -- but the
-#: logger inside NVDA's 32-bit bridge host is a plain
-#: `logging.getLogger()` with only `debugWarning` bolted onto it, and
-#: `log.DEBUG` raises `AttributeError` there.  Measured on a sign-in
-#: screen: the driver loaded, every setting and all 24 voices crossed
-#: the bridge, and then every single `speak` call raised before it
-#: reached the engine.
-import logging
 import os
 import re
 import struct
+import sys
 import subprocess
 import threading
 import time
@@ -251,23 +241,23 @@ def _readExactly(stream, n):
         out += chunk
     return out
 
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ENGINE_DIR = os.path.join(_HERE, "_panthera")
+if _ENGINE_DIR not in sys.path:
+    sys.path.insert(0, _ENGINE_DIR)
+
 # Finding the engine lives in `tree`, not here: the global plugin that offers
 # to open the folder needs exactly the same answer, and two copies of a lookup
 # is two chances to disagree about where the engine is.
-# Imported out of the package, under an alias, because one `sys.modules` is
+# Prefixed, and imported under an alias, because one `sys.modules` is
 # shared by every add-on NVDA loads. The Tiger and Leopard add-ons both
 # used to call this module `tree`, so whichever loaded first won and the
 # other silently ran its sibling's lookup -- reading the wrong folder and
-# offering the wrong voices, with nothing failing. A package settles that for
-# good: nothing here is reached through `sys.path` any more.
-from ._panthera import bridge                                 # noqa: E402
-from ._panthera import dllhost                                # noqa: E402
-from ._panthera import pantheratiger as tree                  # noqa: E402
-
-_HERE = os.path.dirname(os.path.abspath(__file__))
+# offering the wrong voices, with nothing failing. The name has to be one
+# nobody else will claim, including the older add-ons this one replaces.
+import pantheratiger as tree                                  # noqa: E402
 
 HOST_EXE = tree.HOST_EXE
-HOST_DLL = tree.HOST_DLL
 find_tree = tree.find_tree
 engine_paths = tree.engine_paths
 read_voices = tree.read_voices
@@ -405,9 +395,6 @@ class SynthDriver(SynthDriver):
         return tree.usable()
 
     def __init__(self):
-        # Before `super()`; see `bridge.prepareHost` for what the 32-bit
-        # bridge host leaves out of `config` and why it is fatal here.
-        bridge.prepareHost()
         super().__init__()
         ok, lines = tree.explain()
         if not ok:
@@ -566,16 +553,6 @@ class SynthDriver(SynthDriver):
         """
         self._restartWanted = True
 
-    def _useLibrary(self):
-        """-> True when the engine has to be a library rather than a process.
-
-        The rule itself is `dllhost.useLibrary`, shared with the other three
-        generations' driver; see there for why it is one question in one place.
-        Tiger has no standby host to suppress alongside it -- this driver never
-        grew one -- so there is nothing else to say here.
-        """
-        return dllhost.useLibrary(HOST_EXE, HOST_DLL)
-
     def _host(self):
         """The resident engine process, started on demand and restarted if it
         dies.  Startup costs about 20 ms including the 2.1 MB dictionary, so a
@@ -614,23 +591,10 @@ class SynthDriver(SynthDriver):
                 env.pop("TIGER_HOST_VERBOSE", None)
             if self._cancelEvent:
                 env["TIGER_CANCEL_EVENT"] = self._cancelEventName
-            if dllhost.useLibrary(HOST_EXE, HOST_DLL):
-                # No executable to start, so the engine is a library in this
-                # process instead -- which is the only way this add-on speaks
-                # on a secure screen, where NVDA does not copy the `.exe`.
-                # What comes back answers `Popen`'s questions and carries the
-                # same two pipes, so nothing below here learns which it got.
-                self._proc = dllhost.DllHost(
-                    self.name, HOST_DLL, self._mt, self._sd, self._voicesdir,
-                    self._cancelEventName if self._cancelEvent else None,
-                    ["TIGER_HOST_VERBOSE=%s"
-                     % env.get("TIGER_HOST_VERBOSE", "")])
-            else:
-                self._proc = subprocess.Popen(
-                    [HOST_EXE, "--serve", self._mt, self._sd,
-                     self._voicesdir],
-                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE, startupinfo=si, env=env)
+            self._proc = subprocess.Popen(
+                [HOST_EXE, "--serve", self._mt, self._sd, self._voicesdir],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, startupinfo=si, env=env)
             self._watchStderr(self._proc)
             return self._proc
 
@@ -697,15 +661,10 @@ class SynthDriver(SynthDriver):
                     # read with its own name.  Everything else is commentary
                     # and belongs at debug level, or a user's log fills with
                     # several hundred lines of loader detail.
-                    #
-                    # This warned on *every* prefixed line, which is several
-                    # per utterance and buries the ones that matter.  The rule
-                    # is `dllhost.isRoutine` now, shared with the other two
-                    # watchers: one answer to one question.
-                    if dllhost.isRoutine(line):
-                        log.debug("tiger-speech host: %s" % line)
-                    else:
+                    if line.startswith("tiger_host:"):
                         log.warning("tiger-speech host: %s" % line)
+                    else:
+                        log.debug("tiger-speech host: %s" % line)
             except Exception:
                 pass
             finally:
@@ -1006,7 +965,7 @@ class SynthDriver(SynthDriver):
         # sequence log is guesswork, and guessing is what has cost the time
         # here: this is the one thing that can be pasted straight into a
         # renderer to reproduce what somebody heard.
-        if log.isEnabledFor(logging.DEBUG):
+        if log.isEnabledFor(log.DEBUG):
             log.debug("tigerspeech: speaking %r" % (text,))
         # Indexes go in before the audio rather than after rendering it.  They
         # belonged at the head of this utterance already -- see the docstring
@@ -1046,7 +1005,7 @@ class SynthDriver(SynthDriver):
         # driver keeps getting and it was never possible to check from a log.
         # Both numbers, per utterance: a first sound that arrives late is a
         # different fault from an utterance that takes a long time in total.
-        if fed and log.isEnabledFor(logging.DEBUG):
+        if fed and log.isEnabledFor(log.DEBUG):
             done = time.perf_counter()
             frames = sum(fed) / 2.0
             log.debug("tigerspeech: %d chars -> %.2f s of audio in %d chunk(s);"
@@ -1140,7 +1099,7 @@ class SynthDriver(SynthDriver):
                             t0 = time.perf_counter()
                             self._player.feed(value)
                             ms = (time.perf_counter() - t0) * 1000.0
-                            if ms >= 20.0 and log.isEnabledFor(logging.DEBUG):
+                            if ms >= 20.0 and log.isEnabledFor(log.DEBUG):
                                 log.debug(
                                     "tigerspeech: the audio device took %.0f ms "
                                     "to start playing (%.0f ms of audio, after "
@@ -1180,7 +1139,7 @@ class SynthDriver(SynthDriver):
         # a sentence" so far has turned out to be about where the sequence was
         # divided, and that is invisible from this side without either a log or
         # a guess.  Two of those guesses were wrong.
-        if log.isEnabledFor(logging.DEBUG):
+        if log.isEnabledFor(log.DEBUG):
             shape = []
             for item in speechSequence:
                 if isinstance(item, str):
@@ -1349,37 +1308,11 @@ class SynthDriver(SynthDriver):
     def _set_rate(self, value):
         self._rate = max(0, min(100, int(value)))
 
-    def _getAvailableVoices(self):
-        """The voice list, under the name NVDA's own base class declares.
-
-        **There are two spellings of this and they are not interchangeable.**
-        `_getAvailableVoices` is the extension point -- `SynthDriver` defines
-        it and raises `NotImplementedError` -- while `_get_availableVoices` is
-        a wrapper around it that caches the result.  Overriding only the
-        wrapper works perfectly in NVDA itself, which reads the property, and
-        fails through the 32-bit bridge, whose service calls
-        `self._synth._getAvailableVoices()` directly and so reaches the base
-        class's refusal instead of us.
-
-        Measured on a sign-in screen: the driver loaded, every setting crossed
-        the bridge, the voice read back as "Alex", and then this raised
-        `NotImplementedError` with nothing else wrong.
-        """
+    def _get_availableVoices(self):
         from collections import OrderedDict
         return OrderedDict(
             (bundle, VoiceInfo(bundle, display, "en"))
             for bundle, display, _engine in self._voices)
-
-    def _get_availableVoices(self):
-        """Kept, and deliberately not left to the base class's cache.
-
-        NVDA's wrapper remembers the first answer for the life of the driver.
-        Nothing here changes the voice list once it is running, so the cache
-        would be harmless -- but this is the accessor NVDA has always called,
-        and leaving it in place means the desktop path is not touched at all
-        by a change made for a screen it never uses.
-        """
-        return self._getAvailableVoices()
 
     def _get_voice(self):
         return self._voiceId
@@ -1387,12 +1320,3 @@ class SynthDriver(SynthDriver):
     def _set_voice(self, value):
         if any(v[0] == value for v in self._voices):
             self._voiceId = value
-
-#: The class NVDA loads, which is this one everywhere except a secure screen.
-#:
-#: **Still one synthesizer, not two.**  NVDA finds one `SynthDriver` per
-#: module; this rebinds the name, it does not add an entry.  The name, the
-#: description and every stored setting are unchanged either way -- see
-#: `_panthera/bridge.py` for when the substitution happens and why.
-SynthDriver = bridge.driverFor(SynthDriver, "tigerspeech", _HERE,
-                               HOST_EXE, HOST_DLL)

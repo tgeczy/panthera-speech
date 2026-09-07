@@ -21,65 +21,52 @@
  * load Leopard's own libstdc++ as a third image, the way SpeechDictionary is
  * already loaded.
  */
-/* operator new returns memory the guest CONSTRUCTS OBJECTS IN and dereferences
- * (unlike a cfobj, which the guest holds opaquely), so under emulation it must
- * come from the guest arena, not the host heap.  Tiger never reached here -- its
- * operator new is internal to MacinTalk and already routes through the guest's
- * own _malloc -- but Leopard imports libstdc++'s __Znwm, which lands on this. */
 static void * __cdecl sh_cxx_new(unsigned n)
 {
-#ifdef TIGER_UC
-    void *p = sh_uc_malloc(n ? n : 1);
-#else
     void *p = malloc(n ? n : 1);
-#endif
     if (!p) die("out of memory: the engine asked for %u bytes", n);
     return p;
 }
-#ifdef TIGER_UC
-static void __cdecl sh_cxx_delete(void *p) { sh_uc_free(p); }
-#else
 static void __cdecl sh_cxx_delete(void *p) { free(p); }
-#endif
 
 /* std::_List_node_base is two pointers, {next, prev}, and its members are the
  * plain linked-list splices.  Written out rather than thunked because a list
  * that does not unhook corrupts itself quietly. */
-typedef struct list_node { gptr next, prev; } list_node;
-static list_node *list_at(gptr p) { return (list_node *)GHOST(p); }
+typedef struct list_node { struct list_node *next, *prev; } list_node;
 
 static void __cdecl sh_list_unhook(list_node *self)
 {
-    list_at(self->prev)->next = self->next;
-    list_at(self->next)->prev = self->prev;
+    list_node *nxt = self->next, *prv = self->prev;
+    prv->next = nxt;
+    nxt->prev = prv;
 }
 static void __cdecl sh_list_hook(list_node *self, list_node *pos)
 {
-    self->next = GP(pos);
+    self->next = pos;
     self->prev = pos->prev;
-    list_at(pos->prev)->next = GP(self);
-    pos->prev = GP(self);
+    pos->prev->next = self;
+    pos->prev = self;
 }
 static void __cdecl sh_list_swap(list_node *x, list_node *y)
 {
-    if (x->next != GP(x)) {
-        if (y->next != GP(y)) {
-            gptr t;
+    if (x->next != x) {
+        if (y->next != y) {
+            list_node *t;
             t = x->next; x->next = y->next; y->next = t;
             t = x->prev; x->prev = y->prev; y->prev = t;
-            list_at(x->next)->prev = list_at(x->prev)->next = GP(x);
-            list_at(y->next)->prev = list_at(y->prev)->next = GP(y);
+            x->next->prev = x->prev->next = x;
+            y->next->prev = y->prev->next = y;
         } else {
             y->next = x->next;
             y->prev = x->prev;
-            list_at(y->next)->prev = list_at(y->prev)->next = GP(y);
-            x->next = x->prev = GP(x);
+            y->next->prev = y->prev->next = y;
+            x->next = x->prev = x;
         }
-    } else if (y->next != GP(y)) {
+    } else if (y->next != y) {
         x->next = y->next;
         x->prev = y->prev;
-        list_at(x->next)->prev = list_at(x->prev)->next = GP(x);
-        y->next = y->prev = GP(y);
+        x->next->prev = x->prev->next = x;
+        y->next = y->prev = y;
     }
 }
 
@@ -94,16 +81,8 @@ static void __cdecl sh_list_swap(list_node *x, list_node *y)
  * linked one.
  */
 #define COND_MAGIC 0x54494743u          /* 'TIGC' */
-#if GUEST_SYNC_SIDE
-typedef struct { unsigned magic; } cnd;
-static CONDITION_VARIABLE *cnd_native(cnd *c)
-{ return &guest_sync_get(c, 1)->native.cond; }
-static void cnd_ready(cnd *c) { (void)cnd_native(c); c->magic = COND_MAGIC; }
-static int __cdecl sh_cond_init(void *c, void *attr)
-{ (void)attr; guest_sync_destroy(c, 1); cnd_ready((cnd *)c); return 0; }
-#else
 typedef struct { unsigned magic; CONDITION_VARIABLE cv; } cnd;
-static CONDITION_VARIABLE *cnd_native(cnd *c) { return &c->cv; }
+
 static void cnd_ready(cnd *c)
 {
     if (c->magic != COND_MAGIC) {
@@ -113,40 +92,20 @@ static void cnd_ready(cnd *c)
 }
 static int __cdecl sh_cond_init(void *c, void *attr)
 { (void)attr; ((cnd *)c)->magic = 0; cnd_ready((cnd *)c); return 0; }
-#endif
-typedef char guest_condition_must_fit[sizeof(cnd) <= 28 ? 1 : -1];
 static int __cdecl sh_cond_wait(void *c, void *m)
 {
     cnd_ready((cnd *)c);
     mtx_ready((mtx *)m);
     {   double t0 = tick_ms();
         g_w_cnd_n++;
-        SleepConditionVariableCS(cnd_native((cnd *)c), mtx_native((mtx *)m), INFINITE);
+        SleepConditionVariableCS(&((cnd *)c)->cv, &((mtx *)m)->cs, INFINITE);
         g_w_cnd_ms += tick_ms() - t0; }
     return 0;
 }
 static int __cdecl sh_cond_signal(void *c)
-{ cnd_ready((cnd *)c); WakeConditionVariable(cnd_native((cnd *)c)); return 0; }
-static int __cdecl sh_cond_destroy(void *c)
-{
-#if GUEST_SYNC_SIDE
-    guest_sync_destroy(c, 1);
-    ((cnd *)c)->magic = 0;
-#else
-    (void)c;
-#endif
-    return 0;
-}
-static int __cdecl sh_mutex_destroy(void *m)
-{
-#if GUEST_SYNC_SIDE
-    guest_sync_destroy(m, 0);
-    ((mtx *)m)->magic = 0;
-#else
-    (void)m;
-#endif
-    return 0;
-}
+{ cnd_ready((cnd *)c); WakeConditionVariable(&((cnd *)c)->cv); return 0; }
+static int __cdecl sh_cond_destroy(void *c) { (void)c; return 0; }
+static int __cdecl sh_mutex_destroy(void *m) { (void)m; return 0; }
 static unsigned __cdecl sh_pthread_self(void) { return GetCurrentThreadId(); }
 
 /* sh_stat sits with the rest of the file layer, in tiger_host_files.c: what it
@@ -239,50 +198,16 @@ static void __cdecl sh_memory_barrier(void) { MemoryBarrier(); }
 static void *g_stderrp = g_fake_sF + 2 * 88;
 static void *g_stdoutp = g_fake_sF + 1 * 88;
 
-static char * __cdecl sh_strtok_r(char *s, const char *sep, gptr *save)
+static char * __cdecl sh_strtok_r(char *s, const char *sep, char **save)
 {
     char *p;
-    /* The tokenizer's continuation slot belongs to the 32-bit guest. */
-    if (!s) s = (char *)GHOST(*save);
+    if (!s) s = *save;
     if (!s) return NULL;
     s += strspn(s, sep);
-    if (!*s) { *save = 0; return NULL; }
+    if (!*s) { *save = NULL; return NULL; }
     p = s + strcspn(s, sep);
-    if (*p) { *p = 0; *save = GP(p + 1); } else *save = 0;
+    if (*p) { *p = 0; *save = p + 1; } else *save = NULL;
     return s;
-}
-
-static int libc_check(void)
-{
-    struct { gptr save; unsigned guard; char text[32]; } *p;
-    char *token;
-    int ok;
-    p = GMEM_ALLOC(sizeof *p);
-    if (!p) return 2;
-    memset(p, 0, sizeof *p);
-    p->guard = 0x12345678;
-    strcpy(p->text, "  alpha,,beta ");
-    token = sh_strtok_r(p->text, " ,", &p->save);
-    ok = token && !strcmp(token, "alpha") && p->guard == 0x12345678;
-    token = sh_strtok_r(NULL, " ,", &p->save);
-    ok = ok && token && !strcmp(token, "beta") && p->guard == 0x12345678;
-    token = sh_strtok_r(NULL, " ,", &p->save);
-    ok = ok && !token && !p->save && p->guard == 0x12345678;
-#ifdef TIGER_UC
-    {
-        unsigned char copy[RUNE_SIZE];
-        void *guest;
-        init_rune_locale();
-        guest = uc_bind_target("__DefaultRuneLocale", g_rune_locale);
-        ok = ok && uc_data_size("__DefaultRuneLocale") == sizeof copy;
-        ok = ok && uc_mem_read(t_uc, (uintptr_t)guest, copy, sizeof copy) == UC_ERR_OK;
-        ok = ok && !memcmp(copy, g_rune_locale, sizeof copy);
-        ok = ok && (*(unsigned *)(copy + RUNE_RUNETYPE + '9' * 4) & _CTYPE_D);
-    }
-#endif
-    GMEM_FREE(p);
-    fprintf(stdout, "[libc] guest tokenizer %s\n", ok ? "PASS" : "FAIL");
-    return ok ? 0 : 1;
 }
 
 static void __cdecl sh_throw_bad_alloc(void)

@@ -45,10 +45,8 @@ _ADDON = os.path.join(os.path.dirname(_HERE), "panthera")
 sys.path.insert(0, os.path.join(_ADDON, "tests"))
 import conftest                                                # noqa: E402,F401
 sys.path.insert(0, os.path.join(_ADDON, "addon", "synthDrivers"))
-#: Through the package, exactly as the suite does.  Importing `conftest`
-#: above has already registered `synthDrivers` with its `__path__`
-#: pointed here, so this is the same module object the tests drive.
-from synthDrivers._panthera import pantheradriver              # noqa: E402
+sys.path.insert(0, os.path.join(_ADDON, "addon", "synthDrivers", "_panthera"))
+import pantheradriver                                          # noqa: E402
 
 #: Which generations have a table to build. Tiger is not one: its engine takes
 #: no `volm` and its driver has no volume slider to feed.

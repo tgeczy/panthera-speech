@@ -13,7 +13,7 @@ import pytest
 
 @pytest.fixture(scope="session")
 def engine_tree():
-    from synthDrivers import leopardspeech
+    import leopardspeech
     tree = leopardspeech.find_tree()
     if not tree:
         pytest.skip("no Leopard speech tree; set LEOPARD_TREE")
@@ -24,7 +24,7 @@ def engine_tree():
 
 @pytest.fixture
 def driver(engine_tree):
-    from synthDrivers import leopardspeech
+    import leopardspeech
     d = leopardspeech.SynthDriver()
     yield d
     d.terminate()

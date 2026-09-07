@@ -350,13 +350,10 @@ static int g_nmaps;
 
 static void *mmap_fallback(unsigned len, int fd, unsigned off_lo)
 {
-    /* Read into memory the guest can address: this is the path a mapping
-     * takes when the file cannot be mapped, and the engine reads the result
-     * exactly as it would read a real view. */
-    void *p = GMEM_ALLOC(len ? len : 1);
+    void *p = malloc(len ? len : 1);
     if (!p) return (void *)-1;
     if (_lseek(fd, (long)off_lo, SEEK_SET) < 0 ||
-        _read(fd, p, len) != (int)len) { GMEM_FREE(p); return (void *)-1; }
+        _read(fd, p, len) != (int)len) { free(p); return (void *)-1; }
     return p;
 }
 
@@ -400,10 +397,6 @@ static void * __cdecl sh_mmap(void *addr, unsigned len, int prot, int flags,
     if (g_verbose)
         printf("  [mmap] %u bytes of fd %d at offset %llu mapped -> %p\n",
                len, fd, (unsigned long long)off, (void *)(view + slack));
-#ifdef TIGER_UC
-    /* The whole 64 KB-aligned view, so the guest can read from view+slack on. */
-    uc_map_extern(view, len + slack);
-#endif
     return view + slack;
 
 fallback:
@@ -433,17 +426,12 @@ static int __cdecl sh_munmap(void *p, unsigned len)
     (void)len;
     for (i = 0; i < g_nmaps; i++) {
         if (g_maps[i].ptr == p) {
-#ifdef TIGER_UC
-            uc_unmap_extern(g_maps[i].base, g_maps[i].len +
-                            (unsigned)((unsigned char *)g_maps[i].ptr -
-                                       (unsigned char *)g_maps[i].base));
-#endif
             UnmapViewOfFile(g_maps[i].base);
             g_maps[i] = g_maps[--g_nmaps];
             return 0;
         }
     }
-    GMEM_FREE(p);                         /* it came from the fallback */
+    free(p);                              /* it came from the fallback */
     return 0;
 }
 static int __cdecl sh_advise_ok(void *p, unsigned l, int a)
@@ -453,10 +441,8 @@ static int __cdecl sh_advise_ok(void *p, unsigned l, int a)
  * This voice is broken beyond repair." and printing them is worth far more
  * than the ten lines it costs. */
 static char g_fake_sF[1024];             /* ___sF; stderr is &__sF[2] */
-/* The engine reads *__error() directly, so this int has to be somewhere the
- * guest can reach -- see GUEST_STATIC in tiger_host.c. */
-GUEST_STATIC(int, g_errno_storage, 1);
-static int * __cdecl sh_error(void) { return g_errno_storage; }
+static int  g_errno_storage;
+static int * __cdecl sh_error(void) { return &g_errno_storage; }
 
 static int __cdecl sh_fprintf(void *f, const char *fmt, ...)
 {
@@ -468,177 +454,13 @@ static int __cdecl sh_fprintf(void *f, const char *fmt, ...)
     va_end(ap);
     return n;
 }
-/* ---- printf, at the guest's widths ------------------------------------- *
- *
- * The last place the seam hides, and the one that took longest to find: the
- * arguments to a variadic function are not typed by any declaration, so
- * nothing about this could be caught by a compiler the way the structs were.
- *
- * On i386 the engine pushes four bytes for a `long` and eight for a `double`,
- * and the host read them back the same way, so a plain `vsprintf` was right
- * for as long as the host was i386.  On a 64-bit host it is wrong three
- * separate ways at once:
- *
- *   - `%ld`, `%lu`, `%lx`, `%02lu` take EIGHT bytes for a value the engine
- *     wrote in four, and print up to twenty digits where ten were expected;
- *   - `%8p` prints sixteen hex digits instead of eight;
- *   - `%f` and `%g` take their value from the FP registers, which the guest
- *     never wrote, so the digits are noise -- and noise of any length.
- *
- * The engine's own strings use every one of those -- `%2ld`, `%02lu`, `%8p`,
- * `%5.2f`, `%g` -- and it sprintf's them into fixed buffers of its own.  A
- * conversion twice as wide as the author expected does not print wrong, it
- * writes past the end: that is how a worker's task list came back with ASCII
- * where a pointer belonged, and the guest faulted reading it.
- *
- * So walk the format here and take each argument from the guest's own words:
- * four bytes for an int, a long or a pointer, eight for a double or a long
- * long.  Each conversion then goes to the host's own snprintf on its own,
- * with the length modifier rewritten to whatever this host spells that width
- * in -- so every flag, width and precision rule stays the C library's, and
- * only the argument widths are ours.
- *
- * On a 32-bit host this produces exactly what the code it replaces did,
- * because there the two widths already agree.
- */
-#define GFMT_SPEC 64
-
-static int guest_format(char *out, size_t cap, const char *fmt,
-                        const unsigned *w, unsigned nw)
+static int __cdecl sh_printf(const char *fmt, ...)
 {
-    size_t n = 0;                   /* what a complete print would have cost */
-    unsigned k = 0;                 /* which guest word comes next           */
-    char spec[GFMT_SPEC], piece[512];
-
-    if (!fmt) return 0;
-    while (*fmt) {
-        const char *pc = fmt;       /* the '%' this conversion started at    */
-        char len0 = 0, len1 = 0, conv;
-        size_t m;
-
-        if (*fmt != '%') {
-            if (out && n + 1 < cap) out[n] = *fmt;
-            n++; fmt++;
-            continue;
-        }
-        fmt++;
-        while (*fmt && strchr("-+ #0", *fmt)) fmt++;             /* flags     */
-        if (*fmt == '*') { if (k < nw) k++; fmt++; }             /* width arg */
-        while (*fmt >= '0' && *fmt <= '9') fmt++;                /* width     */
-        if (*fmt == '.') {
-            fmt++;
-            if (*fmt == '*') { if (k < nw) k++; fmt++; }
-            while (*fmt >= '0' && *fmt <= '9') fmt++;            /* precision */
-        }
-        /* The length modifier describes the GUEST's width.  Remember it, then
-         * leave it out of what the host is told: the host is given the width
-         * by the argument that is actually passed to it. */
-        if (*fmt == 'h' || *fmt == 'l') {
-            len0 = *fmt++;
-            if (*fmt == len0) len1 = *fmt++;
-        } else if (*fmt == 'L' || *fmt == 'z' || *fmt == 'j' || *fmt == 't') {
-            len0 = *fmt++;
-        }
-        conv = *fmt;
-        if (!conv) break;                                  /* a trailing '%' */
-        fmt++;
-        if (conv == '%') {
-            if (out && n + 1 < cap) out[n] = '%';
-            n++;
-            continue;
-        }
-
-        /* Copy '%' plus flags, width and precision, stopping at the modifier. */
-        m = 0;
-        spec[m++] = '%';
-        {
-            const char *q = pc + 1;
-            while (q < fmt - 1 && !strchr("hlLzjt", *q) && m + 4 < sizeof spec)
-                spec[m++] = *q++;
-        }
-
-        switch (conv) {
-        case 'd': case 'i': case 'u': case 'o': case 'x': case 'X':
-            if (len1 == 'l') {                        /* ll -- two words     */
-                unsigned lo = (k < nw) ? w[k++] : 0u;
-                unsigned hi = (k < nw) ? w[k++] : 0u;
-                unsigned long long v = ((unsigned long long)hi << 32) | lo;
-                spec[m++] = 'l'; spec[m++] = 'l';
-                spec[m++] = conv; spec[m] = 0;
-                if (conv == 'd' || conv == 'i')
-                    snprintf(piece, sizeof piece, spec, (long long)v);
-                else
-                    snprintf(piece, sizeof piece, spec, v);
-            } else {                                  /* int, long, short    */
-                unsigned v = (k < nw) ? w[k++] : 0u;
-                spec[m++] = conv; spec[m] = 0;
-                if (conv == 'd' || conv == 'i')
-                    snprintf(piece, sizeof piece, spec, (int)v);
-                else
-                    snprintf(piece, sizeof piece, spec, v);
-            }
-            break;
-        case 'c': {
-            unsigned v = (k < nw) ? w[k++] : 0u;
-            spec[m++] = conv; spec[m] = 0;
-            snprintf(piece, sizeof piece, spec, (int)v);
-            break; }
-        case 's': {
-            /* A guest address, four bytes wide, and identity-mapped -- so it
-             * is readable from here exactly as it stands. */
-            const char *sp = (const char *)GHOST((k < nw) ? w[k++] : 0u);
-            spec[m++] = conv; spec[m] = 0;
-            snprintf(piece, sizeof piece, spec, sp ? sp : "(null)");
-            break; }
-        case 'p': {
-            /* Eight hex digits: the pointer is the guest's, and so is the
-             * buffer whose size the engine chose to hold it. */
-            unsigned v = (k < nw) ? w[k++] : 0u;
-            snprintf(piece, sizeof piece, "0x%08x", v);
-            break; }
-        case 'f': case 'F': case 'e': case 'E':
-        case 'g': case 'G': case 'a': case 'A': {
-            unsigned lo = (k < nw) ? w[k++] : 0u;
-            unsigned hi = (k < nw) ? w[k++] : 0u;
-            unsigned long long bits = ((unsigned long long)hi << 32) | lo;
-            double d;
-            memcpy(&d, &bits, sizeof d);
-            spec[m++] = conv; spec[m] = 0;
-            snprintf(piece, sizeof piece, spec, d);
-            break; }
-        default:
-            /* %n included, which nothing here has any business asking for.
-             * Say what was refused rather than writing through a pointer the
-             * format merely claimed was there. */
-            snprintf(piece, sizeof piece, "%%%c", conv);
-            break;
-        }
-        {
-            const char *sp = piece;
-            while (*sp) {
-                if (out && n + 1 < cap) out[n] = *sp;
-                n++; sp++;
-            }
-        }
-    }
-    if (out && cap) out[n < cap ? n : cap - 1] = 0;
-    return (int)n;
-}
-
-/* Ten words after the format: the trampoline's whole argument frame, and far
- * more than any of these calls actually uses. */
-#define GUEST_VA_WORDS(a0,a1,a2,a3,a4,a5,a6,a7,a8,a9) \
-    { (a0),(a1),(a2),(a3),(a4),(a5),(a6),(a7),(a8),(a9) }
-
-static int __cdecl sh_printf(const char *fmt,
-                             unsigned a0, unsigned a1, unsigned a2,
-                             unsigned a3, unsigned a4, unsigned a5,
-                             unsigned a6, unsigned a7, unsigned a8, unsigned a9)
-{
-    const unsigned w[10] = GUEST_VA_WORDS(a0,a1,a2,a3,a4,a5,a6,a7,a8,a9);
-    char buf[1024];
-    int n = guest_format(buf, sizeof buf, fmt, w, 10);
-    fprintf(stderr, "  [engine] %s", buf);
+    va_list ap; int n;
+    va_start(ap, fmt);
+    printf("  [engine] ");
+    n = vfprintf(stderr, fmt, ap);
+    va_end(ap);
     return n;
 }
 static int __cdecl sh_puts(const char *s)
@@ -647,27 +469,18 @@ static int __cdecl sh_puts(const char *s)
 /* sprintf writes into the engine's own buffer, but what it writes is often a
  * diagnostic on its way to a log that goes nowhere here.  Echoing it costs
  * nothing and is the cheapest window into what the engine thinks. */
-static int __cdecl sh_sprintf(char *buf, const char *fmt,
-                              unsigned a0, unsigned a1, unsigned a2,
-                              unsigned a3, unsigned a4, unsigned a5,
-                              unsigned a6, unsigned a7, unsigned a8, unsigned a9)
+static int __cdecl sh_sprintf(char *buf, const char *fmt, ...)
 {
-    const unsigned w[10] = GUEST_VA_WORDS(a0,a1,a2,a3,a4,a5,a6,a7,a8,a9);
-    /* Unbounded, exactly as `sprintf` is: the engine picked the buffer and the
-     * engine knows how big it made it.  What this restores is that the length
-     * written is the length i386 would have written, so that choice is sound
-     * again. */
-    int n = guest_format(buf, (size_t)-1, fmt, w, 10);
-    if (g_verbose) printf("  [engine sprintf] fmt<%s> -> %s\n",
-                          fmt ? fmt : "(null)", buf ? buf : "(null)");
+    va_list ap; int n;
+    va_start(ap, fmt);
+    n = vsprintf(buf, fmt, ap);
+    va_end(ap);
+    if (g_verbose) printf("  [engine sprintf] %s\n", buf);
     return n;
 }
-/* A `va_list` on i386 is a pointer into the caller's own stack frame, so what
- * the guest passes is the address of its argument words -- read them there. */
-static int __cdecl sh_vsprintf(char *buf, const char *fmt, gptr ap)
+static int __cdecl sh_vsprintf(char *buf, const char *fmt, va_list ap)
 {
-    const unsigned *w = (const unsigned *)GHOST(ap);
-    int n = guest_format(buf, (size_t)-1, fmt, w, w ? 16u : 0u);
-    if (g_verbose) printf("  [engine vsprintf] %s\n", buf ? buf : "(null)");
+    int n = vsprintf(buf, fmt, ap);
+    if (g_verbose) printf("  [engine vsprintf] %s\n", buf);
     return n;
 }

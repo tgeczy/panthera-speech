@@ -70,11 +70,8 @@ TREES = ("pantheratiger", "pantheraleopard")
 
 @pytest.fixture(params=TREES)
 def tree(request):
-    #: Through the package, not off `sys.path`.  Imported flat, the tree
-    #: module's own `from . import pantheratrees` has no parent package to
-    #: resolve against and the import fails outright.
-    import importlib
-    return importlib.import_module("synthDrivers._panthera." + request.param)
+    sys.path.insert(0, os.path.join(ADDON, "synthDrivers", "_panthera"))
+    return __import__(request.param)
 
 
 def test_the_config_folder_follows_nvdas_own(tree, tmp_path, monkeypatch):

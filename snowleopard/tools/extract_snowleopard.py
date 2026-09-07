@@ -65,23 +65,17 @@ import os
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-#: The `synthDrivers` folder, not `_panthera` inside it.  `_panthera` is a
-#: package, so its modules import each other relatively and cannot be
-#: reached by putting the package's own directory on `sys.path` -- that
-#: gives "attempted relative import with no known parent package".  Its
-#: parent is what has to be importable from.
-_DRIVERS = os.path.join(os.path.dirname(os.path.dirname(_HERE)),
-                        "panthera", "addon", "synthDrivers")
-_ADDON = os.path.join(_DRIVERS, "_panthera")
+_ADDON = os.path.join(os.path.dirname(os.path.dirname(_HERE)),
+                      "panthera", "addon", "synthDrivers", "_panthera")
 if not os.path.isdir(_ADDON):
     raise SystemExit(
         "this tool reads the disc with the add-on's own reader, and cannot "
         "find it at:\n  %s\nRun it from a clone of the repository, or use "
         "NVDA's Tools menu instead." % _ADDON)
-sys.path.insert(0, _DRIVERS)
+sys.path.insert(0, _ADDON)
 
-from _panthera import pantheradiscs                           # noqa: E402
-from _panthera import pantherasnowleopard                     # noqa: E402
+import pantheradiscs                                          # noqa: E402
+import pantherasnowleopard                                    # noqa: E402
 
 GENERATION = "snowleopard"
 

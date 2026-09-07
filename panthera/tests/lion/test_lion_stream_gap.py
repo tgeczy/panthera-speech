@@ -108,7 +108,7 @@ def _worstStarve(chunks):
 
 @pytest.mark.parametrize("wpm", RATES)
 def test_a_letter_arrives_without_a_hole_in_it(engine_tree, wpm):
-    from synthDrivers import lionspeech
+    import lionspeech
     if not os.path.isfile(lionspeech.HOST_EXE):
         pytest.skip("panthera_host.exe not built")
     chunks = _chunks(lionspeech.HOST_EXE, engine_tree, "O", "Alex", wpm)

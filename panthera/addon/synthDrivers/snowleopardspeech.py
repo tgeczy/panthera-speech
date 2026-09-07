@@ -15,21 +15,22 @@ does, talks the way 10.5 does, and every piece of that already existed; what
 it took was two bug fixes in code that had only ever met one of the two.
 `_panthera/pantherasnowleopard.py` has the table.
 """
-import subprocess                                             # noqa: F401
-
-# Imported out of the package for the reason `leopardspeech.py` sets out at
-# length: every NVDA add-on shares one `sys.modules`, a generic name here once
-# had Leopard speaking in Tiger's voices, and a package cannot collide in that
-# namespace at all.
 import os
-
-from ._panthera import bridge
-from ._panthera import pantheradriver, pantherasnowleopard
+import subprocess                                             # noqa: F401
+import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
+_ENGINE_DIR = os.path.join(_HERE, "_panthera")
+if _ENGINE_DIR not in sys.path:
+    sys.path.insert(0, _ENGINE_DIR)
+
+# Imported under a `panthera` prefix for the reason `leopardspeech.py` sets
+# out at length: every NVDA add-on shares one `sys.modules`, and a generic
+# name here once had Leopard speaking in Tiger's voices.
+import pantheradriver                                         # noqa: E402
+import pantherasnowleopard                                    # noqa: E402
 
 HOST_EXE = pantherasnowleopard.HOST_EXE
-HOST_DLL = pantherasnowleopard.HOST_DLL
 find_tree = pantherasnowleopard.find_tree
 engine_paths = pantherasnowleopard.engine_paths
 read_voices = pantherasnowleopard.read_voices
@@ -112,11 +113,3 @@ class SynthDriver(pantheradriver.PantheraDriver):
         dataless entries was arguable; three would not have been.
         """
         return pantherasnowleopard.usable()
-
-#: The class NVDA loads, which is this one everywhere except a secure screen.
-#:
-#: **Still one synthesizer, not two.**  NVDA finds one `SynthDriver` per
-#: module; this rebinds the name, it does not add an entry.  The name, the
-#: description and every stored setting are unchanged either way -- see
-#: `_panthera/bridge.py` for when the substitution happens and why.
-SynthDriver = bridge.driverFor(SynthDriver, "snowleopardspeech", _HERE, HOST_EXE, HOST_DLL)

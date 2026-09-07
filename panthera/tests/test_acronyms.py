@@ -33,7 +33,7 @@ import subprocess
 
 import pytest
 
-from synthDrivers._panthera import pantheraabbrev
+import pantheraabbrev
 
 
 # -- the rule -------------------------------------------------------------
@@ -181,7 +181,7 @@ def _render(proc, text):
 
 @pytest.fixture(scope="module")
 def host():
-    from synthDrivers import leopardspeech
+    import leopardspeech
     tree = leopardspeech.find_tree()
     if not tree:
         pytest.skip("no Leopard speech tree")

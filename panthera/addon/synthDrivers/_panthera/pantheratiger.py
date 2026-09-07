@@ -36,11 +36,9 @@ both need it, and so does anything run from a command line.
 """
 import os
 
-from . import dllhost
-
-from . import pantheratrees
-from .pantheratrees import (aac_available, config_base,  # noqa: F401
-                            is_tree)
+import pantheratrees
+from pantheratrees import (aac_available, config_base,  # noqa: F401
+                           is_tree)
 
 CONFIG_DIRNAME = os.path.join("macintalk", "tiger")
 
@@ -51,10 +49,6 @@ LEGACY_DIRNAMES = ("tigerspeech-data",)
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 HOST_EXE = os.path.join(_HERE, "panthera_host.exe")
-#: The same program, as a library, for the screens NVDA will not copy an
-#: executable to.  See `HostMixin._useLibrary`: which of the two is used
-#: is decided by whether the executable is there, and nothing else.
-HOST_DLL = os.path.join(_HERE, "panthera_host.dll")
 
 
 def config_dir():
@@ -145,13 +139,6 @@ def find_tree():
                     cands.append(f.read().strip())
             except OSError:
                 pass
-
-    #: The machine-wide folder, spelled the way NVDA's own is: a tree at
-    #: `%ProgramData%\macintalk\tiger` is read by SYSTEM on the sign-in
-    #: screen without NVDA having to copy it into `systemConfig` first.  It
-    #: goes after this user's own places and before the SAPI world's.
-    cands += pantheratrees.tree_candidates(
-        pantheratrees.common_dir(CONFIG_DIRNAME))
 
     #: And the SAPI driver's world, so data extracted there is found here --
     #: the same courtesy that driver already pays this folder, both ways now.
@@ -268,16 +255,10 @@ def explain():
     lines = []
     ok = True
 
-    # Either kind of host will do.  On a secure screen NVDA has not copied
-    # the executable -- it drops every `.exe` -- and the library beside it is
-    # what speaks there, so a report that only looked for the executable would
-    # call a working install broken on the one screen hardest to check.
     lines.append("host: %s %s"
                  % (HOST_EXE, "found" if os.path.isfile(HOST_EXE)
-                    else ("MISSING, but %s is there and will be used"
-                          % os.path.basename(HOST_DLL))
-                    if os.path.isfile(HOST_DLL) else "MISSING"))
-    if not dllhost.haveHost(HOST_EXE, HOST_DLL):
+                    else "MISSING"))
+    if not os.path.isfile(HOST_EXE):
         ok = False
 
     home = config_dir()
@@ -334,7 +315,7 @@ def explain():
 
 def usable():
     """-> True when there is an engine we could actually speak with."""
-    if not dllhost.haveHost(HOST_EXE, HOST_DLL):
+    if not os.path.isfile(HOST_EXE):
         return False
     tree = find_tree()
     if not tree:

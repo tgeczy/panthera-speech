@@ -25,6 +25,7 @@ missed.  The generations live in `GENERATIONS` below, and adding Snow Leopard
 or Lion is a table entry.
 """
 import os
+import sys
 import textwrap
 import threading
 
@@ -34,21 +35,24 @@ import gui
 import wx
 from logHandler import log
 
+_ADDON = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_ENGINE_DIR = os.path.join(_ADDON, "synthDrivers", "_panthera")
+if _ENGINE_DIR not in sys.path:
+    sys.path.insert(0, _ENGINE_DIR)
+
 # Finding the engines lives in the tree modules, not here: the drivers need
 # exactly the same answer, and two copies of a lookup is two chances to
 # disagree about where an engine is.
 #
-# Named absolutely rather than relatively because this is `globalPlugins`, not
-# `synthDrivers`; NVDA puts every add-on's `synthDrivers` folder on the real
-# `synthDrivers.__path__`, so the package is reachable from here by name.
-# That it is a package is the point.  Every NVDA add-on shares one
+# The `panthera` prefix is not tidiness.  Every NVDA add-on shares one
 # `sys.modules`, and while somebody still has the old `tigerspeech` or
 # `leopardspeech` add-on installed alongside this one, their private folders
-# are on `sys.path` too -- both holding a `leopardtree`.  Nothing here is
-# reached that way any more, so the fight cannot start.
-from synthDrivers._panthera import (diagnostics, pantheraleopard,
-                                    pantheralion, pantherasnowleopard,
-                                    pantheratiger)
+# are on `sys.path` too.  Both of those hold a `leopardtree`; a name no older
+# add-on ever used is what keeps this one out of that fight.
+import pantheralion                                           # noqa: E402
+import pantheraleopard                                        # noqa: E402
+import pantherasnowleopard                                    # noqa: E402
+import pantheratiger                                          # noqa: E402
 
 #: **One dialog covering every Macintosh speech add-on, not one each and not
 #: one that only mentions whichever add-on got there first.**
@@ -191,13 +195,7 @@ def _register_reporter(entry):
 
 
 def _engine_report():
-    """Every registered add-on's verdict, in one page. -> (lines, [missing])
-
-    Anything that failed recently is appended, because this field is the only
-    diagnostic channel a secure screen has: NVDA will not turn debug logging
-    on there and its log belongs to SYSTEM, but a read-only edit control can
-    be read back a line at a time by the person in front of it.
-    """
+    """Every registered add-on's verdict, in one page. -> (lines, [missing])"""
     lines, missing = [], []
     for r in globalVars.__dict__.get(_REPORTERS, []):
         try:
@@ -220,7 +218,6 @@ def _engine_report():
         if not ok:
             missing.append({"label": r["label"], "folder": folder,
                             "source": r["source"]})
-    lines.extend(diagnostics.lines())
     return lines, missing
 
 
@@ -381,7 +378,7 @@ you and would like the reminder back.
 """
 
 
-_SNOWLEOPARD_README = r"""Snow Leopard speech needs Apple's speech engine, which
+_SNOWLEOPARD_README = """Snow Leopard speech needs Apple's speech engine, which
 this add-on does not ship.
 
 The easiest way to get it is NVDA's Tools menu: "Mac OS X speech data...", then
@@ -608,7 +605,7 @@ def open_speech_data_dialog(select=None):
     """
     try:
         import gui
-        from synthDrivers._panthera import pantheramanager
+        import pantheramanager
         lines, _still_missing = _engine_report()
         pantheramanager.SpeechDataDialog.show(gui.mainFrame, GENERATIONS,
                                               lines, select=select)
@@ -631,22 +628,9 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
         super().__init__()
         self._menuItem = None
         self._conflicts = []
-        #: On a secure screen, the menu item yes, the automatic check no.
-        #:
-        #: This used to return outright here, written when the add-on could not
-        #: speak on a secure screen at all -- and it is the whole reason there
-        #: was no "Mac OS speech data" entry under Tools there.  NVDA was not
-        #: withholding it; we were.  outSPOKEN does the same thing for the same
-        #: reason and wants the same repair.
-        #:
-        #: The two halves want opposite answers.  The **timer** must not run:
-        #: it exists to offer extraction to somebody who has just installed the
-        #: add-on, and a dialog appearing by itself in front of a password box
-        #: is the last thing anyone wants.  The **menu item** must be there: a
-        #: secure screen is precisely where speech fails for a reason nobody
-        #: can see, and this report is the only thing that says which folder
-        #: was looked in and what was missing.
-        secure = bool(globalVars.appArgs.secure)
+        if globalVars.appArgs.secure:
+            log.info("Panthera: secure mode, not checking for the engines")
+            return
 
         # The placeholder synthesizer's route to the tool.  Left here rather
         # than imported, so a driver never has to know whether this plugin has
@@ -689,10 +673,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
                 owner = True
         if owner:
             self._addMenuItem()
-        if secure:
-            log.debug("Panthera: secure mode, so the engine check is not armed")
-            return
-        log.debug("Panthera: engine check armed")
+        log.info("Panthera: engine check armed")
         threading.Timer(6.0, self._check).start()
 
     def _covered(self, gen):
@@ -712,7 +693,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
             self._menuItem = sysTrayIcon.toolsMenu.Append(
                 wx.ID_ANY, self.MENU_LABEL, self.MENU_HELP)
             sysTrayIcon.Bind(wx.EVT_MENU, self._onMenu, self._menuItem)
-            log.debug("Panthera: added the Tools menu item")
+            log.info("Panthera: added the Tools menu item")
         except Exception:
             # Never fatal: the add-on still speaks without a menu entry, and
             # global plugins load while the GUI is still assembling itself.
@@ -755,7 +736,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
             # to act on it. An import error here must not cost the user the
             # answer they came for, so the old box is still the fallback.
             try:
-                from synthDrivers._panthera import pantheramanager
+                import pantheramanager
                 pantheramanager.SpeechDataDialog.show(
                     gui.mainFrame, GENERATIONS, lines)
                 return
@@ -830,57 +811,21 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
         """One generation: log the verdict, and join the dialog if it is bare."""
         tree = gen["tree"]
         ok, lines = tree.explain()
-        #: **One line at INFO when it works; the whole report only when it
-        #: does not.**  Four generations times a ten-line report of paths,
-        #: folder listings and library locations, on every start, at the level
-        #: a stable NVDA shows by default, reads exactly like debugging left
-        #: on -- Andre said as much within a day of 2.0.1.  A working engine
-        #: earns one line naming what it found; the report stays available at
-        #: debug, and a generation that is NOT ready keeps it at INFO, because
-        #: that is the one time somebody will need it.
-        if ok:
-            found = [ln.strip() for ln in lines if ln.strip().startswith("voices:")]
-            log.info("Panthera: %s engine ready%s"
-                     % (gen["key"], (" -- " + found[0]) if found else ""))
-            log.debug("Panthera: %s engine report\n  %s"
-                      % (gen["key"], "\n  ".join(lines)))
-        else:
-            log.info("Panthera: %s engine NOT ready\n  %s"
-                     % (gen["key"], "\n  ".join(lines)))
-        folder = tree.config_dir()
-        #: **The README goes in whether or not the engine is ready.**  It was
-        #: written only on the way to the missing-engine dialog, below the
-        #: `if ok` -- so a generation that has always had data never got one.
-        #: Tomi found exactly that: Tiger and Leopard carried a README.txt
-        #: because they had each once been empty, Snow Leopard and Lion had
-        #: none because they never were.
-        #:
-        #: They stay one per generation rather than one shared file, because
-        #: each names the command-line extractor for *its own* disc; a single
-        #: README would have to name four and leave the reader working out
-        #: which paragraph is theirs.
-        #:
-        #: An existing folder only, when the engine is ready: a generation
-        #: whose tree lives somewhere else entirely -- `%ProgramData%`, or the
-        #: SAPI world -- should not have an empty folder conjured in NVDA's
-        #: configuration directory just to hold a note.
-        if not ok:
-            os.makedirs(folder, exist_ok=True)
-        if os.path.isdir(folder):
-            readme = os.path.join(folder, "README.txt")
-            if not os.path.exists(readme):
-                try:
-                    with open(readme, "w", encoding="utf-8") as f:
-                        f.write(gen["readme"])
-                except OSError:
-                    log.debugWarning("Panthera: could not write %s" % readme,
-                                     exc_info=True)
+        log.info("Panthera: %s engine %s\n  %s"
+                 % (gen["key"], "ready" if ok else "NOT ready",
+                    "\n  ".join(lines)))
         if ok:
             return
+        folder = tree.config_dir()
         if os.path.exists(os.path.join(folder, _MARKER)):
             log.info("Panthera: not asking about %s, %s exists in %s"
                      % (gen["key"], _MARKER, folder))
             return
+        os.makedirs(folder, exist_ok=True)
+        readme = os.path.join(folder, "README.txt")
+        if not os.path.exists(readme):
+            with open(readme, "w", encoding="utf-8") as f:
+                f.write(gen["readme"])
         first = _register_missing({
             "label": gen["label"],
             "folder": folder,
@@ -919,7 +864,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
         folder -- which is what this dialog did before there was better.
         """
         try:
-            from synthDrivers._panthera import pantheramanager
+            import pantheramanager
             lines, _still_missing = _engine_report()
             pantheramanager.SpeechDataDialog.show(
                 gui.mainFrame, GENERATIONS, lines,

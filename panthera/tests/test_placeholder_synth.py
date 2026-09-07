@@ -37,8 +37,7 @@ def _drivers():
     import importlib
     out = {}
     for name, _tree in GENERATIONS + [("pantheraspeech", None)]:
-        out[name] = importlib.import_module(
-            "synthDrivers." + name).SynthDriver
+        out[name] = importlib.import_module(name).SynthDriver
     return out
 
 
@@ -49,8 +48,7 @@ def usable(monkeypatch):
 
     def setUsable(**flags):
         for name, treeName in GENERATIONS:
-            tree = importlib.import_module(
-                "synthDrivers._panthera." + treeName)
+            tree = importlib.import_module(treeName)
             monkeypatch.setattr(tree, "usable",
                                 lambda v=flags.get(name, False): v)
     return setUsable
@@ -94,7 +92,7 @@ def test_the_placeholder_never_loads(usable):
     the only failure that really matters.
     """
     usable()
-    from synthDrivers import pantheraspeech
+    import pantheraspeech
     with pytest.raises(RuntimeError):
         pantheraspeech.SynthDriver()
 
@@ -108,57 +106,7 @@ def test_a_generation_that_raises_still_leaves_the_placeholder(monkeypatch,
     def boom():
         raise OSError("the folder is not readable")
 
-    monkeypatch.setattr(
-        importlib.import_module("synthDrivers._panthera.pantheraleopard"),
-        "usable", boom)
-    from synthDrivers import pantheraspeech
+    monkeypatch.setattr(importlib.import_module("pantheraleopard"), "usable",
+                        boom)
+    import pantheraspeech
     assert pantheraspeech.SynthDriver.check() is True
-
-
-# ---------------------------------------------------------------------------
-# "Not installed" and "installed and out of reach" are different problems.
-#
-# `is_tree` asks `os.path.isdir` about `Speech\Voices` inside a folder, and
-# access denied and not-there both answer False -- so a folder somebody
-# pointed the SAPI tool at, inside a profile this account cannot read, hides
-# every generation and produces "no speech data is installed yet".  That is
-# confident, wrong, and leaves them nothing to do about it.  Reachable today,
-# and the one case Tomi identified where a person is left with no speech and
-# no explanation.
-# ---------------------------------------------------------------------------
-
-def test_a_folder_that_will_not_open_says_so(monkeypatch, usable):
-    """The refusal names the folder and what Windows said about it."""
-    import importlib
-    import os
-    usable()
-    trees = importlib.import_module("synthDrivers._panthera.pantheratrees")
-    real = os.listdir
-
-    def listdir(path):
-        if "macintalk" in str(path).lower():
-            raise PermissionError(13, "Access is denied")
-        return real(path)
-
-    monkeypatch.setattr(trees.os, "listdir", listdir)
-    from synthDrivers import pantheraspeech
-    with pytest.raises(RuntimeError) as raised:
-        pantheraspeech.SynthDriver()
-    message = str(raised.value)
-    assert "cannot be opened" in message
-    assert "Access is denied" in message
-    # And it points somewhere: a message that only says no is not a fix.
-    assert "ProgramData" in message
-
-
-def test_a_folder_that_is_simply_absent_stays_the_ordinary_message(usable):
-    """A first run has no data anywhere, and that is not a permission problem.
-
-    Reporting one as the other would send everybody who has not extracted
-    anything yet hunting for a permissions fault that is not there.
-    """
-    usable()
-    from synthDrivers import pantheraspeech
-    with pytest.raises(RuntimeError) as raised:
-        pantheraspeech.SynthDriver()
-    assert "no Mac OS X speech data is installed yet" in str(raised.value)

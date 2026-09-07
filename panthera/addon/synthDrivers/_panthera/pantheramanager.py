@@ -25,32 +25,13 @@ import wx
 from logHandler import log
 import ui
 
-from . import pantheradiscs
+import pantheradiscs
 
 #: How much of the way through before saying so out loud.
 #:
 #: Every percent would be unusable and none would be worse.  Quarters, and the
 #: label updates silently in between for anyone reading it with review keys.
 ANNOUNCE_EVERY = 25
-
-#: What the message boxes raised from this dialog call themselves.  The same
-#: words as the dialog's own title, so they read as coming from it.
-# Translators: the title of the Mac OS X speech data dialog and its messages.
-_DIALOG_TITLE = _("Mac OS X speech data")
-
-
-def _onSecureScreen():
-    """-> True on NVDA's secure screens, and True if it cannot be told.
-
-    Unknown counts as secure on purpose: everything gated on this is a thing
-    it is fine to go without, and the sign-in desktop is the one place where
-    being wrong has consequences.
-    """
-    try:
-        import globalVars
-        return bool(globalVars.appArgs.secure)
-    except Exception:
-        return True
 
 
 def _folder_for(key, generations):
@@ -119,16 +100,6 @@ class SpeechDataDialog(wx.Dialog):
                                                  "folder"))
         self.openButton.Bind(wx.EVT_BUTTON, self.onOpen)
         row.Add(self.openButton, 0, wx.ALL, 4)
-        # **Only where somebody could have asked for it.**  On a secure screen
-        # NVDA is SYSTEM on the sign-in desktop, and a button that reaches onto
-        # the network from there is not one this add-on should offer; the
-        # check refuses as well, so the guard does not live only here.
-        self.updateButton = None
-        if not _onSecureScreen():
-            # Translators: a button that asks whether a newer add-on exists.
-            self.updateButton = wx.Button(pad, label=_("Check for &updates"))
-            self.updateButton.Bind(wx.EVT_BUTTON, self.onCheckUpdates)
-            row.Add(self.updateButton, 0, wx.ALL, 4)
         sizer.Add(row, 0, wx.ALL, 2)
 
         status = wx.BoxSizer(wx.HORIZONTAL)
@@ -389,130 +360,6 @@ class SpeechDataDialog(wx.Dialog):
             os.startfile(folder)
         except OSError:
             log.error("Panthera: could not open %s" % folder, exc_info=True)
-
-    def onCheckUpdates(self, evt):
-        """Ask GitHub what the newest published release is.
-
-        **Off the UI thread**, because the alternative is a frozen window for
-        however long the network takes, and a frozen window is what a screen
-        reader reads as nothing at all.  The button is disabled meanwhile so
-        the question cannot be asked twice, and the status line says what is
-        happening for anyone who cannot see the button go grey.
-        """
-        from . import updates
-
-        if self.updateButton is None:
-            return
-        self.updateButton.Enable(False)
-        # Translators: shown while the add-on asks GitHub about new versions.
-        self.statusText.SetLabel(_("Checking for updates..."))
-
-        installed = updates.installed_version()
-
-        def ask():
-            tag, detail, addon = updates.latest_release()
-            wx.CallAfter(self._updateAnswer, installed, tag, detail, addon)
-
-        threading.Thread(target=ask, daemon=True,
-                         name="panthera-update-check").start()
-
-    def _updateAnswer(self, installed, tag, detail, addon):
-        """Back on the UI thread with whatever the check found.
-
-        **The update is fetched and handed to NVDA, not linked to.**  A page
-        of assets is homework: find the right file among several, download
-        it, find the download, open it.  NVDA installs a `.nvda-addon` the
-        moment one is opened -- through its own dialog, which is still the
-        thing that asks -- so the button's yes downloads the asset to %TEMP%
-        and opens it, the way TGSpeechBox's updater does.  The page is only
-        the fallback for a release that carries no such asset.
-        """
-        from . import updates
-
-        if self.updateButton is not None:
-            self.updateButton.Enable(True)
-        self.statusText.SetLabel("")
-        if tag is None:
-            # Translators: shown when the update check could not reach GitHub.
-            gui.messageBox(_("Could not check for updates:\n\n%s") % detail,
-                           _DIALOG_TITLE, wx.OK | wx.ICON_WARNING)
-            return
-        if not updates.is_newer(tag, installed):
-            # Translators: shown when the installed add-on is the newest one.
-            gui.messageBox(
-                _("You have the newest version, %s.") % installed,
-                _DIALOG_TITLE, wx.OK | wx.ICON_INFORMATION)
-            return
-        newest = ".".join(str(n) for n in updates.parse_version(tag))
-        if not addon:
-            # Translators: shown when a newer add-on exists; %s are versions.
-            answer = gui.messageBox(
-                _("Version %s is available. You have %s.\n\n"
-                  "Open the download page?") % (newest, installed),
-                _DIALOG_TITLE, wx.YES_NO | wx.ICON_INFORMATION)
-            if answer == wx.YES:
-                try:
-                    os.startfile(detail)
-                except OSError:
-                    log.error("Panthera: could not open %s" % detail,
-                              exc_info=True)
-            return
-        # Translators: shown when a newer add-on exists; %s are versions.
-        answer = gui.messageBox(
-            _("Version %s is available. You have %s.\n\n"
-              "Download and install it now? NVDA will ask before "
-              "installing.") % (newest, installed),
-            _DIALOG_TITLE, wx.YES_NO | wx.ICON_INFORMATION)
-        if answer != wx.YES:
-            return
-        if self.updateButton is not None:
-            self.updateButton.Enable(False)
-        # Translators: shown while the new add-on version downloads.
-        self.statusText.SetLabel(_("Downloading version %s...") % newest)
-
-        def get():
-            try:
-                path = updates.fetch(addon)
-            except Exception as e:
-                wx.CallAfter(self._updateFetched, None,
-                             str(e) or e.__class__.__name__, detail)
-                return
-            wx.CallAfter(self._updateFetched, path, None, detail)
-
-        threading.Thread(target=get, daemon=True,
-                         name="panthera-update-fetch").start()
-
-    def _updateFetched(self, path, why, page):
-        """The download finished, or explained itself.  UI thread."""
-        if self.updateButton is not None:
-            self.updateButton.Enable(True)
-        self.statusText.SetLabel("")
-        if path is None:
-            # Translators: the update download failed; %s says why.
-            answer = gui.messageBox(
-                _("The update could not be downloaded:\n\n%s\n\n"
-                  "Open the download page instead?") % why,
-                _DIALOG_TITLE, wx.YES_NO | wx.ICON_WARNING)
-            if answer == wx.YES:
-                try:
-                    os.startfile(page)
-                except OSError:
-                    log.error("Panthera: could not open %s" % page,
-                              exc_info=True)
-            return
-        try:
-            # NVDA owns the .nvda-addon association: opening the file raises
-            # its own install dialog, which is where the person says yes.
-            os.startfile(path)
-        except OSError:
-            log.error("Panthera: could not open %s" % path, exc_info=True)
-            # Translators: the downloaded update could not be opened; %s is
-            # where it was saved.
-            gui.messageBox(
-                _("The update was downloaded but could not be opened.\n\n"
-                  "It is saved at:\n%s\n\nOpen it yourself to install "
-                  "it.") % path,
-                _DIALOG_TITLE, wx.OK | wx.ICON_WARNING)
 
     def onClose(self, evt):
         if self._busy:

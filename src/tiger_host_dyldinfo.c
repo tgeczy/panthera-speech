@@ -340,11 +340,6 @@ static void do_bind(image *im, const fixup *f, void *ctx)
     if (f->type != REBASE_TYPE_POINTER) { b->c.skipped++; return; }
 
     target = lookup_shim(f->sym);
-#ifdef TIGER_UC
-    /* Compressed binds need the same host/guest bridge as indirect slots.
-     * A native function address is not executable in the guest. */
-    if (target) target = uc_bind_target(f->sym, target);
-#endif
     /* Self first, and for the weak stream that is not an optimisation but the
      * whole answer: weak binding is C++ coalescing, so those symbols are
      * *defined here* -- 184 of Lion's 188 -- and `lookup_in` is what finds
