@@ -37,17 +37,6 @@ class EngineSmokeTest : Instrumentation() {
         if (android.os.Build.VERSION.SDK_INT >= 30) slider.stateDescription.toString()
         else slider.contentDescription.toString().substringAfter(", ")
 
-    /** The settings page's radio groups, by the name each was built with. */
-    private fun radios(activity: Activity, name: String): android.widget.RadioGroup? =
-        descendants(activity.window.decorView).filterIsInstance<android.widget.RadioGroup>()
-            .firstOrNull { it.tag == name }
-    private fun checkedIndex(group: android.widget.RadioGroup): Int =
-        (0 until group.childCount).indexOfFirst { (group.getChildAt(it) as android.widget.RadioButton).isChecked }
-    /** Click an option the way a finger would, so the change counts as the user's. */
-    private fun pick(group: android.widget.RadioGroup, index: Int) {
-        (group.getChildAt(index) as android.widget.RadioButton).performClick()
-    }
-
     private fun checkNativeGeneration(gen: String) {
         val result = Bundle()
         try {
@@ -152,10 +141,9 @@ class EngineSmokeTest : Instrumentation() {
             }
             prefs.registerOnSharedPreferenceChangeListener(listener)
             runOnMainSync {
-                // The voice list lives in a dialog now (twenty-three voices
-                // inline was twenty-three swipes to get past), so choose the
-                // way the dialog does and check the button reports it.
-                PantheraEngine.chooseVoice(targetContext, voice)
+                val spinner = descendants(activity.window.decorView).filterIsInstance<android.widget.Spinner>()
+                    .first { it.contentDescription == "Voice" }
+                spinner.setSelection(voices.indexOfFirst { it.id == voice.id })
                 if (PantheraEngine.activeGen(targetContext) == voice.gen &&
                     (PantheraEngine.defaultVoiceName(targetContext, voice.gen) ?: voice.name) == voice.name) chosen.countDown()
             }
@@ -181,10 +169,9 @@ class EngineSmokeTest : Instrumentation() {
             runOnMainSync {
                 val views = descendants(activity.window.decorView)
                 val sliders = views.filterIsInstance<android.widget.SeekBar>()
-                val phrasing = views.filterIsInstance<android.widget.RadioGroup>().first { it.tag == "Engine phrase breaks" }
+                val phrasing = views.filterIsInstance<android.widget.Spinner>().first { it.contentDescription == "Engine phrase breaks" }
                 check(phrasing.isEnabled == PantheraEngine.supportsPhrasing(choices[i].gen))
-                check((0 until phrasing.childCount).all { phrasing.getChildAt(it).isEnabled == phrasing.isEnabled })
-                check(checkedIndex(phrasing) == if (i == 0) 1 else 3)
+                check(phrasing.selectedItemPosition == if (i == 0) 1 else 3)
                 val commands = views.filterIsInstance<android.widget.CheckBox>().first { it.text == "Accept embedded speech commands" }
                 val abbreviations = views.filterIsInstance<android.widget.CheckBox>().first { it.text == "Expand abbreviations" }
                 check(commands.isChecked == (i == 0))
@@ -203,20 +190,19 @@ class EngineSmokeTest : Instrumentation() {
                 check(PantheraEngine.settings(targetContext).volume == 37 + i*25)
                 check(sliders[2].progress == 35 + i*30)
                 check(PantheraEngine.settings(targetContext).inflection == 35 + i*30)
-                check(checkedIndex(views.filterIsInstance<android.widget.RadioGroup>()
-                    .first { it.tag == "How to read numbers" }) == if (i == 0) 2 else 1)
-                val voiceButton = views.filterIsInstance<android.widget.Button>()
-                    .first { it.text.startsWith("Voice: ") }
-                check(voiceButton.text.toString().contains(choices[i].name)) {
-                    "Voice button says '${voiceButton.text}', expected ${choices[i].name}"
-                }
+                check(views.filterIsInstance<android.widget.Spinner>()
+                    .first { it.contentDescription == "How to read numbers" }.selectedItemPosition == if (i == 0) 2 else 1)
+                val spinner = views.filterIsInstance<android.widget.Spinner>().first { it.contentDescription == "Voice" }
                 prefs.edit().putInt(PantheraEngine.settingKey("volume", choices[i].gen), 38 + i*25).commit()
-                check(descendants(activity.window.decorView).any { it === voiceButton })
+                check(descendants(activity.window.decorView).any { it === spinner })
                 check(sliderValue(sliders[1]) == "${38 + i*25} percent")
             }
             if (PantheraEngine.supportsPhrasing(choices[i].gen)) {
                 fun pickPhrase(position: Int) {
-                    runOnMainSync { pick(radios(activity, "Engine phrase breaks")!!, position) }
+                    runOnMainSync {
+                        descendants(activity.window.decorView).filterIsInstance<android.widget.Spinner>()
+                            .first { it.contentDescription == "Engine phrase breaks" }.setSelection(position)
+                    }
                     waitForIdleSync()
                     check(PantheraEngine.settings(targetContext).phrasing == PantheraEngine.PHRASING_VALUES[position])
                 }
@@ -261,7 +247,7 @@ class EngineSmokeTest : Instrumentation() {
         val rateKey = PantheraEngine.settingKey("rate_wpm", generation)
         val baselineVolume = if (PantheraEngine.activeGen(targetContext) == "tiger") 100 else 50
         prefs.edit().putBoolean("override_voice", false).putInt(volumeKey, baselineVolume)
-            .putInt(rateKey, 0).putString("voice_filter", "all").commit()
+            .putInt(rateKey, 0).commit()
         try {
             // Generated by the independent desktop Python abbreviation rules;
             // these are text fixtures only, with no engine files or recordings.
@@ -293,10 +279,10 @@ class EngineSmokeTest : Instrumentation() {
                     check(sample.contentDescription.isNullOrEmpty()) {
                         "The sample's associated label must not replace its editable text"
                     }
-                    for (control in views.filter { it is android.widget.SeekBar || it is android.widget.RadioGroup || it is android.widget.EditText }) {
+                    for (control in views.filter { it is android.widget.SeekBar || it is android.widget.Spinner || it is android.widget.EditText }) {
                         check(control.id != android.view.View.NO_ID)
                         check(views.filterIsInstance<android.widget.TextView>().any { it !== control && it.labelFor == control.id }) {
-                            "Control has no associated label: ${control.contentDescription ?: control.tag}"
+                            "Control has no associated label: ${control.contentDescription}"
                         }
                     }
                     check(sliders.size == 3)

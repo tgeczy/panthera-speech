@@ -110,13 +110,7 @@ class PantheraTtsService : TextToSpeechService() {
             Log.w("PantheraTts", "not verified -> error"); callback.error(TextToSpeech.ERROR_SERVICE); return
         }
 
-        // The voice chosen in settings wins unless the user says otherwise.
-        // A screen reader asks this engine for a default voice once, when it
-        // connects, and sends that name with every request afterwards; while
-        // this defaulted off, a voice chosen in settings did not take effect
-        // until the engine was next restarted, which is indistinguishable
-        // from the setting being broken.
-        val voice = PantheraEngine.voiceById(this, if (PantheraEngine.prefs(this).getBoolean("override_voice", true))
+        val voice = PantheraEngine.voiceById(this, if (PantheraEngine.prefs(this).getBoolean("override_voice", false))
             onGetDefaultVoiceNameFor(null, null, null) else request.voiceName)
             ?: PantheraEngine.voiceById(this, onGetDefaultVoiceNameFor(null, null, null))
             ?: run { Log.w("PantheraTts", "no voice for '${request.voiceName}' -> error")
