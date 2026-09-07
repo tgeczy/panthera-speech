@@ -23,6 +23,7 @@ internal object PantheraLatencyCheck {
         @Volatile var gateMs = -1L
         @Volatile var soundMs = -1L
         @Volatile var error = false
+        @Volatile var outcome = "pending"
         var bytes = 0
         fun elapsed() = (SystemClock.elapsedRealtimeNanos() - at) / 1_000_000
     }
@@ -91,9 +92,16 @@ internal object PantheraLatencyCheck {
             tts.setSpeechRate(2.15f)
             tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                 override fun onStart(id: String) {}
-                override fun onDone(id: String) { samples[id]?.done?.countDown() }
-                override fun onError(id: String) { samples[id]?.let { it.error = true; it.done.countDown() } }
-                override fun onStop(id: String, interrupted: Boolean) { samples[id]?.done?.countDown() }
+                override fun onDone(id: String) { samples[id]?.let { it.outcome = "done"; it.done.countDown() } }
+                override fun onError(id: String) { onError(id, TextToSpeech.ERROR) }
+                override fun onError(id: String, errorCode: Int) {
+                    Log.w("PantheraLatency", "$id error=$errorCode")
+                    samples[id]?.let { it.error = true; it.outcome = "error=$errorCode"; it.done.countDown() }
+                }
+                override fun onStop(id: String, interrupted: Boolean) {
+                    Log.i("PantheraLatency", "$id stopped interrupted=$interrupted")
+                    samples[id]?.let { it.outcome = "stopped interrupted=$interrupted"; it.done.countDown() }
+                }
                 override fun onAudioAvailable(id: String, audio: ByteArray) {
                     samples[id]?.let {
                         if (it.firstMs < 0) it.firstMs = it.elapsed()
@@ -115,7 +123,7 @@ internal object PantheraLatencyCheck {
             fun complete(id: String, text: String) {
                 val s = say(id, text)
                 check(s.done.await(12, TimeUnit.SECONDS)) { "$id completion timed out" }
-                check(!s.error && s.bytes > 0) { "$id failed/dropped" }
+                check(!s.error && s.bytes > 0 && s.outcome == "done") { "$id failed/dropped: ${s.outcome}, bytes=${s.bytes}" }
                 // Short utterances can finish before the marker is delivered;
                 // retain -1 in that case instead of inventing a playback time.
                 val line = "$id first=${s.firstMs} gate=${s.gateMs} sound=${s.soundMs} done=${s.elapsed()} bytes=${s.bytes}"

@@ -14,7 +14,8 @@ def main():
     parser.add_argument("--serial", required=True)
     parser.add_argument("--adb", default="adb")
     parser.add_argument("--label", default="latency")
-    parser.add_argument("--mode", choices=["true", "native", "rapid", "lifecycle", "audio"], default="true")
+    parser.add_argument("--no-install", action="store_true", help="Use the APK already installed, avoiding package-replacement callbacks")
+    parser.add_argument("--mode", choices=["true", "native", "rapid", "lifecycle", "audio", "reuse"], default="true")
     args = parser.parse_args()
     adb = [args.adb, "-s", args.serial]
     package = "com.pantheraspeech.tts"
@@ -26,7 +27,7 @@ def main():
     print(f"Device {args.serial}; diagnostics: {output}", flush=True)
     logs = None
     try:
-        for path in [apk / "debug/app-debug.apk", apk / "androidTest/debug/app-debug-androidTest.apk"]:
+        for path in ([] if args.no_install else [apk / "debug/app-debug.apk", apk / "androidTest/debug/app-debug-androidTest.apk"]):
             subprocess.run(adb + ["install", "-r", str(path)], check=True)
         with (output / "logcat.txt").open("wb") as log:
             logs = subprocess.Popen(adb + ["logcat", "-T", "1", "-b", "main,system,crash,events",
@@ -37,7 +38,8 @@ def main():
             (output / "result.txt").write_bytes(result.stdout + result.stderr)
             print(result.stdout.decode(errors="replace"), flush=True)
             result.check_returncode()
-            expected = {"lifecycle": b"PASS worker ownership", "audio": b"PASS: sliders"}.get(args.mode, b"PASS latency probe")
+            expected = {"lifecycle": b"PASS worker ownership", "audio": b"PASS: sliders",
+                        "reuse": b"PASS completed renderer reuse"}.get(args.mode, b"PASS latency probe")
             if expected not in result.stdout or b"FAIL" in result.stdout:
                 raise RuntimeError(f"Latency test failed; see {output}")
     finally:

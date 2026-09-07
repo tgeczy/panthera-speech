@@ -4,10 +4,15 @@ Run `tools/android_latency_check.py --serial DEVICE --mode MODE` from a built
 Android tree. The runner installs the debug app and test APK, captures main,
 system, crash and event logs continuously, and restores preferences byte for
 byte even after a failed check. Each command targets one explicit device.
+Use `--no-install` when testing the installed build to keep package replacement
+and the screen reader's engine reconnection out of the measured run.
 
 - `lifecycle`: request cancellation before attachment, active cancellation,
   delayed cancellation after completion, and eight real Binder retire/rebind
   cycles. A stale worker identity must not retire its replacement.
+- `reuse`: leave completed PCM unread, cancel the request, and require the same
+  worker Binder and exact replacement PCM for four cycles per generation.
+  This uses the normal 180 wpm reference rate; it is a lifecycle check.
 - `audio`: the existing audio regression suite, including installed generations,
   reference WAVs, settings, volume, breaths, playback and cancellation.
 - `native`: warm streaming through the worker IPC; first PCM is not playback.
@@ -27,7 +32,35 @@ owner. The phone rapid run has zero scheduled automatic service restarts:
 Both rapid runs report zero synthesis errors, but miss almost every navigation
 deadline. Phone Alex's final replacement playback is 471/526 ms, watch Alex's
 3225/4614 ms (150/100 ms cadence). These are failures of the latency target.
-The app still uses Unicorn; translator experiments are separate.
+Those baseline measurements used Unicorn.
+
+The experimental Box APK plus completed-renderer reuse was also measured on
+September 7. During playback, Android can still be accepting queued PCM after
+native synthesis finishes. A stop now checks the completed renderer and keeps
+it warm. Start must have been acknowledged for that particular request;
+otherwise an idle result could describe the preceding utterance.
+
+| Device / voice | Playback before next request, 150 ms | 100 ms |
+| --- | ---: | ---: |
+| Nothing Phone 3 / Fred | 30/30 | 30/30 |
+| Nothing Phone 3 / Alex | 30/30 | 0/30 |
+| Pixel Watch 2 / Fred | 28/30 | 23/30 |
+| Pixel Watch 2 / Alex | 0/30 | 0/30 |
+
+All bursts reported zero synthesis errors. The phone's final Alex replacement
+began playback at 83/250 ms, the watch's at 697/1173 ms. These are individual
+runs, not guaranteed limits. Unfinished synthesis still requires retirement;
+the fastest repeated interruptions remain a release blocker. Whole input
+paragraphs are preserved, including internal sentence boundaries and breaths.
+
+The original Unicorn backend passed completed-renderer reuse at 180 wpm on
+both devices. A separate control exposed a Tiger Fred failure at 387 wpm on
+"Restart with debug logging enabled." through direct native rendering, without
+the new completion query. The same text passes at 180 wpm; the Windows CLI
+passes at 387, though that uses a different entry path. Keep this as a separate
+unresolved high-rate case, rather than treating a reuse-test failure as its
+diagnosis. The direct device check
+accepts `nativeGeneration`, `nativeVoice`, `nativeText`, and `nativeWpm`.
 
 Android keeps a disconnected service binding active. The owner must unbind;
 intentional shutdown now does this before killing the private worker, then

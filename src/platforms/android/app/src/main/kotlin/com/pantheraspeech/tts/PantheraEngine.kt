@@ -292,7 +292,13 @@ object PantheraEngine {
     fun isOpen(): Boolean = worker != null
 
     fun <T> withSynthesis(block: () -> T): T = synchronized(lock) {
-        val owned = PantheraRequest<IPantheraWorker>(PantheraWorkers::retire)
+        val owned = PantheraRequest<IPantheraWorker>(PantheraWorkers::retire) { api ->
+            // Playback can remain queued after synthesis has already finished.
+            // Preserve that warm worker; only unfinished synthesis needs death.
+            val complete = try { api.renderComplete() } catch (_: Exception) { false }
+            if (complete) android.util.Log.i("PantheraEngine", "Keeping completed engine worker after playback stop")
+            complete
+        }
         check(request == null) { "Nested synthesis request" }
         request = owned
         try { block() } finally {
@@ -357,6 +363,7 @@ object PantheraEngine {
             if (!owned.attach(next)) return@synchronized -1
             next.start(voice.dir, voice.creator, voice.voiceId, text, wpm,
                 snapshot.engineVolume(voice.gen), voice.gen, snapshot.numbers, snapshot.expandAbbreviations, snapshot.inflection)
+                .also { if (it == 0) owned.started() }
         } catch (e: Exception) {
             android.util.Log.e("PantheraEngine", "Speech failed", e); -1
         }

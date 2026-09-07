@@ -1,7 +1,7 @@
 // Raw JNI binding to libpanthera.so -- the emulated Mac OS X speech engine.
 // Not thread-safe: the one process-global engine must be driven by one caller
-// at a time (PantheraEngine serialises render; stop is the deliberate
-// exception, so it can interrupt a render in progress).
+// at a time. Only the stop flag and read-only completion query may be used
+// concurrently; neither enters guest code.
 package com.pantheraspeech.tts
 
 object PantheraNative {
@@ -33,6 +33,10 @@ object PantheraNative {
     /** Fill [out] with up to out.size int16 samples produced so far; returns the
      * count (0 when the utterance is finished).  Blocks briefly for more. */
     external fun nativePull(out: ShortArray): Int
+
+    /** Synthesis and callbacks ended, independently of PCM playback/draining.
+     * Read-only; safe on the cancellation thread after nativeSpeakStart returns. */
+    external fun nativeRenderComplete(): Boolean
 
     /** Ask the engine to stop the utterance in progress; makes a blocked
      * nativeRender / nativePull return early.  Safe from another thread. */

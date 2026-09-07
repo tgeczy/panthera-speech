@@ -304,6 +304,11 @@ int panthera_speak_start(const char *voiceDir, unsigned creator, int voiceId,
     return err;   /* synthesis now runs on the engine's worker; drain with pull */
 }
 
+int panthera_render_complete(void)
+{
+    return g_pt_ready && (g_stopped || (g_defer_arm && g_pcm_n)) && pacer_idle();
+}
+
 int panthera_pull(short *out, int maxSamples)
 {
     int idle = 0;
@@ -312,7 +317,7 @@ int panthera_pull(short *out, int maxSamples)
      * on this thread. */
     if (!g_pt_ready || maxSamples <= 0) return 0;
     for (;;) {
-        int finished = (g_stopped || (g_defer_arm && g_pcm_n)) && pacer_idle();
+        int finished = panthera_render_complete();
         unsigned end = g_pcm_n;
         /* Match serve mode: the newest probe slice may still be overwritten. */
         if (!finished) end = end > STREAM_LOOKBEHIND ? end - STREAM_LOOKBEHIND : 0;

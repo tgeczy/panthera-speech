@@ -49,6 +49,11 @@ int  panthera_speak_start(const char *voiceDir, unsigned creator, int voiceId,
                           const char *text, int wpm);
 int  panthera_pull(short *out, int maxSamples);
 
+/* True when synthesis and its audio callbacks are finished, even if the caller
+ * has not consumed all PCM. Read-only and safe from another thread after a
+ * successful speak_start. It does not cancel or enter guest code. */
+int  panthera_render_complete(void);
+
 /* How to read numbers the engine gets wrong: "off", "fix" (the default) or
  * "words".  See tiger_host_numbers.c -- the rules are the NVDA driver's, and
  * they live in the host so that every front end reaches the same ones.

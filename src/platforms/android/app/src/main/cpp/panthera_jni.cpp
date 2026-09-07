@@ -7,7 +7,8 @@
 // call panthera_* directly, no IPC.
 //
 // The native handle is process-global (one engine per process), so every entry
-// point is serialised on the Kotlin side (PantheraEngine's lock).
+// synthesis call is serialised on the Kotlin side. The stop flag and read-only
+// completion query can be called concurrently without entering guest code.
 
 #include <jni.h>
 #include <string>
@@ -15,6 +16,11 @@
 #include "tiger_host_jni.h"
 
 extern "C" {
+
+JNIEXPORT jboolean JNICALL
+Java_com_pantheraspeech_tts_PantheraNative_nativeRenderComplete(JNIEnv *, jclass) {
+    return panthera_render_complete() ? JNI_TRUE : JNI_FALSE;
+}
 
 JNIEXPORT jint JNICALL
 Java_com_pantheraspeech_tts_PantheraNative_nativeOpen(

@@ -23,6 +23,7 @@ class EngineSmokeTest : Instrumentation() {
     private var nativeVoice: String? = null
     private var nativeText = "Hello there."
     private var nativePhrasing = "leopard"
+    private var nativeWpm = 180
     private var audioOnly = false
     private var latency: String? = null
     override fun onCreate(arguments: Bundle?) {
@@ -30,6 +31,7 @@ class EngineSmokeTest : Instrumentation() {
         nativeVoice = arguments?.getString("nativeVoice")
         nativeText = arguments?.getString("nativeText") ?: nativeText
         nativePhrasing = arguments?.getString("nativePhrasing") ?: nativePhrasing
+        nativeWpm = arguments?.getString("nativeWpm")?.toInt() ?: nativeWpm
         audioOnly = arguments?.getString("audioOnly") == "true"
         latency = arguments?.getString("latency")
         super.onCreate(arguments); start()
@@ -63,15 +65,15 @@ class EngineSmokeTest : Instrumentation() {
             var reference: ShortArray? = null
             repeat(5) { i ->
                 val pcm = PantheraNative.nativeRender(voice.dir, voice.creator, voice.voiceId,
-                    PantheraText.bytes(nativeText), 180) ?: error("No PCM")
+                    PantheraText.bytes(nativeText), nativeWpm) ?: error("No PCM")
                 check(pcm.size > 12000) { "Short render: ${pcm.size}" }
-                if (reference != null) check(pcm.contentEquals(reference)) { "Render $i differs" }
-                reference = pcm
                 val bytes = ByteArray(pcm.size * 2)
                 pcm.forEachIndexed { j, v -> bytes[j*2] = v.toByte(); bytes[j*2+1] = (v.toInt() shr 8).toByte() }
                 File(targetContext.filesDir, "native-$gen.pcm").writeBytes(bytes)
                 result.putString("render$i", "${pcm.size} frames " + MessageDigest.getInstance("SHA-256")
                     .digest(bytes).joinToString("") { "%02x".format(it) })
+                if (reference != null) check(pcm.contentEquals(reference)) { "Render $i differs: ${pcm.size} frames" }
+                reference = pcm
             }
             finish(Activity.RESULT_OK, result)
         } catch (e: Throwable) {
@@ -253,6 +255,7 @@ class EngineSmokeTest : Instrumentation() {
 
     override fun onStart() {
         if (latency == "lifecycle") { PantheraWorkerCheck.run(this); return }
+        if (latency == "reuse") { PantheraWorkerCheck.runReuse(this); return }
         latency?.let { PantheraLatencyCheck.run(this, it); return }
         nativeGen?.let { checkNativeGeneration(it); return }
         var tts: TextToSpeech? = null

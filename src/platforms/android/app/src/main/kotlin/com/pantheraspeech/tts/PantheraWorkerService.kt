@@ -54,6 +54,9 @@ open class PantheraWorkerService : Service() {
                 }
             }
         }
+        // This query bypasses the synthesis executor: it only observes the
+        // host's existing completion predicate and must not wait behind pull.
+        override fun renderComplete(): Boolean = opened && PantheraNative.nativeRenderComplete()
         override fun finish() { runNative {
             if (opened) PantheraNative.nativeFinish()
         } }
