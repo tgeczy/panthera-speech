@@ -213,13 +213,34 @@ typedef struct { DWORD dwLowDateTime; DWORD dwHighDateTime; } FILETIME;
 #define _fdopen     fdopen
 #define _setmode(fd, mode)  (0)
 
-/* Win32 SwitchToThread yielded to a ready thread; with the pacer's 1 ms timer
- * that behaved like a brief sleep.  On bionic sched_yield returns at once when
- * nothing else is runnable, so an idle-yield path would spin a whole core --
- * and on a two-core watch starve the TCG worker that is actually rendering,
- * which comes out as short slices and a wrong frame count.  A real 1 ms sleep
- * is what Windows effectively delivered.  (Sleep is declared below.) */
+/* Yield the rest of this slice's turn -- and what that has to cost depends on
+ * whether there is an emulator behind us, not on which OS this is.
+ *
+ * **Emulated (TIGER_UC).** A real 1 ms sleep.  Win32's SwitchToThread yielded
+ * to a ready thread, which with the pacer's 1 ms timer behaved like a brief
+ * sleep; bionic's sched_yield instead returns at once when nothing else is
+ * runnable, so an idle-yield path spins a whole core -- and on a two-core
+ * watch that starves the TCG worker actually rendering the guest, which comes
+ * out as short slices and a wrong frame count.
+ *
+ * **Native.** A real yield, because there is no TCG worker to starve: the
+ * guest is i386 and so is this process, so the thread being yielded to is the
+ * engine itself.  Sleeping here instead cost the native Linux build 13x its
+ * render time -- 452 ms against Windows' 35 ms for the same three seconds of
+ * Fred, all of it in clock_nanosleep, one millisecond per slice across ~290
+ * slices.  Time to first sound was never affected (10.7 ms against 10.6),
+ * which is why this hid: the number a listener feels was already right.
+ *
+ * The rule this is the second instance of: **choose by the property that
+ * actually differs, not by the platform that first exposed it.**  The first
+ * was GUEST_SYNC_SIDE, which picks a side table by whether the lock fits
+ * rather than by word size; this picks a yield by whether the guest is
+ * emulated rather than by POSIX-vs-Windows.  (Sleep is declared below.) */
+#ifdef TIGER_UC
 #define SwitchToThread()    (Sleep(1), 1)
+#else
+#define SwitchToThread()    (sched_yield(), 1)
+#endif
 
 /* timeBeginPeriod/timeEndPeriod raise the scheduler's tick resolution on
  * Windows; POSIX nanosleep already means what it says, so these are no-ops. */
