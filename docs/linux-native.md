@@ -11,6 +11,9 @@ Panthera's host protocol.
 
 ## Build and check AAC
 
+CI binaries target Ubuntu 22.04 / glibc 2.35 and newer, with matching FAAD2
+runtime libraries. Older distributions should build from source locally.
+
 On Ubuntu/Debian x86-64:
 
 ```sh

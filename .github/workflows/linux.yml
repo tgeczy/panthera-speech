@@ -20,7 +20,9 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # Match the supported runtime baseline. ubuntu-latest pulled in GLIBC_2.38
+    # symbols, so an otherwise passing archive could not load on Ubuntu 22.04.
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
