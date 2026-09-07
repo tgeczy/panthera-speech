@@ -36,6 +36,10 @@ static __thread uc_engine *active;
 static void init(void) {
 
     ftrace=stderr;box64_pagesize=4096;LoadEnvVariables();DetectHostCpuFeatures();
+    // Initialize native memory bookkeeping without reserving every address
+    // above 4 GB. Only guest-visible allocations need the i386 address limit;
+    // bionic and the Android runtime must retain their normal address space.
+    box64_is32bits=0;init_custommem_helper(NULL);
     box64_is32bits=1;ctx=NewBox64Context(0);
 }
 uc_err uc_open(uc_arch arch, uc_mode mode, uc_engine **out) {

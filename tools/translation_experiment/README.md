@@ -97,9 +97,18 @@ oracles exactly. This is not yet a same-harness timing comparison with Unicorn
 on that device, nor an app playback test.
 
 The initial adapter encountered a host-context startup failure with the app's
-log-pump thread active. Keeping stderr in the standalone process avoided that
-failure; its cause is not yet established. The app must not adopt this prototype
-without resolving that integration issue. Box64's optional Linux i386 wrappers
+log-pump thread active. The CLI's native `mmap`/`munmap` interposition routed
+host allocations into Box bookkeeping during initialization. Excluding that
+interposition resolves the reproduced failure: ten fresh process starts with
+the log pump enabled all completed, and all eighty PCM files matched Unicorn.
+The adapter also initializes memory bookkeeping before selecting 32-bit guest
+mode, so it does not reserve all native addresses above 4 GB. Android's runtime
+and native threads retain their normal address space.
+
+`OUT/build/panthera_engine_logcat_bench` exercises this startup order with
+`TIGER_JNI` and the same arguments as the stderr benchmark. These remain
+standalone tests; signal ownership, mapping lifetime and app integration still
+need verification. Box64's optional Linux i386 wrappers
 are not used: Panthera supplies its own 32-bit host bridge to the instruction
 translator. That distinction is experimental and needs broader coverage.
 

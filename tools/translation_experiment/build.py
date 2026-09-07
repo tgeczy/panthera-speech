@@ -87,6 +87,11 @@ def main():
         # Box64's optional Linux i386 library wrappers (BOX32).
         replace(vendor / "src/main.c", "int main(", "int box64_cli_main(")
         replace(vendor / "src/emu/x64int3.c", "void x86Int3(", "__attribute__((weak)) void x86Int3(")
+        # The CLI interposes native mmap/munmap to allocate Linux guest memory.
+        # Panthera owns its guest mappings explicitly. Interposing here also
+        # routes bionic's logging-thread allocations into partially initialized
+        # Box memory bookkeeping during startup.
+        replace(vendor / "CMakeLists.txt", '    "${BOX64_ROOT}/src/custommmap.c"', "")
         objects = "mainobj dynarec interpreter"
         options = ["-DARM64=ON", "-DBOX32=OFF", "-DNOBOX64=ON", "-DNOLOADADDR=ON"]
 
@@ -105,6 +110,13 @@ target_compile_definitions(panthera_engine_bench PRIVATE TIGER_UC TIGER_AAC_FAAD
 target_compile_options(panthera_engine_bench PRIVATE -Wno-macro-redefined)
 file(GLOB FAAD_OBJS "{faad.as_posix()}/*.o")
 target_link_libraries(panthera_engine_bench {objects} ${{FAAD_OBJS}} m dl log mediandk)
+# Exercise Android's stderr-pump thread before translator initialization too.
+# The shared-library benchmark alone does not reproduce app startup ordering.
+add_executable(panthera_engine_logcat_bench engine_bench.c {backend}_adapter.c "{host.as_posix()}/tiger_host.c")
+target_include_directories(panthera_engine_logcat_bench PRIVATE "{host.as_posix()}" "{uc.as_posix()}/include" "{ROOT.as_posix()}/android/harness/faad2/include")
+target_compile_definitions(panthera_engine_logcat_bench PRIVATE TIGER_UC TIGER_AAC_FAAD TIGER_JNI)
+target_compile_options(panthera_engine_logcat_bench PRIVATE -Wno-macro-redefined)
+target_link_libraries(panthera_engine_logcat_bench {objects} ${{FAAD_OBJS}} m dl log mediandk)
 '''
     with (vendor / "CMakeLists.txt").open("a", encoding="utf8") as f:
         f.write(cmake)
@@ -117,7 +129,7 @@ target_link_libraries(panthera_engine_bench {objects} ${{FAAD_OBJS}} m dl log me
              f"-DANDROID_ABI={abi}", "-DANDROID_PLATFORM=android-28", "-DCMAKE_BUILD_TYPE=Release",
              *options], env=env, stdout=log, stderr=subprocess.STDOUT)
         run([args.cmake, "--build", out / "build", "--target", "panthera_engine_bench",
-             "panthera_memory_bench", "panthera_native_bench", "-j6"],
+             "panthera_engine_logcat_bench", "panthera_memory_bench", "panthera_native_bench", "-j6"],
             env=env, stdout=log, stderr=subprocess.STDOUT)
     print(f"Built {backend} {PINS[backend]} for {abi}: {out / 'build'}")
 
