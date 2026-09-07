@@ -66,3 +66,45 @@ Android keeps a disconnected service binding active. The owner must unbind;
 intentional shutdown now does this before killing the private worker, then
 waits for Binder death before reusing that generation's service component.
 See the [ServiceConnection contract](https://developer.android.com/reference/android/content/ServiceConnection).
+
+## Galaxy S22: both ABIs on the same device
+
+September 7, 2026, SM-S901U1 on Android 16, experimental Box APK with the
+completed-renderer reuse change (`572ec12`). The same APK was installed with
+`adb -s DEVICE install -r --abi ABI APK`; both the package's selected ABI and
+the running engine's Box64/Box86 banner were checked. Engine data stayed in
+place and preferences were restored byte for byte. ARM64 was restored afterward.
+
+Both ABIs passed the full four-generation audio suite, including paragraph
+breaths, settings, repeated AAC rendering and cancellation recovery. Both also
+passed completed-renderer reuse. Short PCM hashes matched the previous device
+references for the corresponding ABI.
+
+These Alex measurements use Leopard at 387 wpm. Native first PCM includes worker
+IPC; playback uses the Android marker described above.
+
+| Measurement | ARM64 / Box64 | ARMv7 / Box86 |
+| --- | ---: | ---: |
+| Warm Seven, median first PCM | 16 ms | 12 ms |
+| Warm debug-logging phrase, median first PCM | 41 ms | 22 ms |
+| Eight completed digits, median playback start | 95 ms | 66 ms |
+| Ten replacements of unfinished long text, median playback start | 383 ms | 479 ms |
+
+Rapid runs were ordered ARM64, ARMv7, ARM64, ARMv7. The table retains both runs:
+
+| Alex playback before next request | ARM64 first / repeat | ARMv7 first / repeat |
+| --- | ---: | ---: |
+| 150 ms spacing, 30 requests | 1 / 30 | 30 / 30 |
+| 100 ms spacing, 30 requests | 1 / 26 | 1 / 1 |
+
+Fred reached all 30 playback markers at both spacings in every run. No burst
+reported a synthesis error. The first runs had zero automatic service restarts;
+intentional worker retirements were 25 on ARM64 and 8 on ARMv7. Warm rendering
+can be fast on either ABI, while unfinished work still causes costly restarts.
+The ARM64 variation has not been isolated to warm-up, scheduling or thermal
+conditions, so the best run is not a guaranteed latency figure.
+
+An APK carrying both libraries normally selects the S22's primary ARM64 ABI;
+ARMv7 here was an explicit test override. ABI selection is separate from CPU
+affinity. The host already requests the fastest cores for synthesis workers.
+See Android's [ABI selection rules](https://developer.android.com/ndk/guides/abis#am).
