@@ -105,7 +105,9 @@ phrasing database when SQLite is unavailable in its linker namespace.
 
 ## Validation
 
-Galaxy S22 tests cover both Android ABIs: settings recreation and generation
+Galaxy S22 tests cover both Android ABIs, and the Nothing Phone 3 passes the
+same four-generation suite with an arm64-only userspace (no secondary ABI).
+These checks cover settings recreation and generation
 round trips, reference speech, live rate/volume changes, voice override,
 preview/service agreement, 24 repeated AAC utterances per installed generation,
 and cancellation followed by correct speech through the same TTS client.
@@ -147,6 +149,17 @@ Native Lion can produce different exact waveforms for repeated input even in
 the same resident session. The tests accept only independently verified native
 variants for their Fred reference phrases;
 repeat identity alone is not a universal speech-correctness oracle.
+
+A separate 212-word local reading sample exposes an unresolved Lion Alex
+repeatability difference under emulation. Its first Android render has the
+native duration (1911574 frames), with a maximum difference of two PCM16 units.
+An Android repeat adds 121 samples (5.5 ms) within one roughly 0.4-second span;
+the remaining waveform matches exactly after alignment. Forty resident native
+Windows renders remain identical. Local Whisper transcripts of both Android
+variants and the native render agree, but that does not establish waveform
+equivalence. This longer sample is distinct from the passing fixed paragraph
+duration/breath regressions above. Its text and recordings remain outside the
+repository.
 
 See [the arm64 build and device commands](android-arm64.md). Numerical checks
 need only built hosts and NumPy/pytest:
