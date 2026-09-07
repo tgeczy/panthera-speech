@@ -39,19 +39,36 @@ SQLite is loaded separately at runtime for Leopard phrasing dictionaries.
 
 ## Render a WAV from the command line
 
-For an extracted Tiger tree, set the text and pass the synthesizer, dictionary
-and voice bundle paths. The host reads the bundle's voice identifier and writes
-`tiger-out.wav` in the current directory:
+`--render` accepts a tree containing `Speech/` and
+`SpeechDictionary.framework/`. The host reads the voice identifier from the
+bundle. Text arguments, input files, and stdin use UTF-8:
 
 ```sh
-TIGER_TEXT='Hello there.' ./build/linux-i686/tiger_host \
-  /path/to/speech-tiger/x86/Speech/Synthesizers/MacinTalk.SpeechSynthesizer/Contents/MacOS/MacinTalk \
-  /path/to/speech-tiger/x86/SpeechDictionary.framework/Versions/A/SpeechDictionary \
-  /path/to/speech-tiger/x86/Speech/Voices/Fred.SpeechVoice
+./build/linux-i686/tiger_host --render \
+  --tree /path/to/speech-tiger/x86 --voice Fred \
+  --text 'Hello there.' --rate 180 --volume 80 --output speech.wav
+
+printf '%s\n' 'There are 1234567 people.' | \
+  ./build/linux-i686/tiger_host --render \
+  --tree /path/to/speech-tiger/x86 --numbers words --output - > speech.wav
 ```
 
-The output is mono PCM16 WAV. Playback and client settings are independent of
-the host; use the audio application or integration of your choice.
+`--input FILE` reads a text file; omitting both `--input` and `--text` reads
+stdin. `--output -` writes a WAV to stdout, with diagnostics on stderr.
+`--help` lists rate, pitch, volume, and number-style arguments. The host itself
+is a native executable and requires no Python interpreter.
+
+The output is mono PCM16 WAV at 22050 Hz. This file-rendering mode completes
+the utterance before emitting the WAV; persistent IPC below streams the first
+audio while synthesis continues. Each request stays whole, preserving the
+engine's sentence timing and Alex's breaths. The host has a four-minute PCM
+buffer per request; the CLI reports an error if that limit is reached. Longer
+documents should be submitted at paragraph boundaries. Text is converted to
+MacRoman; unsupported characters become spaces with a stderr diagnostic.
+Text may include embedded engine speech commands.
+
+The legacy positional paths and `TIGER_TEXT` interface remain available.
+Playback belongs to the audio application or integration of your choice.
 
 ## Client protocol
 
@@ -62,6 +79,15 @@ voice directory. Clients use the existing TGR3/TGR4 protocol documented in
 streaming example with user-supplied data. An integration owns its settings
 and chooses the host executable; installing this host does not register or
 replace a system speech module.
+
+Requests contain little-endian `u32 magic, i32 rate, i32 pitch, u32 flags,
+u32 voiceBytes, u32 textBytes`, then the UTF-8 bundle name and MacRoman text.
+Magic `0x54475234` selects streaming. The response is `u32 0x54475253,
+i32 status`, followed by repeated `u32 frames, i16 PCM[frames]` chunks and a
+zero-frame terminator. PCM is mono at 22050 Hz. Flag `2` selects fixed numbers,
+`4` selects numbers as words, and `0` leaves client-prepared text unchanged.
+Send one request at a time and drain its response, including the terminator,
+before sending another. `--capabilities` advertises the available number flags.
 
 The client opts into a four-byte little-endian `TRDY` startup handshake with
 `TIGER_READY_HANDSHAKE=1`. The host sends it after setup and before reading
@@ -78,6 +104,11 @@ the preferred x86 Linux build for latency: cancelling a long Tiger request
 under emulation can still wait for the remainder of that request to render.
 Cancellation uses a separate audio-discard flag from ordinary sentence resets;
 status queries also marshal their output into guest-visible memory.
+
+`tools/native_cli_check.py HOST TREE [VOICE]` checks file/stdin/stdout input,
+UTF-8 conversion against IPC, number styles, rate, and mute using personal data.
+`tools/native_cli_args_check.py HOST` checks argument handling without engine
+data and runs in CI for both Linux builds.
 
 ## Android volume
 

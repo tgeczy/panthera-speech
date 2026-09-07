@@ -826,6 +826,8 @@ static int host_open(const char *mtpath, const char *sdpath)
  * it is entered through the panthera_* API in tiger_host_jni.c. */
 #if !defined(PT_DLL) && !defined(TIGER_JNI)
 
+#include "tiger_host_cli.c"
+
 int main(int argc, char **argv)
 {
     int err, i;
@@ -839,6 +841,9 @@ int main(int argc, char **argv)
     unsigned creator = 'mtk3';
     int voiceid = 1;
     int spec_given = 0;
+
+    if(argc>1&&!strcmp(argv[1],"--help")){cli_help();return 0;}
+    if(argc>1&&!strcmp(argv[1],"--render"))return cli_render(argc,argv);
 
     /* --serve <MacinTalk> <SpeechDictionary> <VoicesDir> : stay resident and
      * answer requests on stdin/stdout.  Otherwise render one utterance and
@@ -861,7 +866,9 @@ int main(int argc, char **argv)
         fprintf(stdout, "{\"protocols\":[\"TGR3\",\"TGR4\"],"
                "\"ready_handshake\":true,\"aac_backend\":\"%s\","
                "\"aac_available\":%s,\"guest_execution\":\"%s\","
-               "\"cancel_signal\":%s}\n", backend,
+               "\"number_styles\":[\"off\",\"fix\",\"words\"],"
+               "\"number_flags\":{\"fix\":2,\"words\":4},"
+               "\"render_cli\":true,\"cancel_signal\":%s}\n", backend,
                available ? "true" : "false",
 #ifdef TIGER_UC
                "unicorn",

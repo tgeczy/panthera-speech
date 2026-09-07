@@ -74,6 +74,7 @@ jobs:
       - name: The number rules still agree with the Python they came from
         run: |
           python3 tools/numbers_oracle.py build/linux-${{ matrix.arch }}/tiger_host
+          python3 tools/native_cli_args_check.py build/linux-${{ matrix.arch }}/tiger_host
 
       - name: Volume agrees with NVDA and capabilities are machine-readable
         run: |
