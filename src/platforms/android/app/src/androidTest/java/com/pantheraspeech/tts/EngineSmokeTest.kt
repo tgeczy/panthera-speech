@@ -74,14 +74,29 @@ class EngineSmokeTest : Instrumentation() {
             val client = tts!!
             check(client.isLanguageAvailable(Locale.US) == TextToSpeech.LANG_COUNTRY_AVAILABLE)
             check(client.setLanguage(Locale.US) >= 0)
-            // Fred from whichever generation is active, not Tiger's by name:
-            // every generation ships a Fred and the engine loads one generation
-            // per process, so pinning the id here would fail the moment the
-            // device is set to Leopard rather than telling us anything.
-            val fred = client.voices.firstOrNull { it.name.endsWith("-fred") }
-                ?: error("Fred missing from platform voice list: " +
-                         client.voices.joinToString { it.name })
-            Log.i("PantheraTest", "generation under test: ${fred.name}")
+            // The platform list now spans every generation that runs here, and
+            // one process holds exactly one of them: a voice from another is
+            // answered by restarting the service, which from inside an
+            // instrumentation run reads as the app dying mid-test. So the suite
+            // pins itself to the generation this process actually loaded and
+            // takes every voice from there.
+            //
+            // Testing the switch itself belongs in a run of its own, for the
+            // same reason: a test that kills its own process cannot report on
+            // what happened next.
+            val activeGen = PantheraEngine.activeGen(targetContext)
+            val genVoices = client.voices.filter {
+                it.name.startsWith("panthera-$activeGen-")
+            }
+            check(genVoices.isNotEmpty()) {
+                "no $activeGen voices in the platform list: " +
+                    client.voices.joinToString { it.name }
+            }
+            val fred = genVoices.firstOrNull { it.name.endsWith("-fred") }
+                ?: error("Fred missing from $activeGen: " +
+                         genVoices.joinToString { it.name })
+            Log.i("PantheraTest", "generation under test: $activeGen " +
+                "(${genVoices.size} of ${client.voices.size} voices listed)")
             check(client.setVoice(fred) == TextToSpeech.SUCCESS)
             // Pin the rate: otherwise the system TTS preference changes the oracle.
             // 215% maps to 387 wpm and renders just 4032 frames on desktop too.
@@ -247,7 +262,7 @@ class EngineSmokeTest : Instrumentation() {
             // never touches one. A silent WAV is the failure that matters: a
             // decoder returning nothing looks exactly like success from here.
             for (want in listOf("vicki", "alex")) {
-                val voice = client.voices.firstOrNull { it.name.endsWith("-$want") }
+                val voice = genVoices.firstOrNull { it.name.endsWith("-$want") }
                 if (voice == null) {
                     Log.i("PantheraTest", "no $want on this device")
                     continue
@@ -283,8 +298,8 @@ class EngineSmokeTest : Instrumentation() {
             // utterance can see that, which is why it reached a wrist before it
             // reached a test.
             run {
-                val soakVoice = client.voices.firstOrNull { it.name.endsWith("-alex") }
-                    ?: client.voices.firstOrNull { it.name.endsWith("-vicki") }
+                val soakVoice = genVoices.firstOrNull { it.name.endsWith("-alex") }
+                    ?: genVoices.firstOrNull { it.name.endsWith("-vicki") }
                     ?: fred
                 check(client.setVoice(soakVoice) == TextToSpeech.SUCCESS)
                 val file = File(targetContext.filesDir, "soak.wav")

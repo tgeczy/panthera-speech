@@ -67,11 +67,16 @@ class PantheraTtsService : TextToSpeechService() {
     override fun onGetDefaultVoiceNameFor(lang: String?, country: String?, variant: String?): String? {
         if (!PantheraEngine.verified(this)) return null
         if (lang != null && langAvailability(lang, country) < 0) return null
-        val saved = PantheraEngine.prefs(this).getString(PantheraEngine.PREF_DEFAULT_VOICE, null)
-        val voices = PantheraEngine.allVoices(this)
+        // The default belongs to the active generation, not to the whole list.
+        // Asking the flat list for "Fred" would otherwise answer with whichever
+        // generation happened to sort first and quietly switch engines.
+        val gen = PantheraEngine.activeGen(this)
+        val saved = PantheraEngine.defaultVoiceName(this, gen)
+        val voices = PantheraEngine.activeVoices(this)
         return voices.firstOrNull { it.name.equals(saved, true) }?.id
             ?: voices.firstOrNull { it.name.equals("Fred", true) }?.id
             ?: voices.firstOrNull()?.id
+            ?: PantheraEngine.allVoices(this).firstOrNull()?.id
     }
 
     override fun onStop() {
@@ -126,6 +131,29 @@ class PantheraTtsService : TextToSpeechService() {
             ?: PantheraEngine.voiceById(this, onGetDefaultVoiceNameFor(null, null, null))
             ?: run { Log.w("PantheraTts", "no voice for '${request.voiceName}' -> error")
                      callback.error(TextToSpeech.ERROR_SERVICE); return }
+
+        // The voice list spans every generation that runs here, but one process
+        // can hold only one of them: panthera_init maps its images into a
+        // reserved guest block and offers no unmap. A voice from another
+        // generation is therefore served by starting again -- which is exactly
+        // what the SAPI host does when its tree changes, for the same reason.
+        //
+        // Record the choice, refuse *this* utterance, and exit; the framework
+        // restarts a speech service on demand, and the next request arrives
+        // with the right engine loaded. One utterance is lost, and only when
+        // the voice is changed across generations mid-session. Speaking it in
+        // the wrong voice instead would be worse and far harder to notice --
+        // and a user who chooses a voice before speaking never reaches this,
+        // because the engine opens lazily.
+        val loaded = PantheraEngine.loadedGen()
+        if (loaded != null && loaded != voice.gen) {
+            Log.i("PantheraTts", "voice ${voice.id} needs ${voice.gen}, " +
+                "this process holds $loaded -- restarting the service")
+            PantheraEngine.chooseVoice(this, voice)
+            callback.error(TextToSpeech.ERROR_SERVICE)
+            PantheraEngine.exitForGenerationChange()
+            return
+        }
 
         val rate = PantheraEngine.sampleRate()
         if (callback.start(rate, AudioFormat.ENCODING_PCM_16BIT, 1) != TextToSpeech.SUCCESS) {

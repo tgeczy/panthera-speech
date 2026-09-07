@@ -37,25 +37,58 @@ object PantheraEngine {
 
     const val DATA_DIR = "panthera-data"
 
-    // One folder per Mac OS X speech generation. All four ship the same engine
-    // body under different builds, so the host loads any of them; what differs
-    // is which voices come with it and what they need underneath. Tiger is the
-    // one proven on the watch. The rest are listed because the data layout, the
-    // gate and the push harness are all per-generation already, and because
-    // "Alex and the other engines" is the point of the port -- but Alex and
-    // Vicki both live on the `meow` engine, whose banks are AAC, and the AAC
-    // decoder here is still the Windows one. Their generations therefore offer
-    // their formant voices and no more until that is ported.
+    // One folder per Mac OS X speech generation. All four share one engine body
+    // under different builds, so the loader takes any of them; the data layout,
+    // the gate and the push harness have always been per-generation.
     const val GEN_TIGER = "tiger"
     const val GEN_LEOPARD = "leopard"
     const val GEN_SNOW_LEOPARD = "snowleopard"
     const val GEN_LION = "lion"
     val GENERATIONS = listOf(GEN_TIGER, GEN_LEOPARD, GEN_SNOW_LEOPARD, GEN_LION)
 
-    /** Which generation the engine loads from. Chosen once per process, because
-     * host_open maps its images once per process: changing it takes effect on
-     * the next start, which is why this is a stored preference and not a live
-     * switch. */
+    /** How a generation is named to a person: "Leopard", "Snow Leopard". */
+    fun genLabel(gen: String): String = when (gen) {
+        GEN_TIGER -> "Tiger"
+        GEN_LEOPARD -> "Leopard"
+        GEN_SNOW_LEOPARD -> "Snow Leopard"
+        GEN_LION -> "Lion"
+        else -> gen
+    }
+
+    /**
+     * The generations that actually run here, as opposed to the ones whose data
+     * this app can find.
+     *
+     * **Presence is not support, and offering an engine that faults is worse
+     * than not offering it.** Snow Leopard and Lion are both measured failures
+     * under emulation, on a Galaxy S22, on *both* ABIs -- so this is not the
+     * 64-bit gap it was assumed to be:
+     *
+     *     lion         guest fault, UC_ERR_FETCH_UNMAPPED, in the static
+     *                  initializer __GLOBAL__I__ZN12_GLOBAL__N_114freelist_mutexE
+     *                  -- libstdc++.6.0.9 calling through a pointer nothing bound
+     *     snowleopard  guest fault, UC_ERR_READ_UNMAPPED, earlier still
+     *
+     * Both die before a voice is ever asked for, so nothing about them can be
+     * salvaged by hiding voices. They stay in [GENERATIONS] because the push
+     * harness, the data layout and this diagnosis all need names for them, and
+     * because the desktop host runs all four -- it is only the emulated path
+     * that stops here.
+     */
+    val SUPPORTED_GENERATIONS = listOf(GEN_TIGER, GEN_LEOPARD)
+
+    /** Why a present generation is not on offer, for the settings page to say
+     * out loud rather than silently omitting it. */
+    fun unsupportedReason(gen: String): String? =
+        if (gen in SUPPORTED_GENERATIONS) null
+        else "${genLabel(gen)} is installed but does not run on Android yet — " +
+             "its C++ runtime faults before the first voice loads. It works on " +
+             "desktop Panthera."
+
+    /** Which generation the engine loads from. One per process, because
+     * panthera_init maps its images into a reserved guest block once and there
+     * is no unmap: changing it takes effect when the speech service next
+     * starts. See [restartNeeded]. */
     const val PREF_GEN = "engine_generation"
 
     data class VoiceInfo(
@@ -64,7 +97,17 @@ object PantheraEngine {
         val dir: String,       // absolute path to the .SpeechVoice bundle
         val creator: Int,      // VoiceSpec OSType
         val voiceId: Int,      // VoiceSpec id
-    )
+        val gen: String,       // which generation it belongs to
+    ) {
+        /** How the voice is named in a list a person reads.
+         *
+         * Generation-qualified, because a bare "Alex" is four different voices
+         * -- Tiger has none, Leopard's is MacinTalk 3.6 and Lion's is 4.0 --
+         * and a list with four of them is a list with none. The SAPI side
+         * settled this first and its tokens read the same way, "Alex (Leopard)";
+         * matching it means the two platforms describe one voice identically. */
+        val label: String get() = "$name (${genLabel(gen)})"
+    }
 
     // ---- data layout -------------------------------------------------------
     //
@@ -94,13 +137,20 @@ object PantheraEngine {
      * app with no engine, so presence wins over preference. */
     fun activeGen(ctx: Context): String {
         val chosen = prefs(ctx).getString(PREF_GEN, null)
-        if (chosen != null && genRoot(ctx, chosen) != null) return chosen
-        return GENERATIONS.firstOrNull { genRoot(ctx, it) != null } ?: GEN_TIGER
+        if (chosen != null && chosen in SUPPORTED_GENERATIONS &&
+            genRoot(ctx, chosen) != null) return chosen
+        return SUPPORTED_GENERATIONS.firstOrNull { genRoot(ctx, it) != null } ?: GEN_TIGER
     }
 
-    /** The generations whose data is present, for the settings picker. */
+    /** The generations whose data is present AND which run here. This is what
+     * the settings picker and the voice list are built from. */
     fun availableGens(ctx: Context): List<String> =
-        GENERATIONS.filter { genPresent(ctx, it) }
+        SUPPORTED_GENERATIONS.filter { genPresent(ctx, it) }
+
+    /** Present, but known not to run -- so the settings page can say why
+     * instead of leaving the user to wonder where their data went. */
+    fun presentButUnsupportedGens(ctx: Context): List<String> =
+        GENERATIONS.filter { it !in SUPPORTED_GENERATIONS && genPresent(ctx, it) }
 
     // ---- scanning ----------------------------------------------------------
 
@@ -140,22 +190,66 @@ object PantheraEngine {
                 dir = f.absolutePath,
                 creator = spec[0],
                 voiceId = spec[1],
+                gen = gen,
             ))
         }
         return out
     }
 
-    /** The engine's voice list: the active generation's voices, and only those.
+    /** Every voice of every generation that is present and runs here.
      *
-     * Not every present generation's. host_open maps one generation's images
-     * per process, so a voice from another one would be handed to an engine
-     * that has never heard of it -- listing them all would offer the user
-     * twenty-four voices of which most answer an OSErr. Which generation is
-     * active is the user's choice; see activeGen. */
-    fun allVoices(ctx: Context): List<VoiceInfo> = scanVoices(ctx, activeGen(ctx))
+     * **Picking a voice is how you pick an engine.** This used to list only the
+     * active generation's voices, which made the engine a separate setting the
+     * user had to find first, and made a saved voice name dangle the moment
+     * they changed it -- "Alex" means nothing in Tiger. SAPI settled the
+     * question first: it registers one token per voice per generation, named
+     * "Alex (Leopard)", and respawns its host when the tree changes. This is
+     * the same model, and [restartNeeded] is the same respawn.
+     *
+     * Sorted by voice name so the list reads alphabetically the way a person
+     * expects, with each name's generations together. */
+    fun allVoices(ctx: Context): List<VoiceInfo> =
+        availableGens(ctx).flatMap { scanVoices(ctx, it) }
+            .sortedWith(compareBy({ it.name.lowercase() }, { it.gen }))
+
+    /** The voices of the generation currently loaded (or about to be), which is
+     * the subset that can be spoken without restarting first. */
+    fun activeVoices(ctx: Context): List<VoiceInfo> = scanVoices(ctx, activeGen(ctx))
 
     fun voiceById(ctx: Context, id: String?): VoiceInfo? =
         allVoices(ctx).firstOrNull { it.id == id }
+
+    // ---- per-generation settings -------------------------------------------
+
+    /** The chosen voice is stored per generation.
+     *
+     * One global name could not survive a switch: "Alex" is a Leopard voice and
+     * Tiger has no such bundle, so going Leopard -> Tiger -> Leopard used to
+     * lose the choice, and going the other way left a name the new generation
+     * could not resolve. Keyed by generation, each engine remembers its own
+     * voice and a switch is reversible. */
+    fun voicePrefKey(gen: String) = "${PREF_DEFAULT_VOICE}_$gen"
+
+    fun defaultVoiceName(ctx: Context, gen: String): String? {
+        val p = prefs(ctx)
+        p.getString(voicePrefKey(gen), null)?.let { return it }
+        // Carry the old single-valued preference into whichever generation was
+        // active when it was written, once, so nobody's setting disappears in
+        // an upgrade. Then it is per-generation like everything else.
+        val legacy = p.getString(PREF_DEFAULT_VOICE, null) ?: return null
+        if (gen != activeGen(ctx)) return null
+        p.edit().putString(voicePrefKey(gen), legacy).remove(PREF_DEFAULT_VOICE).apply()
+        return legacy
+    }
+
+    /** Record a voice choice, and with it the generation that voice belongs to.
+     * These are one action: choosing "Alex (Leopard)" *is* choosing Leopard. */
+    fun chooseVoice(ctx: Context, voice: VoiceInfo) {
+        prefs(ctx).edit()
+            .putString(voicePrefKey(voice.gen), voice.name)
+            .putString(PREF_GEN, voice.gen)
+            .apply()
+    }
 
     // ---- the gate ----------------------------------------------------------
 
@@ -179,6 +273,53 @@ object PantheraEngine {
 
     private val lock = Any()
     private var opened = false
+    /** The generation [open] actually loaded, which after a preference change
+     * is not necessarily [activeGen]. */
+    private var openedGen: String? = null
+
+    /**
+     * True when the chosen generation is not the one this process loaded.
+     *
+     * `panthera_init` maps its images into a reserved guest block once and
+     * offers no unmap, so a second generation cannot be brought up beside the
+     * first: the process has to start again. That is not a workaround, it is
+     * what the SAPI host already does -- it remembers the tree it was spawned
+     * with and respawns on a difference, because "a generation is a different
+     * engine".
+     *
+     * The saving grace is that this is almost never true. The engine opens
+     * lazily, on the first utterance, so a user who picks a voice before
+     * speaking simply gets the right engine. It only becomes true if they
+     * speak, switch, and speak again.
+     */
+    fun restartNeeded(ctx: Context): Boolean = synchronized(lock) {
+        opened && openedGen != null && openedGen != activeGen(ctx)
+    }
+
+    /** Which generation is loaded right now, or null before the first open. */
+    fun loadedGen(): String? = synchronized(lock) { openedGen }
+
+    /**
+     * End this process so the next one loads the generation now chosen.
+     *
+     * Deliberately abrupt. There is nothing to tidy: the engine's state is the
+     * mapped images and the guest arena, both of which die with the process,
+     * and any half-finished utterance has already been refused. Android
+     * restarts a bound speech service on demand -- the same path it uses after
+     * a crash, and one this project has watched work in logcat.
+     *
+     * Called only after the choice has been written to preferences, so the
+     * replacement process comes up with the generation the user asked for.
+     */
+    fun exitForGenerationChange() {
+        android.util.Log.i("PantheraEngine", "exiting so the next process loads a new generation")
+        Thread {
+            // A beat, so the refusal reaches the client before the binder dies
+            // and it sees a service death instead of an error it can report.
+            try { Thread.sleep(150) } catch (e: InterruptedException) { }
+            android.os.Process.killProcess(android.os.Process.myPid())
+        }.start()
+    }
 
     // Hold ownership for the entire stream; the preview uses this same lock.
     // stop() stays outside it so cancellation can interrupt the owner.
@@ -196,6 +337,7 @@ object PantheraEngine {
                     mtIn(root, gen).absolutePath, sdIn(root, gen).absolutePath)
             } catch (e: Throwable) { return false }
             opened = (rc == 0)
+            if (opened) openedGen = gen
             return opened
         }
     }

@@ -12,12 +12,19 @@
 // is it there, does it make a sound. Engine settings is where somebody
 // returns, months later, to change how numbers are read.
 //
-// **Voice and generation are pickers here, not ninety-two entries in the
-// system list.** Somebody who has extracted Tiger, Leopard and Lion has more
-// than sixty voices between them, and the platform's list is a flat
-// alphabetical column with no notion of which engine a voice belongs to.
-// Choosing the engine first and the voice second is the shape the data already
-// has.
+// **The voice picker is the engine picker.** Somebody who has extracted Tiger
+// and Leopard has forty-odd voices between them, and several names occur in
+// both -- a bare "Alex" is Leopard's MacinTalk 3.6 or Lion's 4.0, and a list
+// with two of them is a list with none. So every voice is named for the engine
+// that speaks it, "Alex (Leopard)", and choosing one chooses both. That is the
+// model the SAPI side arrived at first, token by token, and matching it means
+// the two platforms describe the same voice the same way.
+//
+// The alternative -- an engine selector above a voice list -- was written
+// first and thrown away. It makes the engine a control you have to find before
+// the one you wanted, and it strands the voice you had: switch to Tiger and
+// back, and "Alex" no longer means anything. Preferences are per generation
+// for the same reason.
 //
 // Nothing on either page is a control over something the host cannot do. This
 // project has shipped a settings panel whose every tunable was inert, and it
@@ -206,29 +213,37 @@ class SettingsActivity : Activity() {
     private fun buildEngine(root: LinearLayout) {
         val p = PantheraEngine.prefs(this)
 
-        root.addView(heading("Engine"))
+        root.addView(heading("Voice"))
         val gens = PantheraEngine.availableGens(this)
         if (gens.isEmpty()) {
             root.addView(body(
                 "No engine data found yet. Finish Setup first — these settings " +
                 "describe an engine that has to be present to be configured."))
         } else {
+            // One list, every generation, each voice named for the engine that
+            // speaks it. Choosing "Alex (Leopard)" chooses Leopard: the engine
+            // is not a separate control to find first, and a saved voice cannot
+            // dangle, because the generation travels with the name.
             root.addView(body(
-                "Which generation of Apple's engine speaks. Each has its own " +
-                "voices, and one runs at a time."))
-            val at = gens.indexOf(PantheraEngine.activeGen(this)).coerceAtLeast(0)
-            root.addView(spinner(gens.map { prettyGen(it) }, at) { i ->
-                p.edit().putString(PantheraEngine.PREF_GEN, gens[i]).apply()
-                rebuildVoices()          // the voice list belongs to the generation
-                refresh()
-            })
-
-            root.addView(heading("Voice"))
+                if (gens.size > 1)
+                    "Every voice you have, from every generation of Apple's " +
+                    "engine. The generation is part of the name — choosing a " +
+                    "voice chooses the engine that speaks it."
+                else
+                    "Used when an app does not name a voice itself. The sample " +
+                    "on the Setup page speaks with this one."))
             voiceHolder = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
             }
             root.addView(voiceHolder!!)
             rebuildVoices()
+        }
+
+        // Data that is present and cannot run. Saying so is the point: someone
+        // who has copied Lion's folder across and then sees nothing would
+        // reasonably conclude the copy failed.
+        for (gen in PantheraEngine.presentButUnsupportedGens(this)) {
+            PantheraEngine.unsupportedReason(gen)?.let { root.addView(body(it)) }
         }
 
         root.addView(heading("Rate"))
@@ -272,15 +287,33 @@ class SettingsActivity : Activity() {
         holder.removeAllViews()
         val voices = PantheraEngine.allVoices(this)
         if (voices.isEmpty()) {
-            holder.addView(body("No voices in this generation's folder."))
+            holder.addView(body("No voices in the engine data folder."))
             return
         }
-        val p = PantheraEngine.prefs(this)
-        val names = voices.map { it.name }
-        val saved = p.getString(PantheraEngine.PREF_DEFAULT_VOICE, null)
-        val at = names.indexOfFirst { it.equals(saved, true) }.coerceAtLeast(0)
+        val gen = PantheraEngine.activeGen(this)
+        val saved = PantheraEngine.defaultVoiceName(this, gen)
+        // Only one generation is labelled when there is only one to tell apart:
+        // "Fred (Tiger)" twenty-three times is noise to read and worse to hear.
+        val single = PantheraEngine.availableGens(this).size < 2
+        val names = voices.map { if (single) it.name else it.label }
+        val at = voices.indexOfFirst { it.gen == gen && it.name.equals(saved, true) }
+            .let { if (it >= 0) it else voices.indexOfFirst { v -> v.gen == gen } }
+            .coerceAtLeast(0)
         holder.addView(spinner(names, at) { i ->
-            p.edit().putString(PantheraEngine.PREF_DEFAULT_VOICE, names[i]).apply()
+            val v = voices[i]
+            val was = PantheraEngine.loadedGen()
+            PantheraEngine.chooseVoice(this, v)
+            // Choosing across generations is choosing a different engine, and
+            // this process can only hold the one it already mapped. Say so
+            // plainly rather than previewing the wrong voice: the announcement
+            // is what a screen-reader user gets instead of a surprise.
+            if (was != null && was != v.gen) {
+                val msg = "${v.label} needs the ${PantheraEngine.genLabel(v.gen)} " +
+                    "engine. Close and reopen Panthera Speech to hear it here; " +
+                    "other apps will use it from their next request."
+                holder.announceForAccessibility(msg)
+                toast(msg)
+            }
         })
         holder.addView(body(
             "Used when an app does not name a voice itself. The sample on the " +
@@ -363,13 +396,6 @@ class SettingsActivity : Activity() {
         })
     }
 
-    private fun prettyGen(g: String) = when (g) {
-        PantheraEngine.GEN_TIGER -> "Tiger (10.4)"
-        PantheraEngine.GEN_LEOPARD -> "Leopard (10.5)"
-        PantheraEngine.GEN_SNOW_LEOPARD -> "Snow Leopard (10.6)"
-        PantheraEngine.GEN_LION -> "Lion (10.7)"
-        else -> g
-    }
     private fun rateText(wpm: Int) =
         if (wpm <= 0) "Follow the system's rate" else "$wpm words per minute"
     private fun wpmToProgress(wpm: Int) =
@@ -406,11 +432,14 @@ class SettingsActivity : Activity() {
     }
 
     private fun testSpeak() {
-        val voices = PantheraEngine.allVoices(this)
-        val saved = PantheraEngine.prefs(this)
-            .getString(PantheraEngine.PREF_DEFAULT_VOICE, null)
-        // The voice the settings chose, so that the preview previews the
-        // settings rather than a hard-coded Fred.
+        // The preview speaks the generation this process can actually load --
+        // never another one, because there is no second engine to load it with.
+        // rebuildVoices has already said so if the user picked across.
+        val gen = PantheraEngine.loadedGen() ?: PantheraEngine.activeGen(this)
+        val voices = PantheraEngine.scanVoices(this, gen)
+        val saved = PantheraEngine.defaultVoiceName(this, gen)
+        // The voice the settings chose, so the preview previews the settings
+        // rather than a hard-coded Fred.
         val voice = voices.firstOrNull { it.name.equals(saved, true) }
             ?: voices.firstOrNull { it.name.equals("Fred", true) }
             ?: voices.firstOrNull()
@@ -418,7 +447,7 @@ class SettingsActivity : Activity() {
         val text = sampleText.text.toString().ifBlank { "Hello there." }
         val wpm = PantheraEngine.prefs(this).getInt(PantheraEngine.PREF_RATE, 0)
         testButton.isEnabled = false
-        status.text = "Rendering ${voice.name}…"
+        status.text = "Rendering ${voice.label}…"
         Thread {
             val pcm = PantheraEngine.render(this, voice, text, wpm)
             val n = pcm?.size ?: 0
