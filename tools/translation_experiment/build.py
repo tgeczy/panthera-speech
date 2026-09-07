@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tarfile
 
 PINS = {
@@ -17,6 +18,8 @@ PINS = {
 }
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
+sys.path.insert(0, str(ROOT / "tools/aac_experiment"))
+import glint as glint_experiment
 
 
 def run(args, **kwargs):
@@ -36,6 +39,8 @@ def main():
     parser.add_argument("--source", type=Path, required=True,
                         help="Local official Box86/Box64 Git clone containing the pinned commit")
     parser.add_argument("--out", type=Path, required=True, help="New experiment directory")
+    parser.add_argument("--aac", choices=["faad", "glint"], default="faad")
+    parser.add_argument("--aac-source", type=Path, help="Official Glint clone; required with --aac glint")
     parser.add_argument("--ndk", type=Path, default=Path("C:/Android/sdk/ndk/27.2.12479018"))
     parser.add_argument("--cmake", type=Path, default=Path("C:/Android/sdk/cmake/3.22.1/bin/cmake.exe"))
     args = parser.parse_args()
@@ -45,8 +50,10 @@ def main():
     backend = args.backend
     abi = "armeabi-v7a" if backend == "box86" else "arm64-v8a"
     faad = ROOT / "android/harness" / f"faad2-obj-{abi}"
-    if not list(faad.glob("*.o")):
+    if args.aac == "faad" and not list(faad.glob("*.o")):
         parser.error(f"Build the existing FAAD2 objects first: {faad}")
+    if (args.aac == "glint") != (args.aac_source is not None):
+        parser.error("--aac glint and --aac-source must be supplied together")
     archive = subprocess.check_output(["git", "-C", str(args.source), "archive", PINS[backend]])
     out.mkdir(parents=True)
     vendor = out / "translator"
@@ -69,6 +76,12 @@ def main():
     if backend == "box64":
         source = source.replace("#define UC_TRAMP_STRIDE 16u", "#define UC_TRAMP_STRIDE 32u")
     seam.write_text(source, encoding="utf8")
+    aac_cmake = ""
+    aac_library = "${FAAD_OBJS}"
+    if args.aac == "glint":
+        aac_vendor = glint_experiment.prepare(args.aac_source, out, host)
+        aac_cmake = glint_experiment.cmake_library(aac_vendor)
+        aac_library = "panthera_glint_decoder"
 
     if backend == "box86":
         for path in (vendor / "src").rglob("*.c"):
@@ -105,12 +118,13 @@ def main():
 remove_definitions(-std=gnu11)
 add_compile_options("$<$<COMPILE_LANGUAGE:C>:-std=gnu11>")
 enable_language(CXX)
+{aac_cmake}
 file(GLOB FAAD_OBJS "{faad.as_posix()}/*.o")
 function(panthera_host_target target mode)
     target_include_directories(${{target}} PRIVATE "{host.as_posix()}" "{uc.as_posix()}/include" "{ROOT.as_posix()}/android/harness/faad2/include")
-    target_compile_definitions(${{target}} PRIVATE TIGER_UC TIGER_INLINE_GUEST TIGER_{backend.upper()} TIGER_AAC_FAAD ${{mode}})
+    target_compile_definitions(${{target}} PRIVATE TIGER_UC TIGER_INLINE_GUEST TIGER_{backend.upper()} TIGER_AAC_{args.aac.upper()} ${{mode}})
     target_compile_options(${{target}} PRIVATE -Wno-macro-redefined)
-    target_link_libraries(${{target}} {objects} ${{FAAD_OBJS}} m dl log mediandk)
+    target_link_libraries(${{target}} {objects} {aac_library} m dl log mediandk)
 endfunction()
 add_executable(panthera_memory_bench memory_{backend}.c)
 target_include_directories(panthera_memory_bench PRIVATE "{ROOT.as_posix()}/android/harness/src")

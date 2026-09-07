@@ -111,6 +111,10 @@ py -3 tools/translation_experiment/build.py --backend box86 --source build/resea
 py -3 tools/translation_experiment/build.py --backend box64 --source build/research/box64 --out build/translation-box64
 ```
 
+For an explicit Glint AAC comparison, add `--aac glint --aac-source PATH`.
+See the [AAC experiment](../aac_experiment/README.md) for the pinned source,
+audio comparisons, and remaining limitations. FAAD2 remains the default.
+
 `--source` is a local clone of the official translator repository containing
 the pinned commit. The script exports that exact commit to a new directory,
 applies the compatibility changes, copies the host sources, and builds there.
