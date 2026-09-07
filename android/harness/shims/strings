@@ -1,0 +1,12 @@
+#!/bin/sh
+# strings shim -> NDK llvm-strings.exe (Cygwin has no binutils). Convert file
+# args to Windows paths so the native exe can open them.
+LLVM="/cygdrive/c/Android/Sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/windows-x86_64/bin/llvm-strings.exe"
+args=""
+for a in "$@"; do
+  case "$a" in
+    -*) args="$args $a" ;;
+    *)  w=$(cygpath -w "$a" 2>/dev/null); if [ -n "$w" ]; then args="$args $w"; else args="$args $a"; fi ;;
+  esac
+done
+exec "$LLVM" $args

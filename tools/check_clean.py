@@ -71,7 +71,10 @@ def _walk(roots):
     files = []
     for r in roots:
         for dirpath, dirs, names in os.walk(r):
-            dirs[:] = [d for d in dirs if d != "__pycache__"]
+            # Android keeps compiler intermediates beneath src/platforms.
+            # They contain diagnostic paths but are not packaged source.
+            dirs[:] = [d for d in dirs if d not in
+                       ("__pycache__", "build", ".gradle", ".cxx")]
             files += [os.path.join(dirpath, n) for n in names]
     return files
 

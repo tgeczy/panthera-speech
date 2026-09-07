@@ -31,7 +31,7 @@ import os
 
 import pytest
 
-import pantheratrees
+from synthDrivers._panthera import pantheratrees
 
 #: A `VoiceDescription` is a fixed 80-byte header: the creator OSType at +4,
 #: and a `Str63` -- one length byte then the characters -- at +16.  A `version`
@@ -165,10 +165,10 @@ def test_every_generation_names_voices_the_same_way(voicesdir):
     the tests can replace `aac_available` on it.  Two lines is little enough
     to get wrong quietly, so this checks all four give the same answer.
     """
-    import pantheraleopard
-    import pantheralion
-    import pantherasnowleopard
-    import pantheratiger
+    from synthDrivers._panthera import pantheraleopard
+    from synthDrivers._panthera import pantheralion
+    from synthDrivers._panthera import pantherasnowleopard
+    from synthDrivers._panthera import pantheratiger
     _voice(voicesdir, "GoodNews", name="Good News")
     _voice(voicesdir, "Alex", creator="meow", name="Alex")
     expected = [("Alex", "Alex", "meow"), ("GoodNews", "GoodNews", "mtk3")]

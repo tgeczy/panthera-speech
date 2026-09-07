@@ -1,0 +1,7 @@
+# Keep POSIX scripts LF on every checkout. CRLF here breaks the very thing this
+# harness exists to do: Cygwin's sh chokes on `\r` in QEMU's configure (that was
+# the whole Unicorn cross-build bug). Do not let autocrlf reintroduce it.
+*.sh            text eol=lf
+*.py            text eol=lf
+shims/strings   text eol=lf
+shims/pkg-config text eol=lf

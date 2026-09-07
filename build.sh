@@ -57,20 +57,49 @@ eval "\"$CL\" -nologo -O2 -MT -W3 $INC \"$ROOT/src/tiger_host.c\" \
 
 echo "  -> build/tiger_host.exe"
 
-# Stage it into the add-on immediately.  A driver loads its own copy, not this
-# one, and a stale copy there presents as "the fix did not work" -- which cost
-# a confusing test failure once already.
+# The same program again, as a DLL, for NVDA's secure screens.
 #
-# One line, now that Tiger and Leopard are one add-on: there used to be two,
-# staging the same bytes twice under two names.  Add a line here if a second
-# add-on ever joins.  Missing one is silent: the add-on simply keeps running
-# last month's loader.
+# NVDA's config._setSystemConfig drops every file ending .exe when it copies
+# the user configuration to systemConfig, so an add-on that ships one has no
+# engine on the sign-in desktop or on a UAC prompt -- the user is handed a
+# different synthesizer at exactly the moment a password is being typed.  A
+# .dll is copied like any other file, and NVDA's own 32-bit bridge provides
+# the 32-bit process to load it into.
+#
+# PT_DLL swaps main() for src/tiger_host_api.c and nothing else: the loader,
+# the shims and the request loop are the same source, compiled twice.  Both
+# halves are built here, every time, so a change that breaks one is a build
+# failure rather than a discovery weeks later on a screen nobody tests on.
+#
+# **No /LARGEADDRESSAWARE.**  It is a property of the executable, so on a DLL
+# it would be meaningless in any case -- but the host this one is loaded into
+# is nvda_synthDriverHost.exe, which is not large-address-aware, and the whole
+# 4 GB question is settled there rather than here.  All four generations were
+# measured rendering inside 2 GB, Leopard's 669 MB Alex included, because the
+# loader relocates when a prebound base is unavailable (tiger_host_macho.c).
+mkdir -p "$OUT/dll"          # -Fo will not create it, and says so obscurely
+eval "\"$CL\" -nologo -O2 -MT -W3 -DPT_DLL $INC \"$ROOT/src/tiger_host.c\" \
+    -Fe\"$OUT/tiger_host.dll\" -Fo\"$OUT/dll/\" \
+    -LD -link $LIB winmm.lib ole32.lib mfuuid.lib" > "$OUT/build-dll.log" 2>&1 || {
+        echo "DLL build failed:"; tail -40 "$OUT/build-dll.log"; exit 1; }
+
+echo "  -> build/tiger_host.dll"
+
+# Stage them into the add-on immediately.  A driver loads its own copy, not
+# this one, and a stale copy there presents as "the fix did not work" -- which
+# cost a confusing test failure once already.
+#
+# One line per add-on, now that Tiger and Leopard are one: there used to be
+# two, staging the same bytes twice under two names.  Add a line here if a
+# second add-on ever joins.  Missing one is silent: the add-on simply keeps
+# running last month's loader.
 stage() {                          # <add-on folder> <_private folder> <name>
     dest="$ROOT/$1/addon/synthDrivers/$2/$3"
     [ -d "$ROOT/$1" ] || return 0  # not checked out; nothing to stage into
     mkdir -p "$(dirname "$dest")"
     cp "$OUT/tiger_host.exe" "$dest"
-    echo "  -> $1/addon/synthDrivers/$2/$3"
+    cp "$OUT/tiger_host.dll" "${dest%.exe}.dll"
+    echo "  -> $1/addon/synthDrivers/$2/$3 (+ .dll)"
 }
 
 stage panthera _panthera panthera_host.exe

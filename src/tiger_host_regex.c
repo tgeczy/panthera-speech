@@ -549,6 +549,7 @@ static int re_search(const re_prog *pr, const char *string)
 typedef struct {
     const void *preg;               /* NULL once freed: the slot is spare */
     re_prog *prog;                  /* NULL for a pattern we would not read */
+    int abbreviation;
 } re_slot;
 
 static re_slot *g_re;
@@ -636,11 +637,9 @@ static re_slot *re_slot_for(const void *preg)
 
 /* "Expand abbreviations", from the driver.
  *
- * The dictionary's rules *are* patterns, so declining to compile one turns
- * that rule off -- and a refused pattern is a state this file already had,
- * defined and tested: it never matches, and the word is spoken as written.
- * The switch therefore needs no new machinery, only a list of which rules it
- * covers.
+ * Keep the compiled pattern and suppress its matches while expansion is off.
+ * This lets a persistent client change the setting between utterances without
+ * rebuilding its channel or losing the rules needed when it turns back on.
  *
  * These are the shapes that rewrite a written form into different words: KB
  * into kilobytes, SEPT into September.  The phone-number rules are
@@ -684,13 +683,6 @@ static int __cdecl sh_regcomp(void *preg, const char *pattern, int cflags)
     re_slot *slot;
 
     re_lock();
-    if (g_no_abbrev && re_is_abbrev(pattern)) {
-        if (g_verbose)
-            printf("  [re] abbreviations off, so not compiled: %s\n", pattern);
-        if ((slot = re_slot_for(preg))) slot->prog = NULL;
-        re_unlock();
-        return 0;
-    }
     prog = re_compile(pattern, cflags);
     if (!prog)
         fprintf(stderr, "tiger_host: SpeechDictionary compiled a regular "
@@ -699,7 +691,10 @@ static int __cdecl sh_regcomp(void *preg, const char *pattern, int cflags)
     if (g_pref_log)
         fprintf(stderr, "  [re] compile preg=%p %s -> %s\n", preg,
                 pattern ? pattern : "(null)", prog ? "ok" : "REFUSED");
-    if ((slot = re_slot_for(preg))) slot->prog = prog;
+    if ((slot = re_slot_for(preg))) {
+        slot->prog = prog;
+        slot->abbreviation = re_is_abbrev(pattern);
+    }
     else re_prog_free(prog);
     if (g_verbose)
         printf("  [re] %s (cflags 0x%x): %s\n", prog ? "compiled" : "REFUSED",
@@ -758,7 +753,8 @@ static int __cdecl sh_regexec(const void *preg, const char *string,
         re_unlock();
         return REG_NOMATCH;
     }
-    result = re_search(slot->prog, subject) ? 0 : REG_NOMATCH;
+    result = g_no_abbrev && slot->abbreviation ? REG_NOMATCH
+        : (re_search(slot->prog, subject) ? 0 : REG_NOMATCH);
     if (g_pref_log) {
         const int *w = (const int *)pmatch;
         fprintf(stderr, "  [re] exec eflags=%d nmatch=%u pmatch32=[%d %d %d %d]"
@@ -976,6 +972,23 @@ static int re_check(void)
             }
             re_prog_free(pr);
         }
+    }
+    /* A rule compiled while disabled must become usable without recompiling.
+     * Non-abbreviation rules continue to match in either setting. */
+    {
+        unsigned fake = 0, plain = 0;
+        int saved = g_no_abbrev;
+        g_no_abbrev = 1;
+        sh_regcomp(&fake, "^[[:digit:]]+ISH$", TRE_EXTENDED | TRE_NOSUB);
+        sh_regcomp(&plain, "^[[:digit:]]{7,}$", TRE_EXTENDED | TRE_NOSUB);
+        if (sh_regexec(&fake, "20ISH", 0, NULL, 0) != REG_NOMATCH ||
+            sh_regexec(&plain, "1234567", 0, NULL, 0) != 0) fails++;
+        g_no_abbrev = 0;
+        if (sh_regexec(&fake, "20ISH", 0, NULL, 0) != 0) fails++;
+        g_no_abbrev = 1;
+        if (sh_regexec(&fake, "20ISH", 0, NULL, 0) != REG_NOMATCH) fails++;
+        sh_regfree(&fake); sh_regfree(&plain);
+        g_no_abbrev = saved;
     }
     printf("regex: %d cases, %d failures\n",
            (int)(sizeof(cases) / sizeof(cases[0])), fails);

@@ -110,11 +110,20 @@ def _stage_tree(cfg_dir):
     each -- which has the happy side effect of exercising the real lookup path
     instead of bypassing it.
     """
-    sys.path.insert(0, ADDON)
-    # The drivers themselves add this when they load, but the tests reach into
-    # the shared body directly -- a module-level `import pantheradriver` runs
-    # at collection, before any driver has been imported to do it for us.
-    sys.path.insert(0, PRIVATE)
+    # `synthDrivers` as a real package rooted at the add-on's own folder,
+    # which is exactly what NVDA builds:
+    # `addonHandler.Addon.addToPackagePath` inserts every add-on's
+    # `synthDrivers` directory into the real package's `__path__`.
+    #
+    # Registering it the same way here means the tests exercise the import
+    # path NVDA actually uses -- `from ._panthera import ...` inside a driver,
+    # `synthDrivers._panthera.*` from the global plugin.  A flattened stand-in
+    # on `sys.path` would let a broken relative import pass the suite and fail
+    # only once it was loaded by NVDA, which is the worst place to find it.
+    if "synthDrivers" not in sys.modules:
+        pkg = types.ModuleType("synthDrivers")
+        pkg.__path__ = [ADDON]
+        sys.modules["synthDrivers"] = pkg
     for env_name, pointer in TREES:
         # No guesses.  Whoever runs the tests says where their tree is,
         # exactly as a user does -- and guessing would put somebody's disk
@@ -157,7 +166,17 @@ def _install_fake_nvda():
                 "speech": {"outputDevice": "default"}}
     sys.modules["config"] = cfg
 
-    cfg_dir = os.path.join(ROOT, "build", "test-config")
+    # Overridable, so that something importing this file from *another*
+    # process cannot write into the suite's own configuration.
+    #
+    # `secure_screen_probe.py` does exactly that -- it drives a real driver in
+    # a 32-bit interpreter -- and it points a tree variable at whichever engine
+    # it means to speak with.  Sharing this folder meant its pointer files
+    # overwrote the suite's, so the Lion tree quietly became one with no
+    # Compact voices in it and `test_the_vocalizer_voices_are_not_offered`
+    # failed for a reason unconnected to anything it tests.
+    cfg_dir = os.environ.get("PANTHERA_TEST_CONFIG") or os.path.join(
+        ROOT, "build", "test-config")
     _stage_tree(cfg_dir)
     gv = types.ModuleType("globalVars")
     gv.appArgs = type("_A", (), {"configPath": cfg_dir, "secure": False})()
@@ -220,9 +239,64 @@ def _install_fake_nvda():
     class VoiceInfo(object):
         def __init__(self, id, name, language=None):
             self.id, self.name, self.language = id, name, language
-    class SynthDriver(object):
-        VoiceSetting = RateSetting = PitchSetting = VolumeSetting = _Setting
-        InflectionSetting = _Setting
+    class _AutoPropertyType(type):
+        """NVDA's `baseObject.AutoPropertyType`, modelled where it bites.
+
+        The real one turns `_get_x`/`_set_x` into a property at class
+        creation, **from the class's own namespace only** -- it reads
+        `namespace.keys()` and never looks at the bases.  So an accessor
+        written in a plain mixin becomes no property at all, with no error at
+        class creation and no error at import: the control appears in the
+        panel and does nothing.
+
+        The fake used to be a plain class, which meant no setting of ours was
+        readable as an attribute here at all and no test could tell a wired
+        accessor from an unwired one.  Modelled rather than imported because
+        importing NVDA's own `baseObject` drags in `garbageHandler` and the
+        real `logHandler`.
+        """
+        def __init__(cls, name, bases, namespace, **kw):
+            super().__init__(name, bases, namespace, **kw)
+            for attr in {k[5:] for k in namespace
+                         if k[:5] in ("_get_", "_set_", "_del_")}:
+                if attr in namespace:
+                    raise TypeError(
+                        "%s is already a class attribute" % attr)
+                getter = namespace.get("_get_" + attr)
+                if getter is None:
+                    for base in bases:
+                        getter = getattr(base, "_get_" + attr, None)
+                        if getter:
+                            break
+                setter = namespace.get("_set_" + attr)
+                if setter is None:
+                    for base in bases:
+                        setter = getattr(base, "_set_" + attr, None)
+                        if setter:
+                            break
+                setattr(cls, attr, property(getter, setter))
+
+    def _builtinSetting(settingId):
+        """NVDA's own `SynthDriver.VoiceSetting()` and friends, which take no
+        arguments and know their own id.  The fake used to hand all five the
+        bare `_Setting`, so every one of them arrived with `id` of `None` --
+        which made the five settings every generation has the five a test
+        could say least about."""
+        class _Builtin(_Setting):
+            def __init__(self, *a, **k):
+                #: The id only.  NVDA supplies these five labels itself, so
+                #: they have no `displayName` of ours -- which is exactly how
+                #: the access-key test tells our settings from NVDA's.
+                k.setdefault("id", settingId)
+                super().__init__(*a, **k)
+        return _Builtin
+
+    class SynthDriver(object, metaclass=_AutoPropertyType):
+        VoiceSetting = _builtinSetting("voice")
+        RateSetting = _builtinSetting("rate")
+        PitchSetting = _builtinSetting("pitch")
+        VolumeSetting = _builtinSetting("volume")
+        InflectionSetting = _builtinSetting("inflection")
         def __init__(self): pass
     class _Notifier(object):
         """Counts, and lets a test wait for the next notification.
@@ -248,7 +322,23 @@ def _install_fake_nvda():
 
     asu = types.ModuleType("autoSettingsUtils")
     ds = types.ModuleType("autoSettingsUtils.driverSetting")
-    ds.DriverSetting = ds.BooleanDriverSetting = ds.NumericDriverSetting = _Setting
+    # Three distinct classes, because the difference between them is
+    # load-bearing and one shared class could not express it.  NVDA draws a
+    # plain `DriverSetting` as a combo box and needs an `available<Id>s` list
+    # to fill it; a `BooleanDriverSetting` is a checkbox and needs no list.
+    # `_panthera/bridge.py` tells them apart with `type(setting) is
+    # DriverSetting` when it decides what the 64-bit proxy can show, so a fake
+    # that made all three the same class would have let a test claim that
+    # every checkbox was missing an option list.
+    class _BooleanSetting(_Setting):
+        pass
+
+    class _NumericSetting(_Setting):
+        pass
+
+    ds.DriverSetting = _Setting
+    ds.BooleanDriverSetting = _BooleanSetting
+    ds.NumericDriverSetting = _NumericSetting
     asu.driverSetting = ds
     sys.modules["autoSettingsUtils"] = asu
     sys.modules["autoSettingsUtils.driverSetting"] = ds

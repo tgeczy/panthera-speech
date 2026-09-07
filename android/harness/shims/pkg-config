@@ -1,0 +1,9 @@
+#!/bin/sh
+# pkg-config stub: Unicorn bundles glib_compat and never pkg-configs glib;
+# configure only checks this binary exists. Answer benignly.
+case "$1" in
+  --version) echo "0.0-shim" ;;
+  --exists)  exit 1 ;;
+  *) : ;;
+esac
+exit 0

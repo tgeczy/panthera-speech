@@ -5,8 +5,22 @@
 
 typedef struct { const char *name; void *fn; } shim;
 static const shim g_shims[] = {
-    { "_malloc",    (void *)malloc  }, { "_free",    (void *)free    },
-    { "_calloc",    (void *)calloc  }, { "_realloc", (void *)realloc },
+#ifdef TIGER_UC
+    /* Under emulation these must return memory the guest can dereference, so
+     * they route to the guest arena (tiger_host_uc.c) rather than the host
+     * heap.  Everything built on them -- every cfobj and its string -- then
+     * lands in guest space for free. */
+    { "_malloc",    (void *)sh_uc_malloc  }, { "_free",    (void *)sh_uc_free    },
+    { "_calloc",    (void *)sh_uc_calloc  }, { "_realloc", (void *)sh_uc_realloc },
+#else
+    /* The host's allocator, behind a wrapper that does nothing unless
+     * TIGER_MALLOC_FILL asks it to poison what it hands out -- the instrument
+     * that answers "is the engine reading memory it never wrote?".  It is
+     * not, measurably.  See sh_guest_malloc in tiger_host_shims.c.  calloc
+     * needs no wrapper: zero is its whole contract. */
+    { "_malloc",    (void *)sh_guest_malloc }, { "_free", (void *)free },
+    { "_calloc",    (void *)calloc }, { "_realloc", (void *)sh_guest_realloc },
+#endif
     { "_memset",    (void *)memset  }, { "_memmove", (void *)sh_memmove },
     { "_memchr",    (void *)memchr  }, { "_strcmp",  (void *)strcmp  },
     { "_strchr",    (void *)strchr  }, { "_atoi",    (void *)atoi    },
@@ -282,6 +296,8 @@ static const shim g_shims[] = {
     { "_cblas_scopy",  (void *)sh_scopy  }, { "_cblas_saxpy", (void *)sh_saxpy },
     { "_cblas_sdot",   (void *)sh_sdot   }, { "_cblas_snrm2", (void *)sh_snrm2 },
     { "_cblas_sgemv",  (void *)sh_sgemv  },
+    { "_cblas_sgemm",  (void *)sh_sgemm  },
+    { "_ssyevr_",      (void *)sh_ssyevr },
     { "__DefaultRuneLocale", (void *)g_rune_locale },
     /* 10.7's `kSpeech*` property constants are not here on purpose: they are
      * one family resolved one way, and `lookup_shim` consults

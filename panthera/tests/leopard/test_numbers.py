@@ -6,7 +6,7 @@ seven point three".
 """
 import pytest
 
-from _panthera import pantheranumbers as numbers
+from synthDrivers._panthera import pantheranumbers as numbers
 
 
 # -- integers to words ----------------------------------------------------

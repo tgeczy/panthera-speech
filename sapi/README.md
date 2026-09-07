@@ -3,6 +3,12 @@
 This is a SAPI 5 engine shim built for x86 and x64. Both variants launch the
 existing 32-bit `panthera_host.exe`, because Apple's engine itself is i386.
 
+The COM adapter is in `panthera_sapi.cpp`. Separately compiled modules own
+the resident child and pipe reads (`runtime`), per-value registry fallback
+(`settings`), opt-in logging (`diagnostics`), and command/abbreviation handling
+(`text`). The lexical test links the same text module as the DLL; the resident
+integration test links the same runtime and settings modules on both bitnesses.
+
 **The host stays resident.** It used to be started and killed once per
 utterance; keeping it takes the time from asking for speech to hearing it
 from 19 ms to 11 on Tiger, 29 to 11 on Leopard, 26 to 10 on Snow Leopard,
@@ -48,14 +54,61 @@ to this repository. Run `C:\panthera\sapi\settings.cmd` to see which speech
 data is present and register or unregister the voices.
 
 The MacinTalk data folder is resolved in this order: a folder you chose with
-the "Data location" button (remembered per user), then NVDA's own shared
+the "Data location" button (remembered per user), then a folder set for the
+whole machine (`HKLM\Software\Panthera SAPI\DataPath`), then NVDA's own shared
 folder at `%APPDATA%\nvda\macintalk` -- so an NVDA user registers SAPI voices
 from the data they already extracted, with nothing copied and nothing
-extracted twice -- and finally `%APPDATA%\macintalk-data` for a machine with
-no NVDA at all. Inside the root sit the generation folders (`tiger`,
-`leopard`, `snowleopard`, `lion`; case does not matter on Windows), each laid
-out exactly as the NVDA add-on lays them out. The tool never creates folders
-inside NVDA's tree; extraction is the only thing that writes.
+extracted twice -- then `%APPDATA%\macintalk`, then the two folders
+earlier versions used, `%APPDATA%\macintalk-data` and
+`%ProgramData%\macintalk-data`.  A fresh install now creates
+`%APPDATA%\macintalk`, and the move button puts it in `%ProgramData%\macintalk`:
+**one name everywhere.**  The `-data` suffix distinguished the standalone
+folder from NVDA's, and there was never anything to distinguish -- the two are
+different paths already -- so all it bought was a second name to learn.
+Folders already using it keep working and are searched first-class.
+
+Inside the root sit the generation folders (`tiger`, `leopard`,
+`snowleopard`, `lion`; case does not matter on Windows), each laid out exactly
+as the NVDA add-on lays them out. The tool never creates folders inside NVDA's
+tree; extraction is the only thing that writes.
+
+A folder that is merely *there* does not win: the search prefers one with
+voices in it, and only falls back to bare existence. An emptied folder still
+stands, and one holding nothing but a README and a declined-prompt marker used
+to beat the real data sitting next to it.
+
+**The SAPI data moves to `%ProgramData%` and NVDA's does not**, which reads as
+an inconsistency and is not one. A portable NVDA copy carries its own
+configuration folder with it, so data kept inside that folder travels and data
+outside it is silently lost -- and on the Windows sign-in screen NVDA reads a
+copy of that folder and nothing else. SAPI has no portable copy to protect,
+and every account on the machine should read one copy rather than each
+extracting their own. So the NVDA driver only *adds* `%ProgramData%` to the
+places it looks, while this tool has a **Move voices for all users...**
+button.
+
+It is a button and not a prompt on purpose. `%APPDATA%` is read perfectly well
+from the sign-in screen -- NVDA runs there as SYSTEM, and SYSTEM can read any
+profile on the machine -- so the machine-wide folder buys one copy shared
+between accounts, which is worth offering and not worth interrupting anybody
+to ask about.
+
+Only a per-user folder moves: `%APPDATA%\macintalk` or `%APPDATA%\macintalk-data`.
+A folder you chose by hand stays where you put it, and NVDA's `macintalk`
+folder is moved by nothing, ever -- moving it out of NVDA's configuration
+directory is exactly what breaks the sign-in screen and portable copies. The
+button says which of those applies rather than doing nothing quietly.
+
+The move also resets the folder's permissions to what `%ProgramData%` grants
+everybody. A folder moved within one volume keeps the security descriptor it
+had, which would otherwise leave it machine-wide in name and readable by one
+account in fact -- and a machine with one account on it cannot tell the
+difference.
+
+Both registry views are written and read throughout, because `HKLM\Software`
+is redirected under WOW64 while `HKCU\Software` is not: NVDA and the 32-bit
+engine DLL see `Wow6432Node`, so a machine-wide value written once, from
+64-bit code, would be perfectly present and entirely invisible.
 
 The settings program carries the NVDA driver's engine settings: **Accept
 embedded speech commands in text** (off by default -- the engine really
@@ -64,13 +117,26 @@ mispronounced), **Pauses** (the phrase-break threshold, from fewest to the
 engine's own default), **Expand abbreviations**, **Rate boost** (the top of
 the range rises to about 1200 wpm; the bottom never moves), **Inflection**
 (0-100, 50 is the voice exactly as Apple ships it) and **Long numbers**
-(grouping separators restored into seven-plus digit runs, which the engine
-otherwise spells out one digit at a time). All apply to every SAPI
+(Fixed, Engine, or Words, using the shared native number rules). All apply to every SAPI
 application at once, from the next utterance spoken. SAPI's own per-voice
 pitch XML is honoured too. Not ported, with reasons: sentence joining and
 the announcement gap are driver-architecture (SAPI applications control
 their own chunking), and the stress respelling assumes NVDA's symbol
 dictionary has already turned ":" into the word "colon", which SAPI input
 never has.
+
+The settings window shows effective per-user or machine defaults. Changing
+one control preserves the other settings and the selected data location.
+Native control names and parents are checked alongside saving and reopening;
+the diagnostics checkbox participates in the same persistence checks.
+Pauses has no effect on Tiger, as its accessible description explains.
+
+Application volume is applied to each PCM chunk, including changes during
+speech. Mute retains the utterance's duration, and restoring 100 returns the
+original samples without restarting the host. Embedded commands retain their
+payloads through abbreviation processing; spaced delimiters are recognized,
+and Lion excludes input-mode commands consistently with NVDA and Android.
+The build runs resident voice checks through both x86 and x64 SAPI code with
+isolated registry settings, using personal engine data when available.
 
 This is development work: do not distribute it with extracted Apple data.

@@ -1,0 +1,127 @@
+# Build the host on a real Linux box, and run the checks that carry their own
+# inputs.
+#
+# A native ELF needs a real Linux build and link check. The generated tests
+# exercise the host without any engine data.
+#
+# **No Apple or Berkeley data goes near this, and none ever can.**  The rule
+# across both repositories is ship the extractor, never the bits; a build
+# server is exactly where that rule would be easiest to break by accident.  So
+# the tests here are the ones that carry their own inputs -- the number rules,
+# the regex engine, the AAC framing -- and the render oracles, which need a
+# MacinTalk tree, stay on the machines that legitimately have one.
+name: linux
+
+on:
+  push:
+    branches: [main, "tgeczy/**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    # Match the supported runtime baseline. ubuntu-latest pulled in GLIBC_2.38
+    # symbols, so an otherwise passing archive could not load on Ubuntu 22.04.
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The one that matters: i386 guest on an x86 host is a native call,
+          # so there is no emulator in the path at all.
+          - arch: i686
+            packages: gcc-multilib libfaad-dev
+          # Correct, and slower than the Wine setup it would replace, because
+          # the guest has to be emulated.  Built so it cannot rot.
+          - arch: x86_64
+            packages: libfaad-dev
+    name: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y python3-venv ${{ matrix.packages }}
+          # The 32-bit FAAD2 is a separate package from the 64-bit one, and
+          # only the i686 build wants it.  Not fatal if the archive does not
+          # carry it: the build then says so and leaves the AAC voices out
+          # rather than failing.
+          if [ "${{ matrix.arch }}" = "i686" ]; then
+            sudo apt-get install -y libfaad-dev:i386 || true
+          fi
+
+      - name: Fetch and build Unicorn
+        if: matrix.arch != 'i686'
+        run: |
+          git clone --depth 1 --branch 2.1.4 \
+            https://github.com/unicorn-engine/unicorn.git unicorn-src
+          cmake -S unicorn-src -B unicorn-src/build \
+            -DCMAKE_BUILD_TYPE=Release -DUNICORN_ARCH=x86 \
+            -DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+          cmake --build unicorn-src/build -j"$(nproc)"
+          echo "UNICORN_DIR=$PWD/unicorn-src" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          chmod +x build_linux.sh
+          ./build_linux.sh ${{ matrix.arch }}
+
+      - name: Link an external client to the public synthesis library
+        run: |
+          out="$PWD/build/linux-${{ matrix.arch }}"
+          flags=""
+          if [ "${{ matrix.arch }}" = "i686" ]; then flags="-m32"; fi
+          cc $flags -I"$out/include" tools/native_library_check.c \
+            -L"$out" -Wl,-rpath,"$out" -lpanthera -o "$out/library_check"
+          "$out/library_check" --check
+
+      # The number rules are a port of pantheranumbers.py, and the port is only
+      # worth having if it is exact.  This is the differential test: a thousand
+      # generated inputs through both, diffed byte for byte.  It needs Python
+      # and the driver source, both of which are in the repository, and no
+      # engine data whatsoever.
+      - name: The number rules still agree with the Python they came from
+        run: |
+          python3 tools/numbers_oracle.py build/linux-${{ matrix.arch }}/tiger_host
+          python3 tools/native_cli_args_check.py build/linux-${{ matrix.arch }}/tiger_host
+
+      - name: Volume agrees with NVDA and capabilities are machine-readable
+        run: |
+          python3 tools/volume_oracle.py build/linux-${{ matrix.arch }}/tiger_host
+          python3 tools/android_abbreviation_oracle.py
+          build/linux-${{ matrix.arch }}/tiger_host --capabilities | python3 -m json.tool
+          build/linux-${{ matrix.arch }}/tiger_host --libc-check
+
+      - name: Generated linear algebra and SQLite ABI oracles
+        run: |
+          python3 -m venv /tmp/panthera-tests
+          /tmp/panthera-tests/bin/pip install numpy pytest
+          export PANTHERA_TEST_HOST="$PWD/build/linux-${{ matrix.arch }}/tiger_host"
+          export PANTHERA_TEST_UC_HOST="$PANTHERA_TEST_HOST"
+          /tmp/panthera-tests/bin/python -m pytest -q \
+            panthera/tests/test_linalg.py panthera/tests/test_sqlite_abi.py
+
+      - name: Package the executable, library and public header
+        run: |
+          out="build/linux-${{ matrix.arch }}"
+          cp docs/linux-native.md "$out/README.md"
+          cp tools/native_library_check.c "$out/"
+          mkdir -p "$out/licenses" "$out/sources"
+          cp licenses/* "$out/licenses/"
+          git archive --format=tar.gz -o "$PWD/$out/sources/panthera.tar.gz" HEAD \
+            src build_linux.sh LICENSE licenses docs/linux-native.md tools/native_library_check.c
+          if [ "${{ matrix.arch }}" != "i686" ]; then
+            cp unicorn-src/COPYING "$out/licenses/Unicorn-GPL-2.0.txt"
+            git -C unicorn-src archive --format=tar.gz \
+              -o "$PWD/$out/sources/unicorn-2.1.4.tar.gz" HEAD
+          fi
+          tar -czf "build/panthera-linux-${{ matrix.arch }}.tar.gz" -C "$out" \
+            tiger_host libpanthera.so libpanthera.so.0 include README.md native_library_check.c licenses sources
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tiger_host-linux-${{ matrix.arch }}
+          path: build/panthera-linux-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error

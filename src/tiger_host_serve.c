@@ -5,9 +5,17 @@
 
 /* ---- serve mode -------------------------------------------------------- */
 /*
- * One long-lived process behind the NVDA driver.  Opening a channel costs a
+ * One long-lived engine behind the NVDA driver.  Opening a channel costs a
  * 2.1 MB dictionary map and a voice load, so it happens once; after that a
- * request is text in, PCM out, over stdin/stdout.
+ * request is text in, PCM out, over `g_in` and `g_out`.
+ *
+ * **Those two are the only reason anything in this file knows it is a
+ * process.**  The executable points them at its own stdin and stdout; the DLL
+ * points them at a pair of private pipes it made itself, because inside NVDA's
+ * 32-bit bridge host the process's stdin and stdout already belong to RPyC and
+ * would not survive being shared.  Everything below is written once and runs
+ * unchanged either way, which is the whole reason a DLL could be added without
+ * a second protocol to keep in step with this one.
  *
  * The voice is named rather than numbered, and the host reads the creator
  * OSType and id straight out of the bundle's VoiceDescription -- so nothing
@@ -15,6 +23,9 @@
  *
  *   request   'TGR3' | i32 wpm | i32 pitch | u32 flags | u32 namelen
  *                      | u32 textlen | name | text
+ * Flags: bit 1 (2) repairs numbers; bit 2 (4) spells numbers as words.
+ * With neither bit set, legacy client-prepared text is preserved. Bit 0 is reserved.
+ * Number style is per request, so changing it never restarts the host.
  *   response  'TGRS' | i32 status | u32 nframes | i16 pcm[nframes]
  *
  * `pitch` is an **offset in tenths of a semitone** from the voice's own pitch,
@@ -30,6 +41,12 @@
  * The magic changed with the field: a stale host in the add-on folder should
  * fail loudly rather than misread a request by one word and speak nonsense.
  */
+/* The request and response channels.  Left null until `serve` starts, because
+ * `stdin` and `stdout` are function calls in the UCRT and cannot initialise a
+ * static; the DLL sets them before calling and `serve` fills in the
+ * executable's answer when it finds them empty. */
+static FILE *g_in, *g_out;
+
 #define REQ_MAGIC 0x54475233u           /* 'TGR3' */
 /* 'TGR4' asks for the same audio, streamed.  A separate magic rather than a
  * flag because the failure it guards against is a stale tiger_host.exe left in
@@ -108,6 +125,22 @@
  * so it must never block, and SetEvent cannot.  The name comes in on the
  * environment when the host is started. */
 static HANDLE g_cancel_ev;
+#ifndef _WIN32
+#include <signal.h>
+static volatile sig_atomic_t g_cancel_signal;
+/* Only publish a flag from the signal handler. Engine calls belong to the
+ * synthesis thread. Lock-free exchange keeps a new signal from being lost
+ * while the reader consumes an earlier one. */
+#if __GCC_ATOMIC_INT_LOCK_FREE != 2
+#error Cancellation requires lock-free integer atomics
+#endif
+typedef char cancel_atomic_is_int[sizeof(sig_atomic_t) == sizeof(int) ? 1 : -1];
+static void cancel_signal(int sig)
+{
+    (void)sig;
+    __atomic_store_n(&g_cancel_signal, 1, __ATOMIC_RELAXED);
+}
+#endif
 /* Whether an interrupted channel is reset with soReset.
  *
  * It flushes what is left, but it resets the channel to its defaults --
@@ -116,9 +149,29 @@ static HANDLE g_cancel_ev;
  * TIGER_RESET=1 puts it back for measuring; the settle below is what
  * carries the load. */
 static int g_use_reset;
+#define SEL_STATUS 0x73746174u          /* 'stat' -- soStatus */
+
+/* SpeechStatusInfo starts with byte-sized outputBusy/inputBusy flags. The
+ * engine writes through this pointer, so use guest-visible storage on UC. */
+static int speech_status_idle(const speech_api *api, void *chan, int *idle)
+{
+    unsigned char info[16] = {0};
+    unsigned char *slot;
+    int rc;
+    if (!api->getinfo) return -231;
+    slot = (unsigned char *)UC_IN(info, sizeof info);
+    if (!slot) return -108;
+    rc = call_aligned3((void *)api->getinfo, chan, (void *)SEL_STATUS, slot);
+    *idle = rc == 0 && slot[0] == 0;
+    UC_FREE(slot);
+    return rc;
+}
 
 static int cancel_requested(void)
 {
+#ifndef _WIN32
+    if (__atomic_exchange_n(&g_cancel_signal, 0, __ATOMIC_RELAXED)) return 1;
+#endif
     return g_cancel_ev &&
            WaitForSingleObject(g_cancel_ev, 0) == WAIT_OBJECT_0;
 }
@@ -146,7 +199,6 @@ typedef int (*SEStatus_t)(void *chan, void *info);
 #define SEL_PITCH 0x70626173u           /* 'pbas' -- soPitchBase, Fixed */
 #define SEL_DELIM 0x646c696du           /* 'dlim' -- soCommandDelimiter */
 #define SEL_RESET 0x72736574u           /* 'rset' -- soReset */
-#define SEL_STATUS 0x73746174u          /* 'stat' -- soStatus */
 
 /* Flags word in the request. */
 #define REQF_COMMANDS 0x1               /* honour [[...]] in the text */
@@ -249,7 +301,7 @@ static void put_frames(unsigned from, unsigned to)
         if (v > 1.0) v = 1.0;
         if (v < -1.0) v = -1.0;
         s = (short)(v * 32767.0);
-        fwrite(&s, 2, 1, stdout);
+        fwrite(&s, 2, 1, g_out);
     }
 }
 
@@ -266,9 +318,9 @@ static unsigned stream_chunk(unsigned sent, unsigned upto)
     while (sent < upto) {
         unsigned n = upto - sent;
         if (n > 1024u) n = 1024u;
-        fwrite(&n, 4, 1, stdout);
+        fwrite(&n, 4, 1, g_out);
         put_frames(sent, sent + n);
-        fflush(stdout);
+        fflush(g_out);
         sent += n;
     }
     return sent;
@@ -305,8 +357,63 @@ static int serve(image *mt, void *chan, const char *voicesdir)
     int  curpitch = -1;
 
     g_verbose = 0;                       /* the pipe carries audio, not chat */
-    _setmode(_fileno(stdin), _O_BINARY);
-    _setmode(_fileno(stdout), _O_BINARY);
+    if (!g_in)  g_in  = stdin;           /* the executable's channels */
+    if (!g_out) g_out = stdout;
+    _setmode(_fileno(g_in), _O_BINARY);
+    _setmode(_fileno(g_out), _O_BINARY);
+
+    /* **The protocol keeps the pipe; stdout stops being it.**
+     *
+     * Anything in the host that printf's while serving writes into the
+     * response stream, and the client reads whatever lands there as frame
+     * counts.  Most prints are behind g_verbose, but a handful of anomaly
+     * complaints were not -- a shim's first-call notice, a slice-size
+     * mismatch -- and one firing mid-utterance corrupted the stream: the
+     * SAPI DLL misread "  [s" as 1.9 billion frames, asked for that many
+     * bytes, and took the whole client application down with it.  Found
+     * from a game that crashed, rarely, after hours of route calls.
+     *
+     * So the protocol moves to a private duplicate of the pipe, and stdout
+     * is rebound to stderr -- which serve mode already points somewhere
+     * harmless -- so a stray print can never again reach the stream.  A
+     * client whose stderr is nothing at all (a GUI application's often is)
+     * gets NUL instead.  The complaints themselves now say stderr, where
+     * complaints belong; this is armor for the next one. */
+    if (g_out == stdout) {
+        int fd = _dup(_fileno(stdout));
+        if (fd != -1) {
+            FILE *pipe = _fdopen(fd, "wb");
+            if (pipe) {
+                _setmode(fd, _O_BINARY);
+                g_out = pipe;
+                fflush(stdout);
+                if (_get_osfhandle(_fileno(stderr)) == -1 ||
+                    _dup2(_fileno(stderr), _fileno(stdout)) != 0)
+                    freopen("NUL", "wb", stdout);
+            }
+        }
+    }
+
+#ifndef _WIN32
+    {
+        struct sigaction action;
+        memset(&action, 0, sizeof(action));
+        action.sa_handler = cancel_signal;
+        sigemptyset(&action.sa_mask);
+        action.sa_flags = SA_RESTART;
+        if (sigaction(SIGUSR1, &action, NULL) != 0) {
+            perror("tiger_host: installing cancellation signal");
+            return 1;
+        }
+    }
+#endif
+    /* A client can wait for TRDY before writing the first request.
+     * Opt-in preserves the byte stream expected by existing NVDA clients. */
+    { const char *ready = getenv("TIGER_READY_HANDSHAKE");
+      if (ready && !strcmp(ready, "1")) {
+          unsigned magic = 0x59445254u;
+          if (fwrite(&magic, 4, 1, g_out) != 1 || fflush(g_out)) return 1;
+      } }
 
     for (;;) {
         unsigned magic, namelen, textlen, nframes, i;
@@ -319,20 +426,27 @@ static int serve(image *mt, void *chan, const char *voicesdir)
         char name[128];
         char *text;
 
-        if (!read_all(stdin, &magic, 4)) return 0;      /* driver went away */
+        if (!read_all(g_in, &magic, 4)) return 0;      /* driver went away */
         if (magic != REQ_MAGIC && magic != REQ_MAGIC_STREAM) return 1;
         streaming = (magic == REQ_MAGIC_STREAM);
-        if (!read_all(stdin, &wpm, 4) ||
-            !read_all(stdin, &pitch, 4) ||
-            !read_all(stdin, &flags, 4) ||
-            !read_all(stdin, &namelen, 4) ||
-            !read_all(stdin, &textlen, 4)) return 1;
+        if (!read_all(g_in, &wpm, 4) ||
+            !read_all(g_in, &pitch, 4) ||
+            !read_all(g_in, &flags, 4) ||
+            !read_all(g_in, &namelen, 4) ||
+            !read_all(g_in, &textlen, 4)) return 1;
         if (namelen >= sizeof(name)) return 1;
-        if (!read_all(stdin, name, namelen)) return 1;
+        if (!read_all(g_in, name, namelen)) return 1;
         name[namelen] = 0;
         text = (char *)malloc(textlen + 1);
-        if (!text || !read_all(stdin, text, textlen)) { free(text); return 1; }
+        if (!text || !read_all(g_in, text, textlen)) { free(text); return 1; }
         text[textlen] = 0;
+        if(flags & 6u){
+            char *expanded = num_expand(text, (flags & 4u) ? NUM_STYLE_WORDS : NUM_STYLE_FIX);
+            free(text);
+            if(!expanded)return 1;
+            text=expanded;
+            textlen=(unsigned)strlen(text);
+        }
         text = break_letter_runs(text, &textlen);
 
         voicechanged = 0;
@@ -342,7 +456,7 @@ static int serve(image *mt, void *chan, const char *voicesdir)
             _snprintf(dir, sizeof(dir), "%s/%s.SpeechVoice", voicesdir, name);
             dir[sizeof(dir) - 1] = 0;
             if (voice_spec(dir, &spec.creator, &spec.id)) {
-                err = call_aligned3((void *)use, chan, &spec,
+                err = call_aligned3((void *)use, chan, UC_IN(&spec, sizeof spec),
                                     cf_pinned(dir));
                 if (!err) {
                     strcpy(curvoice, name);
@@ -405,6 +519,7 @@ static int serve(image *mt, void *chan, const char *voicesdir)
         g_t_aac = g_t_fft = 0;
         g_n_aac = g_n_fft = 0;
         g_pcm_n = 0; g_slices = 0; g_stopped = 0; g_empty_run = 0;
+        InterlockedExchange(&g_au_cancel, 0);
         g_dup_slices = 0; g_have_last = 0; g_p_drops = 0;
         g_epoch_base = 0; g_last_stime = 0.0; g_have_origin = 0;
         /* A new utterance: anything still in flight for the last one is stale
@@ -455,9 +570,9 @@ static int serve(image *mt, void *chan, const char *voicesdir)
          * immediately instead of waiting out the render. */
         if (streaming) {
             magic = RSP_MAGIC;
-            fwrite(&magic, 4, 1, stdout);
-            fwrite(&err, 4, 1, stdout);
-            fflush(stdout);
+            fwrite(&magic, 4, 1, g_out);
+            fwrite(&err, 4, 1, g_out);
+            fflush(g_out);
         }
 
         /* AUGraphStop is the engine's own end-of-utterance signal, with a
@@ -555,12 +670,10 @@ static int serve(image *mt, void *chan, const char *voicesdir)
                  * necessarily started when the first tick runs and an idle
                  * answer then would end the utterance before it began. */
                 if (g_ask_status && api.getinfo && g_pcm_n) {
-                    long st[4];
-                    memset(st, 0, sizeof(st));
-                    if (call_aligned3((void *)api.getinfo, chan,
-                                      (void *)SEL_STATUS, st) == 0) {
+                    int idle = 0;
+                    if (speech_status_idle(&api, chan, &idle) == 0) {
                         g_stat_ok++;
-                        if (st[0] == 0) { g_stat_idle++; break; }
+                        if (idle) { g_stat_idle++; break; }
                     } else {
                         g_stat_refused++;
                     }
@@ -570,6 +683,7 @@ static int serve(image *mt, void *chan, const char *voicesdir)
                      * render the rest of a sentence nobody will hear -- the
                      * driver cannot start the next utterance until this
                      * response ends, so finishing it politely *is* the lag. */
+                    InterlockedExchange(&g_au_cancel, 1);
                     if (stopnow)
                         call_aligned2((void *)stopnow, chan, (void *)0);
                     /* Stopping the channel loses its rate and pitch.
@@ -607,61 +721,10 @@ static int serve(image *mt, void *chan, const char *voicesdir)
                         call_aligned3((void *)setinfo, chan, (void *)SEL_RESET,
                                       &zero);
                     }
-                    /* Then let the channel settle -- and this one is honest
-                     * about what it is.
-                     *
-                     * It asks GetSpeechInfo 'stat', whose first long is
-                     * outputBusy, and gives up after a hundred milliseconds.
-                     * Measured on this engine, outputBusy *never* clears: the
-                     * loop runs its full count every time.  So this is a
-                     * bounded wait wearing a poll's clothing, kept because
-                     * removing it brings the fragment back (0 of 8 with it,
-                     * 1 of 8 without) and because the poll costs nothing if a
-                     * future engine does report itself idle.
-                     *
-                     * A hundred milliseconds against 2255 ms of the original
-                     * fault is a trade worth making, but it is a delay, and
-                     * calling it a status check would be a lie. */
-                    {
-                        /* Wait for the stragglers to stop, rather than for a
-                         * fixed time.
-                         *
-                         * The engine keeps handing over slices for a little
-                         * while after being stopped -- the host counts them,
-                         * and it is four or five -- and any that arrive once
-                         * the next request has begun are stamped as *its*
-                         * audio and are heard at the head of it.  A fixed
-                         * hundred milliseconds caught most and missed some:
-                         * the residue was two words, "after that.", still
-                         * riding in front of the next post.
-                         *
-                         * So watch the slice counter instead and leave when it
-                         * has been still for a moment.  Usually quicker than
-                         * the fixed wait, and it does not guess. */
-                        unsigned last = g_slices, quiet = 0;
-                        int spin;
-                        long info[4];
-                        for (spin = 0; spin < 100 && quiet < 15; spin++) {
-                            Sleep(2);
-                            if (g_slices != last) { last = g_slices; quiet = 0; }
-                            else quiet++;
-                            /* 10.7 moved `stat` to kSpeechStatusProperty as
-                             * well, so this asks and is refused there. The
-                             * loop is a bounded settle either way -- it only
-                             * costs the full 200 ms instead of stopping as
-                             * soon as the engine says it is idle. */
-                            if (api.getinfo) {
-                                memset(info, 0, sizeof(info));
-                                if (call_aligned3((void *)api.getinfo, chan,
-                                                  (void *)SEL_STATUS,
-                                                  info) == 0 && info[0] == 0)
-                                    break;      /* it says it is idle */
-                            }
-                        }
-                        if (g_float_stats)
-                            fprintf(stderr, "  [se] settled after %d ms\n",
-                                    spin * 2);
-                    }
+                    /* Do not hand the next request a timeline that still has
+                     * callbacks from this one. On failure close the protocol;
+                     * the client must replace this process before speaking. */
+                    if (!settle_cancelled_audio()) return 1;
                     cancelled = 1;
                     break;
                 }
@@ -814,16 +877,16 @@ static int serve(image *mt, void *chan, const char *voicesdir)
              * it was the difference between 446 ms and not noticing. */
             if (!cancelled)
                 sent = stream_chunk(sent, g_pcm_n);
-            fwrite(&zero, 4, 1, stdout);
-            fflush(stdout);
+            fwrite(&zero, 4, 1, g_out);
+            fflush(g_out);
         } else {
             nframes = g_pcm_n;
             magic = RSP_MAGIC;
-            fwrite(&magic, 4, 1, stdout);
-            fwrite(&err, 4, 1, stdout);
-            fwrite(&nframes, 4, 1, stdout);
+            fwrite(&magic, 4, 1, g_out);
+            fwrite(&err, 4, 1, g_out);
+            fwrite(&nframes, 4, 1, g_out);
             put_frames(0, nframes);
-            fflush(stdout);
+            fflush(g_out);
         }
     }
 }

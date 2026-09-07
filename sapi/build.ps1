@@ -4,6 +4,9 @@ $repo = Split-Path -Parent $PSScriptRoot
 $msvc = Get-ChildItem "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC" -Directory | Sort-Object Name | Select-Object -Last 1
 $sdk = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Include" -Directory | Sort-Object Name | Select-Object -Last 1
 if (!$msvc -or !$sdk) { throw "MSVC Build Tools and the Windows SDK are required" }
+# Modules shared by the DLL and the resident integration test.
+$engineSources = @('runtime.cpp', 'settings.cpp', 'diagnostics.cpp', 'text.cpp') |
+  ForEach-Object { Join-Path $PSScriptRoot $_ }
 $stage = Join-Path $OutputRoot "sapi"
 New-Item -ItemType Directory -Force $stage,(Join-Path $stage "x86"),(Join-Path $stage "x64") | Out-Null
 $hostCl = Join-Path $msvc.FullName "bin\Hostx64\x86\cl.exe"
@@ -15,20 +18,22 @@ foreach ($arch in "x86","x64") {
   $cl = Join-Path $msvc.FullName "bin\Hostx64\$arch\cl.exe"
   $libarch = if ($arch -eq "x86") { "x86" } else { "x64" }
   $out = Join-Path $stage $arch
-  & $cl /nologo /EHsc /O2 /MT /LD /DUNICODE /D_UNICODE "/I$($msvc.FullName)\include" "/I$($sdk.FullName)\um" "/I$($sdk.FullName)\shared" "/I$($sdk.FullName)\ucrt" (Join-Path $PSScriptRoot "panthera_sapi.cpp") "/Fe$out\panthera_sapi.dll" "/Fo$out\" /link "/DEF:$PSScriptRoot\panthera_sapi.def" "/LIBPATH:$($msvc.FullName)\lib\$libarch" "/LIBPATH:$($sdk.Parent.Parent.FullName)\Lib\$($sdk.Name)\um\$libarch" "/LIBPATH:$($sdk.Parent.Parent.FullName)\Lib\$($sdk.Name)\ucrt\$libarch" sapi.lib ole32.lib advapi32.lib
+  & $cl /nologo /EHsc /O2 /MT /LD /DUNICODE /D_UNICODE "/I$($msvc.FullName)\include" "/I$($sdk.FullName)\um" "/I$($sdk.FullName)\shared" "/I$($sdk.FullName)\ucrt" (Join-Path $PSScriptRoot "panthera_sapi.cpp") @engineSources "/Fe$out\panthera_sapi.dll" "/Fo$out\" /link "/DEF:$PSScriptRoot\panthera_sapi.def" "/LIBPATH:$($msvc.FullName)\lib\$libarch" "/LIBPATH:$($sdk.Parent.Parent.FullName)\Lib\$($sdk.Name)\um\$libarch" "/LIBPATH:$($sdk.Parent.Parent.FullName)\Lib\$($sdk.Name)\ucrt\$libarch" sapi.lib ole32.lib advapi32.lib
   if ($LASTEXITCODE) { throw "$arch SAPI DLL build failed ($LASTEXITCODE)" }
 }
-# The abbreviation rules ship in the DLL; rules_test.cpp #includes the DLL
-# source and runs the parity cases mirrored from pantheraabbrev.py's tests,
+# The abbreviation rules ship in the DLL; rules_test.cpp links the same text
+# module and runs the parity cases mirrored from pantheraabbrev.py's tests,
 # so a rules change that drifts from the Python spec fails the build here
 # rather than in somebody's JAWS.
 $testCl = Join-Path $msvc.FullName "bin\Hostx64\x64\cl.exe"
 $testDir = Join-Path $env:TEMP "panthera-rules-test"
 New-Item -ItemType Directory -Force $testDir | Out-Null
-& $testCl /nologo /EHsc /O2 /MT /DUNICODE /D_UNICODE "/I$PSScriptRoot" "/I$($msvc.FullName)\include" "/I$($sdk.FullName)\um" "/I$($sdk.FullName)\shared" "/I$($sdk.FullName)\ucrt" (Join-Path $PSScriptRoot "rules_test.cpp") "/Fe$testDir\rules_test.exe" "/Fo$testDir\" /link "/LIBPATH:$($msvc.FullName)\lib\x64" "/LIBPATH:$($sdk.Parent.Parent.FullName)\Lib\$($sdk.Name)\um\x64" "/LIBPATH:$($sdk.Parent.Parent.FullName)\Lib\$($sdk.Name)\ucrt\x64" sapi.lib ole32.lib advapi32.lib
+& $testCl /nologo /EHsc /O2 /MT /DUNICODE /D_UNICODE "/I$PSScriptRoot" "/I$($msvc.FullName)\include" "/I$($sdk.FullName)\um" "/I$($sdk.FullName)\shared" "/I$($sdk.FullName)\ucrt" (Join-Path $PSScriptRoot "rules_test.cpp") (Join-Path $PSScriptRoot "text.cpp") "/Fe$testDir\rules_test.exe" "/Fo$testDir\" /link "/LIBPATH:$($msvc.FullName)\lib\x64" "/LIBPATH:$($sdk.Parent.Parent.FullName)\Lib\$($sdk.Name)\um\x64" "/LIBPATH:$($sdk.Parent.Parent.FullName)\Lib\$($sdk.Name)\ucrt\x64" sapi.lib ole32.lib advapi32.lib
 if ($LASTEXITCODE) { throw "rules test build failed ($LASTEXITCODE)" }
 & "$testDir\rules_test.exe"
 if ($LASTEXITCODE) { throw "the SAPI abbreviation rules disagree with pantheraabbrev.py" }
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File (Join-Path $PSScriptRoot 'settings_test.ps1')
+if ($LASTEXITCODE) { throw "the SAPI settings controls failed their persistence checks" }
 
 # The host outlives the utterance now, so the questions only a resident engine
 # can get wrong get asked here: that a warm utterance is byte-identical to a
@@ -37,17 +42,20 @@ if ($LASTEXITCODE) { throw "the SAPI abbreviation rules disagree with pantheraab
 # that an interruption leaves an engine which still speaks the same way.
 # It needs extracted speech data, and says so and passes when there is none,
 # so the gate is real on a machine with voices and silent on a build box.
-$resDir = Join-Path $env:TEMP "panthera-resident-test"
-New-Item -ItemType Directory -Force $resDir | Out-Null
-Copy-Item (Join-Path $stage "panthera_host.exe") $resDir -Force
-& $testCl /nologo /EHsc /O2 /MT /DUNICODE /D_UNICODE "/I$PSScriptRoot" "/I$($msvc.FullName)\include" "/I$($sdk.FullName)\um" "/I$($sdk.FullName)\shared" "/I$($sdk.FullName)\ucrt" (Join-Path $PSScriptRoot "resident_test.cpp") "/Fe$resDir\resident_test.exe" "/Fo$resDir\" /link "/LIBPATH:$($msvc.FullName)\lib\x64" "/LIBPATH:$($sdk.Parent.Parent.FullName)\Lib\$($sdk.Name)\um\x64" "/LIBPATH:$($sdk.Parent.Parent.FullName)\Lib\$($sdk.Name)\ucrt\x64" sapi.lib ole32.lib advapi32.lib
-if ($LASTEXITCODE) { throw "resident host test build failed ($LASTEXITCODE)" }
-foreach ($g in "tiger","leopard","snowleopard","Lion") {
-  # Lion is asked about Alex: its mtk3 voices are not reproducible run to run,
-  # so a byte-identity check on Lion's Fred would fail for reasons of its own.
-  $v = if ($g -eq "Lion") { "Alex" } else { "Fred" }
-  & "$resDir\resident_test.exe" (Join-Path $env:APPDATA "nvda\macintalk") $g $v
-  if ($LASTEXITCODE) { throw "the resident host misbehaves on $g" }
+foreach ($testArch in "x86","x64") {
+  $resDir = Join-Path $env:TEMP "panthera-resident-test\$testArch"
+  $testCl = Join-Path $msvc.FullName "bin\Hostx64\$testArch\cl.exe"
+  New-Item -ItemType Directory -Force $resDir | Out-Null
+  Copy-Item (Join-Path $stage "panthera_host.exe") $resDir -Force
+  & $testCl /nologo /EHsc /O2 /MT /DUNICODE /D_UNICODE "/I$PSScriptRoot" "/I$($msvc.FullName)\include" "/I$($sdk.FullName)\um" "/I$($sdk.FullName)\shared" "/I$($sdk.FullName)\ucrt" (Join-Path $PSScriptRoot "resident_test.cpp") @engineSources "/Fe$resDir\resident_test.exe" "/Fo$resDir\" /link "/LIBPATH:$($msvc.FullName)\lib\$testArch" "/LIBPATH:$($sdk.Parent.Parent.FullName)\Lib\$($sdk.Name)\um\$testArch" "/LIBPATH:$($sdk.Parent.Parent.FullName)\Lib\$($sdk.Name)\ucrt\$testArch" sapi.lib ole32.lib advapi32.lib
+  if ($LASTEXITCODE) { throw "resident host test build failed ($LASTEXITCODE)" }
+  foreach ($g in "tiger","leopard","snowleopard","Lion") {
+    # Lion is asked about Alex: its mtk3 voices are not reproducible run to run,
+    # so a byte-identity check on Lion's Fred would fail for reasons of its own.
+    $v = if ($g -eq "Lion") { "Alex" } else { "Fred" }
+    & "$resDir\resident_test.exe" (Join-Path $env:APPDATA "nvda\macintalk") $g $v
+    if ($LASTEXITCODE) { throw "the resident host misbehaves on $g" }
+  }
 }
 
 # The console-free way in: a GUI-subsystem launcher, so no console ever

@@ -17,8 +17,19 @@
  * does with valid handles.
  */
 typedef struct { unsigned tag; int id; } au_obj;
-static au_obj g_graph = { 0x41554752u, 0 };     /* 'AUGR' */
-static au_obj g_units[8];
+/* The engine holds these as handles, so their addresses have to fit in the
+ * guest's 32 bits -- see GUEST_STATIC in tiger_host.c.  'AUGR' is set in
+ * au_guest_init rather than an initialiser, because on a 64-bit host the
+ * storage does not exist until then. */
+GUEST_STATIC(au_obj, g_graph, 1);
+GUEST_STATIC(au_obj, g_units, 8);
+
+static void au_guest_init(void)
+{
+    GUEST_STATIC_INIT(g_graph);
+    GUEST_STATIC_INIT(g_units);
+    if (g_graph) { g_graph->tag = 0x41554752u; g_graph->id = 0; }   /* 'AUGR' */
+}
 static int    g_nunits;
 
 static void fourcc(char *out, unsigned v)
@@ -29,10 +40,10 @@ static void fourcc(char *out, unsigned v)
         if (out[v] < 32 || out[v] > 126) out[v] = '.';
 }
 
-static int __cdecl sh_NewAUGraph(au_obj **out)
+static int __cdecl sh_NewAUGraph(gptr *out)
 {
-    if (out) *out = &g_graph;
-    if (g_verbose) printf("  [au] NewAUGraph -> %p\n", (void *)&g_graph);
+    if (out) *out = GP(g_graph);
+    if (g_verbose) printf("  [au] NewAUGraph -> %p\n", (void *)g_graph);
     return 0;
 }
 static int __cdecl sh_AUGraphNewNode(void *g, const unsigned *desc,
@@ -43,19 +54,19 @@ static int __cdecl sh_AUGraphNewNode(void *g, const unsigned *desc,
     if (desc) {
         fourcc(t, desc[0]); fourcc(s, desc[1]); fourcc(m, desc[2]);
         if (g_verbose) printf("  [au] NewNode type='%s' subtype='%s' manuf='%s'\n", t, s, m);
-    } else printf("  [au] NewNode (no description)\n");
+    } else fprintf(stderr, "  [au] NewNode (no description)\n");
     if (node) *node = ++g_nunits;               /* 1-based node ids */
     return 0;
 }
 static int __cdecl sh_AUGraphGetNodeInfo(void *g, int node, unsigned *desc,
-                                         unsigned *csize, void **cdata,
-                                         au_obj **unit)
+                                         unsigned *csize, gptr *cdata,
+                                         gptr *unit)
 {
     (void)g; (void)desc; (void)csize; (void)cdata;
     if (node < 1 || node > 8) return -50;
     g_units[node - 1].tag = 0x41554e54u;        /* 'AUNT' */
     g_units[node - 1].id  = node;
-    if (unit) *unit = &g_units[node - 1];
+    if (unit) *unit = GP(&g_units[node - 1]);
     if (g_verbose) printf("  [au] GetNodeInfo node %d -> unit %p\n", node,
            (void *)&g_units[node - 1]);
     return 0;
@@ -79,7 +90,7 @@ static int __cdecl sh_AUGraphAddNode(void *g, const unsigned *desc, int *node)
 }
 
 static int __cdecl sh_AUGraphNodeInfo(void *g, int node, unsigned *desc,
-                                      au_obj **unit)
+                                      gptr *unit)
 {
     return sh_AUGraphGetNodeInfo(g, node, desc, NULL, NULL, unit);
 }
@@ -148,6 +159,11 @@ static int __cdecl sh_DisposeAUGraph(void *g)
 #define kAUProp_StreamFormat        8
 #define kAUProp_ScheduleAudioSlice  3300
 #define kAUProp_ScheduleStartTime   3301
+
+/* AudioUnit's own "not right now" -- what a ScheduledSoundPlayer answers when
+ * it cannot take the slice it is being handed.  Used to cancel an utterance;
+ * see the schedule case in sh_AudioUnitSetProperty. */
+#define kAudioUnitErr_CannotDoInCurrentContext (-10863)
 
 /* The slice begins with an AudioTimeStamp, whose first field is a Float64
  * sample time saying *where in the output* this slice belongs.  Appending in
@@ -252,7 +268,16 @@ typedef void (__cdecl *slice_done_t)(void *userData, void *slice);
  * pipeline spins; without the delay the worker never gets scheduled between
  * completions and never renders.
  */
-#define PACE_QCAP  64
+/* Deep enough to absorb a cancelled utterance's burst: the engine runs
+ * unthrottled then, and 64 was measured overflowing 260 times on one
+ * interrupt.  512 slices is about ten seconds of audio in flight and 10 KB
+ * of queue, which is nothing next to what a wedged channel costs. */
+#define PACE_QCAP  512
+/* How long queue_completion will wait for room before giving up and
+ * dropping, in milliseconds.  Long enough that the pacer -- which pays an
+ * emulated guest call per slice -- can always catch up; short enough that a
+ * genuine stall still ends. */
+#define PACE_QWAIT_MS 500
 /* Tunable so the trade-off can be measured; TIGER_PACE is a percentage of
  * real time and TIGER_PACE_FLOOR a minimum in milliseconds. */
 static double g_pace = 100.0;
@@ -283,10 +308,30 @@ static pending  g_pending[PACE_QCAP];
 static int      g_p_head, g_p_tail, g_p_count;
 static CRITICAL_SECTION g_p_cs;
 static volatile LONG    g_pacer_stop;
+/* Set while the utterance in progress has been cancelled.
+ *
+ * The pacer sleeps out a slice's own duration before completing it, because
+ * the engine's worker is flow-controlled by those completions and would
+ * otherwise run arbitrarily far ahead of the sound.  That throttle is the
+ * whole of why a cancelled utterance took twenty seconds to let go on the
+ * watch: the engine was not being stubborn, it was waiting on ticks we were
+ * deliberately holding back at realtime, and _SEStopSpeechAt could not be
+ * delivered until its worker came up for air.  Measured on a Pixel Watch 2, a
+ * 700-character request cost 20.15 s between the stop and the next utterance
+ * reaching the engine, against ~28 s of audio still owed at g_pace 100.
+ *
+ * Once nobody wants the audio, pacing it is paying realtime for sound we are
+ * about to throw away.  So while cancelling, drop the sleep and let the engine
+ * run the remainder flat out.  Every slice is still completed -- that is the
+ * part that matters, since a completion that never fires wedges the channel --
+ * they are simply completed as fast as the worker can take them, and what they
+ * carry is not collected, because it is audio no one will hear. */
+static volatile LONG    g_au_cancel;
 /* Set while the pacer holds a job it has not finished collecting.  An
  * utterance is complete only when the queue is empty *and* this is clear;
  * reading g_pcm before then is a snapshot of a half-collected timeline. */
 static volatile LONG    g_p_busy;
+static volatile LONG    g_p_reset; /* finish scheduled buffers promptly during reset */
 /* A dropped slice is audio the engine produced and we threw away, and its
  * completion never fires, so the engine waits on a slice that will never
  * finish.  Count it and say it out loud rather than absorbing it. */
@@ -296,21 +341,50 @@ static unsigned         g_p_drops;
  * stop, and it used to be audible. */
 static unsigned         g_stale_slices;
 
+/* Queue one slice's completion, waiting for room rather than dropping it.
+ *
+ * A full queue used to mean a dropped slice, and a dropped slice is a
+ * completion that never fires.  Measured on a Pixel Watch 2: interrupt Leopard
+ * and the queue overflows 260 times, and the next utterance then never starts
+ * -- the engine sits in a loop calling AudioUnitReset, 118,760 times in
+ * thirty-five seconds, reading no property and asking nothing, waiting for
+ * slices that will never be finished.  The comment above g_p_drops said this
+ * would happen; it took a second decoder generation to actually do it.
+ *
+ * It overflows during a cancellation specifically, because that is when the
+ * engine is deliberately let run flat out (see g_au_cancel) while each
+ * completion still costs an emulated call into the guest.  Producer beats
+ * consumer, and the queue is the only thing between them.
+ *
+ * So: a bigger queue to absorb the burst, and then wait for room.  Waiting is
+ * safe here -- this runs on the engine's worker, and the pacer that drains the
+ * queue is a different thread -- but it is bounded anyway, because a wait that
+ * cannot end is a worse bug than the one being fixed.  If the bound is ever
+ * reached the slice is still dropped and still counted, and the count is in the
+ * finish line where somebody will see it. */
 static void queue_completion(slice_done_t p, void *u, void *s, unsigned frames)
 {
-    EnterCriticalSection(&g_p_cs);
-    if (g_p_count < PACE_QCAP) {
-        g_pending[g_p_tail].proc = p;
-        g_pending[g_p_tail].udata = u;
-        g_pending[g_p_tail].slice = s;
-        g_pending[g_p_tail].frames = frames;
-        g_pending[g_p_tail].utt = g_utt;
-        g_p_tail = (g_p_tail + 1) % PACE_QCAP;
-        g_p_count++;
-    } else {
-        g_p_drops++;
+    int waited = 0;
+    for (;;) {
+        int full;
+        EnterCriticalSection(&g_p_cs);
+        full = (g_p_count >= PACE_QCAP);
+        if (!full) {
+            g_pending[g_p_tail].proc = p;
+            g_pending[g_p_tail].udata = u;
+            g_pending[g_p_tail].slice = s;
+            g_pending[g_p_tail].frames = frames;
+            g_pending[g_p_tail].utt = g_utt;
+            g_p_tail = (g_p_tail + 1) % PACE_QCAP;
+            g_p_count++;
+        } else if (waited >= PACE_QWAIT_MS) {
+            g_p_drops++;
+        }
+        LeaveCriticalSection(&g_p_cs);
+        if (!full || waited >= PACE_QWAIT_MS) return;
+        Sleep(1);
+        waited++;
     }
-    LeaveCriticalSection(&g_p_cs);
 }
 
 /* True when the pacer has nothing left to collect. */
@@ -340,7 +414,7 @@ static int pacer_idle(void)
 static void collect_slice(unsigned char *slice)
 {
     unsigned frames = *(unsigned *)(slice + SLICE_FRAMES_OFF);
-    unsigned char *bl = *(unsigned char **)(slice + SLICE_BUFLIST_OFF);
+    unsigned char *bl = (unsigned char *)GHOST(*(gptr *)(slice + SLICE_BUFLIST_OFF));
     double stime = *(double *)(slice + SLICE_SAMPLETIME_OFF);
     unsigned tsflags = *(unsigned *)(slice + SLICE_TSFLAGS_OFF);
     unsigned nbufs, i;
@@ -400,7 +474,7 @@ static void collect_slice(unsigned char *slice)
     for (i = 0; i < nbufs; i++) {
         unsigned char *b = bl + 4 + i * 12;
         unsigned bytes = *(unsigned *)(b + 4);
-        const float *data = *(const float **)(b + 8);
+        const float *data = (const float *)GHOST(*(gptr *)(b + 8));
         unsigned n = bytes / sizeof(float), j, pos;
         if (i != 0 || !data) continue;
         if (frames < n) n = frames;
@@ -430,6 +504,7 @@ static void collect_slice(unsigned char *slice)
 static DWORD WINAPI pacer_thread(LPVOID arg)
 {
     (void)arg;
+    tiger_thread_is_audio("pacer");
     while (!g_pacer_stop) {
         pending job;
         int have = 0;
@@ -455,14 +530,15 @@ static DWORD WINAPI pacer_thread(LPVOID arg)
              * empty-slice spin returns, so it wants measuring, not guessing. */
             double ms = job.frames * 1000.0 / g_rate * (g_pace / 100.0);
             if (ms < g_pace_floor) ms = g_pace_floor;
+            if (g_au_cancel || g_p_reset) ms = 0.0;   /* cancelled: owed nobody any time */
             if (ms >= 1.0) Sleep((DWORD)ms);
-            else SwitchToThread();
+            else SwitchToThread();        /* still yield, or the worker never runs */
         }
         /* Audio for an utterance that has already been answered must not be
          * written into the buffer the next one is filling.  Complete the slice
          * regardless -- that is the engine's clock, and refusing to tick it is
          * how the channel wedges -- but do not collect what it carries. */
-        if (job.utt == g_utt)
+        if (job.utt == g_utt && !g_au_cancel)
             collect_slice((unsigned char *)job.slice);
         else
             g_stale_slices++;
@@ -479,14 +555,54 @@ static DWORD WINAPI pacer_thread(LPVOID arg)
     return 0;
 }
 
+/* Finish reset callbacks before returning. The guest retires whatever
+ * remains after AudioUnitReset, so a delayed completion would retire the
+ * same slice twice. Drain through the existing pacer without pacing.
+ * An ordinary reset also separates sentences: keep their queued audio.
+ * Cancellation has its own flag and discards audio in the pacer above.
+ * Treating every reset as cancellation lost a timing-dependent sentence tail
+ * on slower hosts, while fast native renders had already collected it. */
+static int reset_scheduled_audio(void)
+{
+    unsigned waited = 0;
+    if (g_verbose) fprintf(stderr, "  [au] reset scheduled: queued=%d pcm=%u cancel=%ld\n", g_p_count, g_pcm_n, (long)g_au_cancel);
+    InterlockedExchange(&g_p_reset, 1);
+    while (!pacer_idle() && waited++ < 5000) Sleep(1);
+    if (!pacer_idle()) die("audio reset timed out waiting for completion callbacks");
+    InterlockedExchange(&g_p_reset, 0);
+    return 0;
+}
+
+/* A cancelled channel may still schedule audio after SEStopSpeechAt returns.
+ * Native Leopard settles quickly; amd64 emulation needs over 350 ms for the
+ * same request. Never reset the next timeline merely because 200 ms elapsed.
+ * Keep completing and discarding slices until the queue and producer settle.
+ * The deadline is a failure bound, not a delay added to successful cancels. */
+static int settle_cancelled_audio(void)
+{
+    unsigned last = g_slices, quiet = 0;
+    double deadline = wall_ms() + 10000.0;
+    while (quiet < 15 && wall_ms() < deadline) {
+        Sleep(2);
+        if (g_slices != last || !pacer_idle()) { last = g_slices; quiet = 0; }
+        else quiet++;
+    }
+    if (quiet >= 15) return 1;
+    fprintf(stderr, "panthera: cancelled audio did not settle; channel cannot be reused\n");
+    return 0;
+}
+
 static void take_slice(unsigned char *slice)
 {
     unsigned frames = *(unsigned *)(slice + SLICE_FRAMES_OFF);
     double stime = *(double *)(slice + SLICE_SAMPLETIME_OFF);
     unsigned tsflags = *(unsigned *)(slice + SLICE_TSFLAGS_OFF);
-    unsigned char *bl = *(unsigned char **)(slice + SLICE_BUFLIST_OFF);
-    slice_done_t done = *(slice_done_t *)(slice + SLICE_PROC_OFF);
-    void *udata = *(void **)(slice + SLICE_DATA_OFF);
+    unsigned char *bl = (unsigned char *)GHOST(*(gptr *)(slice + SLICE_BUFLIST_OFF));
+    /* The completion routine is a GUEST function pointer and its user data a
+     * guest address -- both four bytes, both read through a host-width type
+     * until now, which on arm64 fetched each of them glued to its neighbour. */
+    slice_done_t done = (slice_done_t)GHOST(*(gptr *)(slice + SLICE_PROC_OFF));
+    void *udata = GHOST(*(gptr *)(slice + SLICE_DATA_OFF));
     unsigned nbufs, i;
 
     g_slices++;
@@ -532,7 +648,7 @@ static void take_slice(unsigned char *slice)
     for (i = 0; i < nbufs; i++) {
         unsigned char *b = bl + 4 + i * 12;
         unsigned bytes = *(unsigned *)(b + 4);
-        const float *data = *(const float **)(b + 8);
+        const float *data = (const float *)GHOST(*(gptr *)(b + 8));
         unsigned n = bytes / sizeof(float), j;
         if (i == 0 && data) {
             /* The buffer's byte count is its capacity; `frames` is how much of
@@ -543,9 +659,13 @@ static void take_slice(unsigned char *slice)
             static unsigned mismatches;
             if (n != frames && mismatches < 8) {
                 mismatches++;
-                printf("  [au] slice %u: buffer holds %u frames, slice says "
-                       "%u -- taking %u\n", g_slices, n, frames,
-                       frames < n ? frames : n);
+                /* stderr, not stdout: this fires mid-render, and in serve
+                 * mode stdout was the protocol until the stream learned to
+                 * defend itself.  A complaint that corrupts the thing it is
+                 * complaining about is how a game crashed. */
+                fprintf(stderr, "  [au] slice %u: buffer holds %u frames, "
+                        "slice says %u -- taking %u\n", g_slices, n, frames,
+                        frames < n ? frames : n);
             }
             if (frames < n) n = frames;
             /* Roughness of the engine's own float output, before anything of
@@ -664,6 +784,26 @@ static int __cdecl sh_AudioUnitSetProperty(au_obj *unit, unsigned id,
                *(const unsigned *)(p + 12), g_channels,
                *(const unsigned *)(p + 32));
     } else if (id == kAUProp_ScheduleAudioSlice && data) {
+        /* Failing the schedule is how an utterance is cancelled.
+         *
+         * The engine hands over finished PCM by scheduling it here, so this
+         * call is the one place per slice where its render loop asks us a
+         * question and reads the answer.  _SEStopSpeechAt is not that place:
+         * measured on a Pixel Watch 2 it returns noErr but takes 20 s, because
+         * it waits for the worker, and the worker is busy rendering the very
+         * text we are trying to abandon -- 7032 slices went by inside one such
+         * call.  A screen reader cannot wait 20 s.
+         *
+         * The slice is taken first and refused second, and the order is the
+         * whole trick.  Simply returning the error took the utterance from 20 s
+         * to never: the engine had scheduled a slice whose completion then had
+         * nobody to fire it, and waited for it forever -- the wedge this file
+         * warns about two hundred lines up, walked straight into.  So take it
+         * (which queues the completion, and with g_au_cancel set the pacer
+         * fires it at once and throws the audio away), and *then* answer the
+         * failure a real ScheduledSoundPlayer would give if it could not accept
+         * the sound.  The engine's clock keeps ticking either way; the error is
+         * what lets it stop early rather than finish the sentence. */
         take_slice((unsigned char *)data);
     } else if (id == kAUProp_ScheduleStartTime) {
         if (g_verbose) printf("  [au] ScheduleStartTime sampleTime %.1f\n",
