@@ -21,18 +21,28 @@
  * SQLITE_ROW (100).  Every lookup therefore reported "no match", silently and
  * consistently, and Leopard's phrasing quietly fell back to nothing.
  *
- * There is no need to carry a copy of SQLite to fix that.  Windows has
- * shipped `winsqlite3.dll` since Windows 10 1803, it exports the sqlite3_*
- * API, and there is a 32-bit build of it in SysWOW64 -- which
- * is the bitness this process is, because Apple's engine is i386 code.  So
- * bind to it at first use and forward.  Nothing of anyone's is redistributed:
- * Apple's database is the user's own file, and SQLite is already on the
- * machine.
+ * There is no need to carry a copy of SQLite to fix that.  Every platform
+ * this runs on already has one; only its *name* differs.  Windows has shipped
+ * `winsqlite3.dll` since Windows 10 1803, it exports the sqlite3_* API, and
+ * there is a 32-bit build of it in SysWOW64 -- which is the bitness this
+ * process is, because Apple's engine is i386 code.  Linux has
+ * `libsqlite3.so.0`, which is on any machine that has ever run a browser or a
+ * package manager.  So bind to whichever is present at first use and forward.
+ * Nothing of anyone's is redistributed: Apple's database is the user's own
+ * file, and SQLite is already on the machine.
  *
- * If the DLL is not there -- an older Windows -- everything below fails
- * honestly rather than cheerfully, and says so once.  An unimplemented
- * dictionary that reports success is the exact shape of the bug that cost a
- * night; see [[bugs-that-work-by-accident]].
+ * The Windows name was the only name for as long as Windows was the only
+ * host, and the first native Linux build duly announced that
+ * `winsqlite3.dll is not on this system` -- true, and useless.  A library
+ * name is a platform fact, so it belongs in the little table below with the
+ * other platform facts, where a third platform costs a line rather than a
+ * bug report.
+ *
+ * If none of the names is there -- an older Windows, a bare Linux, Android,
+ * where the system SQLite is not in an app's linker namespace -- everything
+ * below fails honestly rather than cheerfully, and says so once.  An
+ * unimplemented dictionary that reports success is the exact shape of the bug
+ * that cost a night; see [[bugs-that-work-by-accident]].
  */
 #define SQLITE_OK      0
 #define SQLITE_ERROR   1
@@ -44,7 +54,13 @@
  * the arguments on the stack after every call: the engine faulted on the
  * first utterance rather than merely losing its phrasing.  The shims
  * themselves stay __cdecl, because that is the ABI Apple's engine calls us
- * with; only the pointers into the DLL are stdcall. */
+ * with; only the pointers into the DLL are stdcall.
+ *
+ * A distribution's own libsqlite3 is plain cdecl, as upstream intends -- and
+ * these declarations are already right for it, because the platform seam
+ * defines `__stdcall` away to nothing off Windows (tiger_plat.h).  One
+ * declaration, two ABIs, no #ifdef: the seam had this covered before SQLite
+ * needed it. */
 typedef int  (__stdcall *p_open)(const char *, void **);
 typedef int  (__stdcall *p_close)(void *);
 typedef int  (__stdcall *p_prepare)(void *, const char *, int, void **,
@@ -86,9 +102,26 @@ static struct {
 
 static unsigned g_sql_opens, g_sql_rows;
 
+/* The system's SQLite, by the name it goes under here.  More than one entry
+ * because a name can be right and still absent: `libsqlite3.so.0` is the
+ * soname the runtime package installs and is what a user machine has, while
+ * `libsqlite3.so` is the development symlink and is all a build container may
+ * have.  Tried in order, first hit wins. */
+static const char *const g_sql_names[] = {
+#ifdef _WIN32
+    "winsqlite3.dll",
+#else
+    "libsqlite3.so.0",
+    "libsqlite3.so",
+#endif
+    NULL
+};
+
 static int sqlite_ready(void)
 {
-    HMODULE h;
+    HMODULE h = NULL;
+    const char *loaded = NULL;
+    int i;
     if (g_sql.tried) return g_sql.ok;
     g_sql.tried = 1;
     /* TIGER_SQLITE=0 turns the phrasing dictionary off, so the engine's
@@ -102,13 +135,35 @@ static int sqlite_ready(void)
                           "TIGER_SQLITE=0\n");
           return 0;
       } }
-    h = LoadLibraryA("winsqlite3.dll");
+    /* TIGER_SQLITE_LIB names a library explicitly, for the machine where the
+     * system one is somewhere this cannot guess -- a Nix store, a relocated
+     * prefix, a build of SQLite the user would rather use. */
+    { const char *e = getenv("TIGER_SQLITE_LIB");
+      if (e && *e) {
+          h = LoadLibraryA(e);
+          if (!h) {
+              fprintf(stderr, "tiger_host: TIGER_SQLITE_LIB names '%s', which "
+                              "will not load -- Leopard's phrasing dictionary "
+                              "will be skipped\n", e);
+              return 0;
+          }
+          loaded = e;
+      } }
+    for (i = 0; !h && g_sql_names[i]; i++)
+        if ((h = LoadLibraryA(g_sql_names[i]))) loaded = g_sql_names[i];
     if (!h) {
-        fprintf(stderr, "tiger_host: winsqlite3.dll is not on this system, so "
-                        "Leopard's phrasing dictionary cannot be read -- "
-                        "speech will work, with flatter phrasing\n");
+        /* Name what was looked for.  "SQLite is missing" sends a reader
+         * hunting for a file that was never going to be there under that
+         * name on their platform, which is how this bug survived the first
+         * Linux build. */
+        fprintf(stderr, "tiger_host: no system SQLite (looked for");
+        for (i = 0; g_sql_names[i]; i++)
+            fprintf(stderr, "%s %s", i ? "," : "", g_sql_names[i]);
+        fprintf(stderr, "), so Leopard's phrasing dictionary cannot be read "
+                        "-- speech will work, with flatter phrasing\n");
         return 0;
     }
+    if (g_verbose) printf("  [sql] %s\n", loaded);
     g_sql.open       = (p_open)      GetProcAddress(h, "sqlite3_open");
     g_sql.close      = (p_close)     GetProcAddress(h, "sqlite3_close");
     g_sql.prepare    = (p_prepare)   GetProcAddress(h, "sqlite3_prepare");
@@ -117,7 +172,7 @@ static int sqlite_ready(void)
     g_sql.column_int = (p_column_int)GetProcAddress(h, "sqlite3_column_int");
     g_sql.reset      = (p_reset)     GetProcAddress(h, "sqlite3_reset");
     g_sql.finalize   = (p_finalize)  GetProcAddress(h, "sqlite3_finalize");
-    /* Lion's pair.  Deliberately *not* part of `ok`: a winsqlite3 without them
+    /* Lion's pair.  Deliberately *not* part of `ok`: a library without them
      * should cost Lion its phrasing table, not cost Leopard the one it has
      * been reading for months.  Each shim checks its own pointer instead. */
     g_sql.prepare_v2   = (p_prepare_v2)
@@ -127,9 +182,9 @@ static int sqlite_ready(void)
     g_sql.ok = g_sql.open && g_sql.close && g_sql.prepare && g_sql.bind_text
             && g_sql.step && g_sql.column_int && g_sql.reset && g_sql.finalize;
     if (!g_sql.ok)
-        fprintf(stderr, "tiger_host: winsqlite3.dll is missing entry points "
-                        "this needs -- Leopard's phrasing dictionary will be "
-                        "skipped\n");
+        fprintf(stderr, "tiger_host: %s is missing entry points this needs -- "
+                        "Leopard's phrasing dictionary will be skipped\n",
+                loaded);
     return g_sql.ok;
 }
 
