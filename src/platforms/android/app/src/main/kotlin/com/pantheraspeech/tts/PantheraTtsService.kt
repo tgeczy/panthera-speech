@@ -81,8 +81,20 @@ class PantheraTtsService : TextToSpeechService() {
 
     // Android speechRate is a percent of normal (100 = normal); the Mac voices'
     // own default is about 180 wpm, so 100% maps there.
-    private fun wpmFor(speechRate: Int): Int =
-        (180 * (if (speechRate <= 0) 100 else speechRate) / 100).coerceIn(80, 500)
+    private fun wpmFor(speechRate: Int): Int {
+        // A rate chosen in Engine settings wins over the one the caller asks
+        // for, which is the whole point of setting it: the system's own
+        // text-to-speech screen is a single slider shared by every app, and a
+        // percentage there means whatever each engine decides it means.
+        //
+        // It is also the setting that would have saved an afternoon. A phone
+        // left at 215% renders "Hello there." in 4032 frames where the desktop
+        // renders 18144, and that looked exactly like a broken port until the
+        // rate was pinned and the difference vanished.
+        val locked = PantheraEngine.prefs(this).getInt(PantheraEngine.PREF_RATE, 0)
+        if (locked > 0) return locked.coerceIn(80, 500)
+        return (180 * (if (speechRate <= 0) 100 else speechRate) / 100).coerceIn(80, 500)
+    }
 
     override fun onSynthesizeText(request: SynthesisRequest, callback: SynthesisCallback) {
         stopRequested = false

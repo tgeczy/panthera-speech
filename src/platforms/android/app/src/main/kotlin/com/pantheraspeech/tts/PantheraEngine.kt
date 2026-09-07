@@ -88,7 +88,7 @@ object PantheraEngine {
      * choice if its data is actually there, otherwise the first generation that
      * is. A stored choice whose data has since been removed must not strand the
      * app with no engine, so presence wins over preference. */
-    private fun activeGen(ctx: Context): String {
+    fun activeGen(ctx: Context): String {
         val chosen = prefs(ctx).getString(PREF_GEN, null)
         if (chosen != null && genRoot(ctx, chosen) != null) return chosen
         return GENERATIONS.firstOrNull { genRoot(ctx, it) != null } ?: GEN_TIGER
