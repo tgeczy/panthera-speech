@@ -101,6 +101,22 @@ Java_com_pantheraspeech_tts_PantheraNative_nativeSpeakStart(
     return rc;
 }
 
+JNIEXPORT void JNICALL
+Java_com_pantheraspeech_tts_PantheraNative_nativeSetExpandAbbreviations(
+        JNIEnv *, jclass, jboolean expand) {
+    panthera_set_expand_abbreviations(expand == JNI_TRUE);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_pantheraspeech_tts_PantheraNative_nativeSetPhrasing(
+        JNIEnv *env, jclass, jstring jstyle) {
+    const char *style = env->GetStringUTFChars(jstyle, nullptr);
+    if (!style) return -1;
+    int rc = panthera_set_phrasing(style);
+    env->ReleaseStringUTFChars(jstyle, style);
+    return rc;
+}
+
 // Fills `out` with up to out.length int16 samples; returns the count (0 = the
 // utterance is finished). Blocks briefly waiting for the worker to produce more.
 JNIEXPORT jint JNICALL

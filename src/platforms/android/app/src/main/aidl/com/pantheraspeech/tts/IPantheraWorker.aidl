@@ -1,8 +1,9 @@
 package com.pantheraspeech.tts;
 interface IPantheraWorker {
-    int open(String engine, String dictionary);
+    int open(String engine, String dictionary, String phrasing);
+    void shutdown();
     int start(String voice, int creator, int voiceId, in byte[] text, int wpm,
-              int volume, String generation, String numbers);
+              int volume, String generation, String numbers, boolean expandAbbreviations);
     byte[] pull(int capacity);
     void stop();
     void finish();

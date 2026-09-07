@@ -78,6 +78,7 @@ jobs:
       - name: Volume agrees with NVDA and capabilities are machine-readable
         run: |
           python3 tools/volume_oracle.py build/linux-${{ matrix.arch }}/tiger_host
+          python3 tools/android_abbreviation_oracle.py
           build/linux-${{ matrix.arch }}/tiger_host --capabilities | python3 -m json.tool
           build/linux-${{ matrix.arch }}/tiger_host --libc-check
 

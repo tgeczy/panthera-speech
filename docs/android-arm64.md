@@ -40,9 +40,10 @@ not the Android service's 180 wpm.
 - AudioUnitReset previously returned while callbacks remained queued. Tiger
   retired those slices itself and the delayed callbacks retired them again,
   driving its pending count to -4 and crashing the next Wakeup. Reset now
-  drains callbacks through the pacer before returning, without playing or
-  collecting the abandoned audio. Dropping callbacks alone left bookkeeping
-  unfinished, so all callbacks must finish through the existing path.
+  drains callbacks through the pacer before returning. Explicit cancellation
+  discards abandoned audio; ordinary between-sentence resets preserve it.
+  Dropping callbacks alone left bookkeeping unfinished, so all callbacks must
+  finish through the existing path.
 
 ## Matched desktop comparisons
 
@@ -70,6 +71,11 @@ All references below use `Hello there.`, 180 wpm, mono PCM16 at 22050 Hz:
 AAC differences are measured in signed 16-bit sample units: Android uses
 FAAD2; the Windows reference uses Media Foundation. The test enforces frame
 counts for these canonical data sets, not AAC byte equality.
+
+These are the September 6 data pairings. The current locally supplied Leopard
+Alex pairing renders 17851 frames on both native Windows and Android; the
+current device test uses that independently checked reference. The one-unit
+AAC comparison above describes this short sentence, not every long passage.
 
 Fred PCM SHA-256:
 

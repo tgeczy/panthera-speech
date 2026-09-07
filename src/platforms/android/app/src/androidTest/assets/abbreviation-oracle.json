@@ -1,0 +1,1472 @@
+[
+  {
+    "text": "DR",
+    "expand": false,
+    "expected": "D R"
+  },
+  {
+    "text": "DR",
+    "expand": true,
+    "expected": "DR"
+  },
+  {
+    "text": "Before DR after.",
+    "expand": false,
+    "expected": "Before D R after."
+  },
+  {
+    "text": "Before DR after.",
+    "expand": true,
+    "expected": "Before DR after."
+  },
+  {
+    "text": "DR.",
+    "expand": false,
+    "expected": "D R."
+  },
+  {
+    "text": "DR.",
+    "expand": true,
+    "expected": "DR."
+  },
+  {
+    "text": "ST",
+    "expand": false,
+    "expected": "S T"
+  },
+  {
+    "text": "ST",
+    "expand": true,
+    "expected": "ST"
+  },
+  {
+    "text": "Before ST after.",
+    "expand": false,
+    "expected": "Before S T after."
+  },
+  {
+    "text": "Before ST after.",
+    "expand": true,
+    "expected": "Before ST after."
+  },
+  {
+    "text": "ST.",
+    "expand": false,
+    "expected": "S T."
+  },
+  {
+    "text": "ST.",
+    "expand": true,
+    "expected": "ST."
+  },
+  {
+    "text": "MR",
+    "expand": false,
+    "expected": "M R"
+  },
+  {
+    "text": "MR",
+    "expand": true,
+    "expected": "MR"
+  },
+  {
+    "text": "Before MR after.",
+    "expand": false,
+    "expected": "Before M R after."
+  },
+  {
+    "text": "Before MR after.",
+    "expand": true,
+    "expected": "Before MR after."
+  },
+  {
+    "text": "MR.",
+    "expand": false,
+    "expected": "M R."
+  },
+  {
+    "text": "MR.",
+    "expand": true,
+    "expected": "MR."
+  },
+  {
+    "text": "MRS",
+    "expand": false,
+    "expected": "M R S"
+  },
+  {
+    "text": "MRS",
+    "expand": true,
+    "expected": "MRS"
+  },
+  {
+    "text": "Before MRS after.",
+    "expand": false,
+    "expected": "Before M R S after."
+  },
+  {
+    "text": "Before MRS after.",
+    "expand": true,
+    "expected": "Before MRS after."
+  },
+  {
+    "text": "MRS.",
+    "expand": false,
+    "expected": "M R S."
+  },
+  {
+    "text": "MRS.",
+    "expand": true,
+    "expected": "MRS."
+  },
+  {
+    "text": "JR",
+    "expand": false,
+    "expected": "J R"
+  },
+  {
+    "text": "JR",
+    "expand": true,
+    "expected": "JR"
+  },
+  {
+    "text": "Before JR after.",
+    "expand": false,
+    "expected": "Before J R after."
+  },
+  {
+    "text": "Before JR after.",
+    "expand": true,
+    "expected": "Before JR after."
+  },
+  {
+    "text": "JR.",
+    "expand": false,
+    "expected": "J R."
+  },
+  {
+    "text": "JR.",
+    "expand": true,
+    "expected": "JR."
+  },
+  {
+    "text": "SR",
+    "expand": false,
+    "expected": "S R"
+  },
+  {
+    "text": "SR",
+    "expand": true,
+    "expected": "SR"
+  },
+  {
+    "text": "Before SR after.",
+    "expand": false,
+    "expected": "Before S R after."
+  },
+  {
+    "text": "Before SR after.",
+    "expand": true,
+    "expected": "Before SR after."
+  },
+  {
+    "text": "SR.",
+    "expand": false,
+    "expected": "S R."
+  },
+  {
+    "text": "SR.",
+    "expand": true,
+    "expected": "SR."
+  },
+  {
+    "text": "FT",
+    "expand": false,
+    "expected": "F T"
+  },
+  {
+    "text": "FT",
+    "expand": true,
+    "expected": "FT"
+  },
+  {
+    "text": "Before FT after.",
+    "expand": false,
+    "expected": "Before F T after."
+  },
+  {
+    "text": "Before FT after.",
+    "expand": true,
+    "expected": "Before FT after."
+  },
+  {
+    "text": "FT.",
+    "expand": false,
+    "expected": "F T."
+  },
+  {
+    "text": "FT.",
+    "expand": true,
+    "expected": "FT."
+  },
+  {
+    "text": "RD",
+    "expand": false,
+    "expected": "R D"
+  },
+  {
+    "text": "RD",
+    "expand": true,
+    "expected": "RD"
+  },
+  {
+    "text": "Before RD after.",
+    "expand": false,
+    "expected": "Before R D after."
+  },
+  {
+    "text": "Before RD after.",
+    "expand": true,
+    "expected": "Before RD after."
+  },
+  {
+    "text": "RD.",
+    "expand": false,
+    "expected": "R D."
+  },
+  {
+    "text": "RD.",
+    "expand": true,
+    "expected": "RD."
+  },
+  {
+    "text": "CT",
+    "expand": false,
+    "expected": "C T"
+  },
+  {
+    "text": "CT",
+    "expand": true,
+    "expected": "CT"
+  },
+  {
+    "text": "Before CT after.",
+    "expand": false,
+    "expected": "Before C T after."
+  },
+  {
+    "text": "Before CT after.",
+    "expand": true,
+    "expected": "Before CT after."
+  },
+  {
+    "text": "CT.",
+    "expand": false,
+    "expected": "C T."
+  },
+  {
+    "text": "CT.",
+    "expand": true,
+    "expected": "CT."
+  },
+  {
+    "text": "VS",
+    "expand": false,
+    "expected": "V S"
+  },
+  {
+    "text": "VS",
+    "expand": true,
+    "expected": "VS"
+  },
+  {
+    "text": "Before VS after.",
+    "expand": false,
+    "expected": "Before V S after."
+  },
+  {
+    "text": "Before VS after.",
+    "expand": true,
+    "expected": "Before VS after."
+  },
+  {
+    "text": "VS.",
+    "expand": false,
+    "expected": "V S."
+  },
+  {
+    "text": "VS.",
+    "expand": true,
+    "expected": "VS."
+  },
+  {
+    "text": "ETC",
+    "expand": false,
+    "expected": "E T C"
+  },
+  {
+    "text": "ETC",
+    "expand": true,
+    "expected": "ETC"
+  },
+  {
+    "text": "Before ETC after.",
+    "expand": false,
+    "expected": "Before E T C after."
+  },
+  {
+    "text": "Before ETC after.",
+    "expand": true,
+    "expected": "Before ETC after."
+  },
+  {
+    "text": "ETC.",
+    "expand": false,
+    "expected": "E T C."
+  },
+  {
+    "text": "ETC.",
+    "expand": true,
+    "expected": "ETC."
+  },
+  {
+    "text": "Dr",
+    "expand": false,
+    "expected": "D R"
+  },
+  {
+    "text": "Dr",
+    "expand": true,
+    "expected": "Dr"
+  },
+  {
+    "text": "Before Dr after.",
+    "expand": false,
+    "expected": "Before D R after."
+  },
+  {
+    "text": "Before Dr after.",
+    "expand": true,
+    "expected": "Before Dr after."
+  },
+  {
+    "text": "Dr.",
+    "expand": false,
+    "expected": "D R."
+  },
+  {
+    "text": "Dr.",
+    "expand": true,
+    "expected": "Dr."
+  },
+  {
+    "text": "St",
+    "expand": false,
+    "expected": "S T"
+  },
+  {
+    "text": "St",
+    "expand": true,
+    "expected": "St"
+  },
+  {
+    "text": "Before St after.",
+    "expand": false,
+    "expected": "Before S T after."
+  },
+  {
+    "text": "Before St after.",
+    "expand": true,
+    "expected": "Before St after."
+  },
+  {
+    "text": "St.",
+    "expand": false,
+    "expected": "S T."
+  },
+  {
+    "text": "St.",
+    "expand": true,
+    "expected": "St."
+  },
+  {
+    "text": "Mr",
+    "expand": false,
+    "expected": "M R"
+  },
+  {
+    "text": "Mr",
+    "expand": true,
+    "expected": "Mr"
+  },
+  {
+    "text": "Before Mr after.",
+    "expand": false,
+    "expected": "Before M R after."
+  },
+  {
+    "text": "Before Mr after.",
+    "expand": true,
+    "expected": "Before Mr after."
+  },
+  {
+    "text": "Mr.",
+    "expand": false,
+    "expected": "M R."
+  },
+  {
+    "text": "Mr.",
+    "expand": true,
+    "expected": "Mr."
+  },
+  {
+    "text": "Mrs",
+    "expand": false,
+    "expected": "M R S"
+  },
+  {
+    "text": "Mrs",
+    "expand": true,
+    "expected": "Mrs"
+  },
+  {
+    "text": "Before Mrs after.",
+    "expand": false,
+    "expected": "Before M R S after."
+  },
+  {
+    "text": "Before Mrs after.",
+    "expand": true,
+    "expected": "Before Mrs after."
+  },
+  {
+    "text": "Mrs.",
+    "expand": false,
+    "expected": "M R S."
+  },
+  {
+    "text": "Mrs.",
+    "expand": true,
+    "expected": "Mrs."
+  },
+  {
+    "text": "Ms",
+    "expand": false,
+    "expected": "M S"
+  },
+  {
+    "text": "Ms",
+    "expand": true,
+    "expected": "Ms"
+  },
+  {
+    "text": "Before Ms after.",
+    "expand": false,
+    "expected": "Before M S after."
+  },
+  {
+    "text": "Before Ms after.",
+    "expand": true,
+    "expected": "Before Ms after."
+  },
+  {
+    "text": "Ms.",
+    "expand": false,
+    "expected": "M S."
+  },
+  {
+    "text": "Ms.",
+    "expand": true,
+    "expected": "Ms."
+  },
+  {
+    "text": "Prof",
+    "expand": false,
+    "expected": "P R O F"
+  },
+  {
+    "text": "Prof",
+    "expand": true,
+    "expected": "Prof"
+  },
+  {
+    "text": "Before Prof after.",
+    "expand": false,
+    "expected": "Before P R O F after."
+  },
+  {
+    "text": "Before Prof after.",
+    "expand": true,
+    "expected": "Before Prof after."
+  },
+  {
+    "text": "Prof.",
+    "expand": false,
+    "expected": "P R O F."
+  },
+  {
+    "text": "Prof.",
+    "expand": true,
+    "expected": "Prof."
+  },
+  {
+    "text": "Gen",
+    "expand": false,
+    "expected": "G E N"
+  },
+  {
+    "text": "Gen",
+    "expand": true,
+    "expected": "Gen"
+  },
+  {
+    "text": "Before Gen after.",
+    "expand": false,
+    "expected": "Before G E N after."
+  },
+  {
+    "text": "Before Gen after.",
+    "expand": true,
+    "expected": "Before Gen after."
+  },
+  {
+    "text": "Gen.",
+    "expand": false,
+    "expected": "G E N."
+  },
+  {
+    "text": "Gen.",
+    "expand": true,
+    "expected": "Gen."
+  },
+  {
+    "text": "Sen",
+    "expand": false,
+    "expected": "S E N"
+  },
+  {
+    "text": "Sen",
+    "expand": true,
+    "expected": "Sen"
+  },
+  {
+    "text": "Before Sen after.",
+    "expand": false,
+    "expected": "Before S E N after."
+  },
+  {
+    "text": "Before Sen after.",
+    "expand": true,
+    "expected": "Before Sen after."
+  },
+  {
+    "text": "Sen.",
+    "expand": false,
+    "expected": "S E N."
+  },
+  {
+    "text": "Sen.",
+    "expand": true,
+    "expected": "Sen."
+  },
+  {
+    "text": "Rep",
+    "expand": false,
+    "expected": "R E P"
+  },
+  {
+    "text": "Rep",
+    "expand": true,
+    "expected": "Rep"
+  },
+  {
+    "text": "Before Rep after.",
+    "expand": false,
+    "expected": "Before R E P after."
+  },
+  {
+    "text": "Before Rep after.",
+    "expand": true,
+    "expected": "Before Rep after."
+  },
+  {
+    "text": "Rep.",
+    "expand": false,
+    "expected": "R E P."
+  },
+  {
+    "text": "Rep.",
+    "expand": true,
+    "expected": "Rep."
+  },
+  {
+    "text": "Gov",
+    "expand": false,
+    "expected": "G O V"
+  },
+  {
+    "text": "Gov",
+    "expand": true,
+    "expected": "Gov"
+  },
+  {
+    "text": "Before Gov after.",
+    "expand": false,
+    "expected": "Before G O V after."
+  },
+  {
+    "text": "Before Gov after.",
+    "expand": true,
+    "expected": "Before Gov after."
+  },
+  {
+    "text": "Gov.",
+    "expand": false,
+    "expected": "G O V."
+  },
+  {
+    "text": "Gov.",
+    "expand": true,
+    "expected": "Gov."
+  },
+  {
+    "text": "Capt",
+    "expand": false,
+    "expected": "C A P T"
+  },
+  {
+    "text": "Capt",
+    "expand": true,
+    "expected": "Capt"
+  },
+  {
+    "text": "Before Capt after.",
+    "expand": false,
+    "expected": "Before C A P T after."
+  },
+  {
+    "text": "Before Capt after.",
+    "expand": true,
+    "expected": "Before Capt after."
+  },
+  {
+    "text": "Capt.",
+    "expand": false,
+    "expected": "C A P T."
+  },
+  {
+    "text": "Capt.",
+    "expand": true,
+    "expected": "Capt."
+  },
+  {
+    "text": "Lt",
+    "expand": false,
+    "expected": "L T"
+  },
+  {
+    "text": "Lt",
+    "expand": true,
+    "expected": "Lt"
+  },
+  {
+    "text": "Before Lt after.",
+    "expand": false,
+    "expected": "Before L T after."
+  },
+  {
+    "text": "Before Lt after.",
+    "expand": true,
+    "expected": "Before Lt after."
+  },
+  {
+    "text": "Lt.",
+    "expand": false,
+    "expected": "L T."
+  },
+  {
+    "text": "Lt.",
+    "expand": true,
+    "expected": "Lt."
+  },
+  {
+    "text": "Jr",
+    "expand": false,
+    "expected": "J R"
+  },
+  {
+    "text": "Jr",
+    "expand": true,
+    "expected": "Jr"
+  },
+  {
+    "text": "Before Jr after.",
+    "expand": false,
+    "expected": "Before J R after."
+  },
+  {
+    "text": "Before Jr after.",
+    "expand": true,
+    "expected": "Before Jr after."
+  },
+  {
+    "text": "Jr.",
+    "expand": false,
+    "expected": "J R."
+  },
+  {
+    "text": "Jr.",
+    "expand": true,
+    "expected": "Jr."
+  },
+  {
+    "text": "Sr",
+    "expand": false,
+    "expected": "S R"
+  },
+  {
+    "text": "Sr",
+    "expand": true,
+    "expected": "Sr"
+  },
+  {
+    "text": "Before Sr after.",
+    "expand": false,
+    "expected": "Before S R after."
+  },
+  {
+    "text": "Before Sr after.",
+    "expand": true,
+    "expected": "Before Sr after."
+  },
+  {
+    "text": "Sr.",
+    "expand": false,
+    "expected": "S R."
+  },
+  {
+    "text": "Sr.",
+    "expand": true,
+    "expected": "Sr."
+  },
+  {
+    "text": "Ave",
+    "expand": false,
+    "expected": "A V E"
+  },
+  {
+    "text": "Ave",
+    "expand": true,
+    "expected": "Ave"
+  },
+  {
+    "text": "Before Ave after.",
+    "expand": false,
+    "expected": "Before A V E after."
+  },
+  {
+    "text": "Before Ave after.",
+    "expand": true,
+    "expected": "Before Ave after."
+  },
+  {
+    "text": "Ave.",
+    "expand": false,
+    "expected": "A V E."
+  },
+  {
+    "text": "Ave.",
+    "expand": true,
+    "expected": "Ave."
+  },
+  {
+    "text": "Rd",
+    "expand": false,
+    "expected": "R D"
+  },
+  {
+    "text": "Rd",
+    "expand": true,
+    "expected": "Rd"
+  },
+  {
+    "text": "Before Rd after.",
+    "expand": false,
+    "expected": "Before R D after."
+  },
+  {
+    "text": "Before Rd after.",
+    "expand": true,
+    "expected": "Before Rd after."
+  },
+  {
+    "text": "Rd.",
+    "expand": false,
+    "expected": "R D."
+  },
+  {
+    "text": "Rd.",
+    "expand": true,
+    "expected": "Rd."
+  },
+  {
+    "text": "Blvd",
+    "expand": false,
+    "expected": "B L V D"
+  },
+  {
+    "text": "Blvd",
+    "expand": true,
+    "expected": "Blvd"
+  },
+  {
+    "text": "Before Blvd after.",
+    "expand": false,
+    "expected": "Before B L V D after."
+  },
+  {
+    "text": "Before Blvd after.",
+    "expand": true,
+    "expected": "Before Blvd after."
+  },
+  {
+    "text": "Blvd.",
+    "expand": false,
+    "expected": "B L V D."
+  },
+  {
+    "text": "Blvd.",
+    "expand": true,
+    "expected": "Blvd."
+  },
+  {
+    "text": "Ft",
+    "expand": false,
+    "expected": "F T"
+  },
+  {
+    "text": "Ft",
+    "expand": true,
+    "expected": "Ft"
+  },
+  {
+    "text": "Before Ft after.",
+    "expand": false,
+    "expected": "Before F T after."
+  },
+  {
+    "text": "Before Ft after.",
+    "expand": true,
+    "expected": "Before Ft after."
+  },
+  {
+    "text": "Ft.",
+    "expand": false,
+    "expected": "F T."
+  },
+  {
+    "text": "Ft.",
+    "expand": true,
+    "expected": "Ft."
+  },
+  {
+    "text": "Ct",
+    "expand": false,
+    "expected": "C T"
+  },
+  {
+    "text": "Ct",
+    "expand": true,
+    "expected": "Ct"
+  },
+  {
+    "text": "Before Ct after.",
+    "expand": false,
+    "expected": "Before C T after."
+  },
+  {
+    "text": "Before Ct after.",
+    "expand": true,
+    "expected": "Before Ct after."
+  },
+  {
+    "text": "Ct.",
+    "expand": false,
+    "expected": "C T."
+  },
+  {
+    "text": "Ct.",
+    "expand": true,
+    "expected": "Ct."
+  },
+  {
+    "text": "II",
+    "expand": false,
+    "expected": "I I"
+  },
+  {
+    "text": "II",
+    "expand": true,
+    "expected": "II"
+  },
+  {
+    "text": "Before II after.",
+    "expand": false,
+    "expected": "Before I I after."
+  },
+  {
+    "text": "Before II after.",
+    "expand": true,
+    "expected": "Before II after."
+  },
+  {
+    "text": "II.",
+    "expand": false,
+    "expected": "I I."
+  },
+  {
+    "text": "II.",
+    "expand": true,
+    "expected": "II."
+  },
+  {
+    "text": "XIV",
+    "expand": false,
+    "expected": "X I V"
+  },
+  {
+    "text": "XIV",
+    "expand": true,
+    "expected": "XIV"
+  },
+  {
+    "text": "Before XIV after.",
+    "expand": false,
+    "expected": "Before X I V after."
+  },
+  {
+    "text": "Before XIV after.",
+    "expand": true,
+    "expected": "Before XIV after."
+  },
+  {
+    "text": "XIV.",
+    "expand": false,
+    "expected": "X I V."
+  },
+  {
+    "text": "XIV.",
+    "expand": true,
+    "expected": "XIV."
+  },
+  {
+    "text": "MIX",
+    "expand": false,
+    "expected": "MIX"
+  },
+  {
+    "text": "MIX",
+    "expand": true,
+    "expected": "MIX"
+  },
+  {
+    "text": "Before MIX after.",
+    "expand": false,
+    "expected": "Before MIX after."
+  },
+  {
+    "text": "Before MIX after.",
+    "expand": true,
+    "expected": "Before MIX after."
+  },
+  {
+    "text": "MIX.",
+    "expand": false,
+    "expected": "MIX."
+  },
+  {
+    "text": "MIX.",
+    "expand": true,
+    "expected": "MIX."
+  },
+  {
+    "text": "CIVIL",
+    "expand": false,
+    "expected": "CIVIL"
+  },
+  {
+    "text": "CIVIL",
+    "expand": true,
+    "expected": "CIVIL"
+  },
+  {
+    "text": "Before CIVIL after.",
+    "expand": false,
+    "expected": "Before CIVIL after."
+  },
+  {
+    "text": "Before CIVIL after.",
+    "expand": true,
+    "expected": "Before CIVIL after."
+  },
+  {
+    "text": "CIVIL.",
+    "expand": false,
+    "expected": "CIVIL."
+  },
+  {
+    "text": "CIVIL.",
+    "expand": true,
+    "expected": "CIVIL."
+  },
+  {
+    "text": "MCM",
+    "expand": false,
+    "expected": "M C M"
+  },
+  {
+    "text": "MCM",
+    "expand": true,
+    "expected": "MCM"
+  },
+  {
+    "text": "Before MCM after.",
+    "expand": false,
+    "expected": "Before M C M after."
+  },
+  {
+    "text": "Before MCM after.",
+    "expand": true,
+    "expected": "Before MCM after."
+  },
+  {
+    "text": "MCM.",
+    "expand": false,
+    "expected": "M C M."
+  },
+  {
+    "text": "MCM.",
+    "expand": true,
+    "expected": "MCM."
+  },
+  {
+    "text": "MMXXVI",
+    "expand": false,
+    "expected": "M M X X V I"
+  },
+  {
+    "text": "MMXXVI",
+    "expand": true,
+    "expected": "MMXXVI"
+  },
+  {
+    "text": "Before MMXXVI after.",
+    "expand": false,
+    "expected": "Before M M X X V I after."
+  },
+  {
+    "text": "Before MMXXVI after.",
+    "expand": true,
+    "expected": "Before MMXXVI after."
+  },
+  {
+    "text": "MMXXVI.",
+    "expand": false,
+    "expected": "M M X X V I."
+  },
+  {
+    "text": "MMXXVI.",
+    "expand": true,
+    "expected": "MMXXVI."
+  },
+  {
+    "text": "X's",
+    "expand": false,
+    "expected": "ex's"
+  },
+  {
+    "text": "X's",
+    "expand": true,
+    "expected": "ex's"
+  },
+  {
+    "text": "Before X's after.",
+    "expand": false,
+    "expected": "Before ex's after."
+  },
+  {
+    "text": "Before X's after.",
+    "expand": true,
+    "expected": "Before ex's after."
+  },
+  {
+    "text": "X's.",
+    "expand": false,
+    "expected": "ex's."
+  },
+  {
+    "text": "X's.",
+    "expand": true,
+    "expected": "ex's."
+  },
+  {
+    "text": "Space X’s",
+    "expand": false,
+    "expected": "Space ex’s"
+  },
+  {
+    "text": "Space X’s",
+    "expand": true,
+    "expected": "Space ex’s"
+  },
+  {
+    "text": "Before Space X’s after.",
+    "expand": false,
+    "expected": "Before Space ex’s after."
+  },
+  {
+    "text": "Before Space X’s after.",
+    "expand": true,
+    "expected": "Before Space ex’s after."
+  },
+  {
+    "text": "Space X’s.",
+    "expand": false,
+    "expected": "Space ex’s."
+  },
+  {
+    "text": "Space X’s.",
+    "expand": true,
+    "expected": "Space ex’s."
+  },
+  {
+    "text": "Dr. Kirk Heilbrun",
+    "expand": false,
+    "expected": "D R. Kirk Heilbrun"
+  },
+  {
+    "text": "Dr. Kirk Heilbrun",
+    "expand": true,
+    "expected": "Doctor Kirk Heilbrun"
+  },
+  {
+    "text": "Before Dr. Kirk Heilbrun after.",
+    "expand": false,
+    "expected": "Before D R. Kirk Heilbrun after."
+  },
+  {
+    "text": "Before Dr. Kirk Heilbrun after.",
+    "expand": true,
+    "expected": "Before Doctor Kirk Heilbrun after."
+  },
+  {
+    "text": "Dr. Kirk Heilbrun.",
+    "expand": false,
+    "expected": "D R. Kirk Heilbrun."
+  },
+  {
+    "text": "Dr. Kirk Heilbrun.",
+    "expand": true,
+    "expected": "Doctor Kirk Heilbrun."
+  },
+  {
+    "text": "Mulholland Dr. is long",
+    "expand": false,
+    "expected": "Mulholland D R. is long"
+  },
+  {
+    "text": "Mulholland Dr. is long",
+    "expand": true,
+    "expected": "Mulholland Dr. is long"
+  },
+  {
+    "text": "Before Mulholland Dr. is long after.",
+    "expand": false,
+    "expected": "Before Mulholland D R. is long after."
+  },
+  {
+    "text": "Before Mulholland Dr. is long after.",
+    "expand": true,
+    "expected": "Before Mulholland Dr. is long after."
+  },
+  {
+    "text": "Mulholland Dr. is long.",
+    "expand": false,
+    "expected": "Mulholland D R. is long."
+  },
+  {
+    "text": "Mulholland Dr. is long.",
+    "expand": true,
+    "expected": "Mulholland Dr. is long."
+  },
+  {
+    "text": "4mm",
+    "expand": false,
+    "expected": "4 M M"
+  },
+  {
+    "text": "4mm",
+    "expand": true,
+    "expected": "4mm"
+  },
+  {
+    "text": "Before 4mm after.",
+    "expand": false,
+    "expected": "Before 4 M M after."
+  },
+  {
+    "text": "Before 4mm after.",
+    "expand": true,
+    "expected": "Before 4mm after."
+  },
+  {
+    "text": "4mm.",
+    "expand": false,
+    "expected": "4 M M."
+  },
+  {
+    "text": "4mm.",
+    "expand": true,
+    "expected": "4mm."
+  },
+  {
+    "text": "4 m",
+    "expand": false,
+    "expected": "4 M"
+  },
+  {
+    "text": "4 m",
+    "expand": true,
+    "expected": "4 m"
+  },
+  {
+    "text": "Before 4 m after.",
+    "expand": false,
+    "expected": "Before 4 M after."
+  },
+  {
+    "text": "Before 4 m after.",
+    "expand": true,
+    "expected": "Before 4 m after."
+  },
+  {
+    "text": "4 m.",
+    "expand": false,
+    "expected": "4 M."
+  },
+  {
+    "text": "4 m.",
+    "expand": true,
+    "expected": "4 m."
+  },
+  {
+    "text": "4kg",
+    "expand": false,
+    "expected": "4 K G"
+  },
+  {
+    "text": "4kg",
+    "expand": true,
+    "expected": "4kg"
+  },
+  {
+    "text": "Before 4kg after.",
+    "expand": false,
+    "expected": "Before 4 K G after."
+  },
+  {
+    "text": "Before 4kg after.",
+    "expand": true,
+    "expected": "Before 4kg after."
+  },
+  {
+    "text": "4kg.",
+    "expand": false,
+    "expected": "4 K G."
+  },
+  {
+    "text": "4kg.",
+    "expand": true,
+    "expected": "4kg."
+  },
+  {
+    "text": "1,234MB",
+    "expand": false,
+    "expected": "1,234MB"
+  },
+  {
+    "text": "1,234MB",
+    "expand": true,
+    "expected": "1,234MB"
+  },
+  {
+    "text": "Before 1,234MB after.",
+    "expand": false,
+    "expected": "Before 1,234MB after."
+  },
+  {
+    "text": "Before 1,234MB after.",
+    "expand": true,
+    "expected": "Before 1,234MB after."
+  },
+  {
+    "text": "1,234MB.",
+    "expand": false,
+    "expected": "1,234MB."
+  },
+  {
+    "text": "1,234MB.",
+    "expand": true,
+    "expected": "1,234MB."
+  },
+  {
+    "text": "20ish",
+    "expand": false,
+    "expected": "20ish"
+  },
+  {
+    "text": "20ish",
+    "expand": true,
+    "expected": "20ish"
+  },
+  {
+    "text": "Before 20ish after.",
+    "expand": false,
+    "expected": "Before 20ish after."
+  },
+  {
+    "text": "Before 20ish after.",
+    "expand": true,
+    "expected": "Before 20ish after."
+  },
+  {
+    "text": "20ish.",
+    "expand": false,
+    "expected": "20ish."
+  },
+  {
+    "text": "20ish.",
+    "expand": true,
+    "expected": "20ish."
+  },
+  {
+    "text": "dr st vs",
+    "expand": false,
+    "expected": "dr st vs"
+  },
+  {
+    "text": "dr st vs",
+    "expand": true,
+    "expected": "dr st vs"
+  },
+  {
+    "text": "Before dr st vs after.",
+    "expand": false,
+    "expected": "Before dr st vs after."
+  },
+  {
+    "text": "Before dr st vs after.",
+    "expand": true,
+    "expected": "Before dr st vs after."
+  },
+  {
+    "text": "dr st vs.",
+    "expand": false,
+    "expected": "dr st vs."
+  },
+  {
+    "text": "dr st vs.",
+    "expand": true,
+    "expected": "dr st vs."
+  },
+  {
+    "text": "DR. ST.",
+    "expand": false,
+    "expected": "D R. S T."
+  },
+  {
+    "text": "DR. ST.",
+    "expand": true,
+    "expected": "DR. ST."
+  },
+  {
+    "text": "Before DR. ST. after.",
+    "expand": false,
+    "expected": "Before D R. S T. after."
+  },
+  {
+    "text": "Before DR. ST. after.",
+    "expand": true,
+    "expected": "Before DR. ST. after."
+  },
+  {
+    "text": "DR. ST..",
+    "expand": false,
+    "expected": "D R. S T.."
+  },
+  {
+    "text": "DR. ST..",
+    "expand": true,
+    "expected": "DR. ST.."
+  },
+  {
+    "text": "éDRé",
+    "expand": false,
+    "expected": "éDRé"
+  },
+  {
+    "text": "éDRé",
+    "expand": true,
+    "expected": "éDRé"
+  },
+  {
+    "text": "Before éDRé after.",
+    "expand": false,
+    "expected": "Before éDRé after."
+  },
+  {
+    "text": "Before éDRé after.",
+    "expand": true,
+    "expected": "Before éDRé after."
+  },
+  {
+    "text": "éDRé.",
+    "expand": false,
+    "expected": "éDRé."
+  },
+  {
+    "text": "éDRé.",
+    "expand": true,
+    "expected": "éDRé."
+  },
+  {
+    "text": "5KB",
+    "expand": false,
+    "expected": "5KB"
+  },
+  {
+    "text": "5KB",
+    "expand": true,
+    "expected": "5KB"
+  },
+  {
+    "text": "Before 5KB after.",
+    "expand": false,
+    "expected": "Before 5KB after."
+  },
+  {
+    "text": "Before 5KB after.",
+    "expand": true,
+    "expected": "Before 5KB after."
+  },
+  {
+    "text": "5KB.",
+    "expand": false,
+    "expected": "5KB."
+  },
+  {
+    "text": "5KB.",
+    "expand": true,
+    "expected": "5KB."
+  }
+]

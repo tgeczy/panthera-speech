@@ -12,17 +12,33 @@ open class PantheraWorkerService : Service() {
     private val synthesis = Executors.newSingleThreadExecutor()
     private fun <T> runNative(block: () -> T): T = synthesis.submit(Callable(block)).get()
     @Volatile private var opened = false
+    private var phrasing: String? = null
+    private val requestState = Any()
+    private var activeRequest = false
     private val binder = object : IPantheraWorker.Stub() {
-        override fun open(engine: String, dictionary: String): Int = runNative {
-            if (!opened) opened = PantheraNative.nativeOpen(engine, dictionary) == 0
+        override fun open(engine: String, dictionary: String, requestedPhrasing: String): Int = runNative {
+            if (opened && phrasing != requestedPhrasing) return@runNative RECONFIGURE
+            if (!opened) {
+                if (PantheraNative.nativeSetPhrasing(requestedPhrasing) != 0) return@runNative -1
+                opened = PantheraNative.nativeOpen(engine, dictionary) == 0
+                if (opened) phrasing = requestedPhrasing
+            }
             if (opened) PantheraNative.nativeSampleRate() else -1
         }
+        // Only the app can bind this service. The owner waits for Binder death
+        // before binding a new worker; the public TTS process stays alive.
+        override fun shutdown() { android.os.Process.killProcess(android.os.Process.myPid()) }
         override fun start(voice: String, creator: Int, voiceId: Int, text: ByteArray,
-                           wpm: Int, volume: Int, generation: String, numbers: String): Int = runNative {
+                           wpm: Int, volume: Int, generation: String, numbers: String,
+                           expandAbbreviations: Boolean): Int = runNative {
             check(opened)
             PantheraNative.nativeSetVolume(volume, generation)
             PantheraNative.nativeSetNumberStyle(numbers)
-            PantheraNative.nativeSpeakStart(voice, creator, voiceId, text, wpm)
+            PantheraNative.nativeSetExpandAbbreviations(expandAbbreviations)
+            synchronized(requestState) { activeRequest = true }
+            val status = PantheraNative.nativeSpeakStart(voice, creator, voiceId, text, wpm)
+            if (status != 0) synchronized(requestState) { activeRequest = false }
+            status
         }
         override fun pull(capacity: Int): ByteArray? = runNative {
             val samples = ShortArray(capacity.coerceIn(1, 4096))
@@ -34,14 +50,30 @@ open class PantheraWorkerService : Service() {
                 }
             }
         }
-        override fun stop() { if (opened) PantheraNative.nativeStop() }
-        override fun finish() { runNative { if (opened) PantheraNative.nativeFinish() } }
+        override fun stop() {
+            synchronized(requestState) {
+                if (activeRequest) {
+                    // StopSpeech can either drain an entire paragraph or leave
+                    // deferred work that truncates the next utterance. Retire
+                    // this private worker at an explicit cancellation boundary.
+                    // The public service and client survive; normal completed
+                    // utterances keep their warm worker and paragraph breaths.
+                    android.util.Log.i("PantheraEngine", "Retiring cancelled engine worker")
+                    android.os.Process.killProcess(android.os.Process.myPid())
+                }
+            }
+        }
+        override fun finish() { runNative {
+            try { if (opened) PantheraNative.nativeFinish() }
+            finally { synchronized(requestState) { activeRequest = false } }
+        } }
     }
     override fun onBind(intent: Intent): IBinder = binder
     override fun onDestroy() {
         synthesis.shutdownNow()
         super.onDestroy()
     }
+    companion object { const val RECONFIGURE = -2 }
 }
 class TigerWorkerService : PantheraWorkerService()
 class LeopardWorkerService : PantheraWorkerService()

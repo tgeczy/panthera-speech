@@ -41,6 +41,11 @@ class SettingsActivity : Activity() {
     private var volumeSlider: SeekBar? = null
     private var numberSpinner: Spinner? = null
     private var overrideVoice: android.widget.CheckBox? = null
+    private var commandCheck: android.widget.CheckBox? = null
+    private var abbreviationCheck: android.widget.CheckBox? = null
+    private var phrasingSpinner: Spinner? = null
+    private var phrasingHelp: TextView? = null
+    private var voiceLabel: TextView? = null
     private var voiceSignature = ""
     private var voiceSpinner: Spinner? = null
     private var listedVoices: List<PantheraEngine.VoiceInfo> = emptyList()
@@ -113,6 +118,13 @@ class SettingsActivity : Activity() {
     private fun refreshSettings(voiceSelection: Boolean = false) {
         overrideVoice?.isChecked = PantheraEngine.prefs(this).getBoolean("override_voice", false)
         val settings = PantheraEngine.settings(this)
+        commandCheck?.isChecked = settings.acceptCommands
+        abbreviationCheck?.isChecked = settings.expandAbbreviations
+        val phrasesSupported = PantheraEngine.supportsPhrasing(PantheraEngine.activeGen(this))
+        phrasingSpinner?.isEnabled = phrasesSupported
+        phrasingSpinner?.setSelection(PantheraEngine.PHRASING_VALUES.indexOf(settings.phrasing), false)
+        phrasingHelp?.text = if (phrasesSupported) "How often the engine inserts pauses within a sentence. Applies from the next request."
+            else "Engine phrase breaks are available with Leopard and later. Tiger does not support this setting."
         rateSlider?.progress = wpmToProgress(settings.rate)
         volumeSlider?.progress = settings.volume
         numberSpinner?.setSelection(listOf("fix", "words", "off").indexOf(settings.numbers), false)
@@ -189,7 +201,9 @@ class SettingsActivity : Activity() {
         // An edit field rather than a fixed sentence: the point of a preview is
         // to hear the voice say the kind of thing you are about to make it say
         // for hours, and that sentence is never the one that shipped.
+        val sampleLabel = body("Text to speak").also { root.addView(it) }
         sampleText = EditText(this).apply {
+            id = View.generateViewId()
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
             setText(PantheraEngine.prefs(this@SettingsActivity).getString("sample_text",
                 "Hello there. This is Panthera Speech."))
@@ -200,9 +214,9 @@ class SettingsActivity : Activity() {
                 }
                 override fun afterTextChanged(s: android.text.Editable?) {}
             })
-            contentDescription = "Text to speak"
             textSize = 15f
         }
+        sampleLabel.labelFor = sampleText.id
         root.addView(sampleText)
         testButton = Button(this).apply {
             text = "Speak"
@@ -225,7 +239,7 @@ class SettingsActivity : Activity() {
     private fun buildEngine(root: LinearLayout) {
         val p = PantheraEngine.prefs(this)
 
-        root.addView(heading("Voice"))
+        voiceLabel = heading("Voice").also { root.addView(it) }
         root.addView(body("Choosing a voice also chooses its engine generation."))
         voiceHolder = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(voiceHolder!!)
@@ -264,7 +278,21 @@ class SettingsActivity : Activity() {
         volumeSlider = addSlider(root, "Engine volume", 100, PantheraEngine.volume(this),
             { "$it percent" }) { p.edit().putInt(PantheraEngine.settingKey(PantheraEngine.PREF_VOLUME, PantheraEngine.activeGen(this)), it).apply() }
 
-        root.addView(heading("Numbers"))
+        val phrasingLabel = heading("Engine phrase breaks").also { root.addView(it) }
+        phrasingHelp = body("").also { root.addView(it) }
+        phrasingSpinner = spinner(listOf("Fewest pauses", "Fewer pauses", "More pauses", "Most pauses", "Engine default"),
+            PantheraEngine.PHRASING_VALUES.indexOf(PantheraEngine.settings(this).phrasing)) { i ->
+            val gen = PantheraEngine.activeGen(this)
+            val value = PantheraEngine.PHRASING_VALUES[i]
+            if (PantheraEngine.supportsPhrasing(gen) && PantheraEngine.settings(this).phrasing != value)
+                p.edit().putString(PantheraEngine.settingKey(PantheraEngine.PREF_PHRASING, gen), value).apply()
+        }.also {
+            it.contentDescription = "Engine phrase breaks"
+            phrasingLabel.labelFor = it.id
+            root.addView(it)
+        }
+
+        val numberLabel = heading("Numbers").also { root.addView(it) }
         root.addView(body(
             "From seven digits up, the engine reads a number one digit at a " +
             "time, and it drops the leading zero from a version like 0.7.3. " +
@@ -280,7 +308,22 @@ class SettingsActivity : Activity() {
             if (PantheraEngine.settings(this).numbers != numberValues[i])
                 p.edit().putString(PantheraEngine.settingKey(PantheraEngine.PREF_NUMBER_STYLE,
                 PantheraEngine.activeGen(this)), numberValues[i]).apply()
-        }.also { it.contentDescription = "How to read numbers"; root.addView(it) }
+        }.also {
+            it.contentDescription = "How to read numbers"
+            numberLabel.labelFor = it.id
+            root.addView(it)
+        }
+
+        root.addView(heading("Text handling"))
+        abbreviationCheck = preferenceCheck(root, "Expand abbreviations",
+            PantheraEngine.PREF_ABBREVIATIONS, true)
+        root.addView(body("Read abbreviations such as Dr. and XIV as words. Turn off " +
+            "to spell their letters. Applies to the selected engine generation."))
+        commandCheck = preferenceCheck(root, "Accept embedded speech commands",
+            PantheraEngine.PREF_COMMANDS, false)
+        root.addView(body("Allow commands in text to change speech, such as [[rate 200]] " +
+            "or [[slnc 500]]. Otherwise command blocks are removed. " +
+            "Lion ignores input-mode commands."))
 
     }
 
@@ -301,8 +344,6 @@ class SettingsActivity : Activity() {
             holder.addView(body("No voices in the engine data folder."))
             return
         }
-        val gen = PantheraEngine.activeGen(this)
-        val saved = PantheraEngine.defaultVoiceName(this, gen)
         // Only one generation is labelled when there is only one to tell apart:
         // "Fred (Tiger)" twenty-three times is noise to read and worse to hear.
         val single = PantheraEngine.availableGens(this).size < 2
@@ -312,7 +353,11 @@ class SettingsActivity : Activity() {
             val v = voices[i]
             if (v.gen != PantheraEngine.activeGen(this) ||
                 v.name != PantheraEngine.defaultVoiceName(this, v.gen)) PantheraEngine.chooseVoice(this, v)
-        }.also { it.contentDescription = "Voice"; holder.addView(it) }
+        }.also {
+            it.contentDescription = "Voice"
+            voiceLabel?.labelFor = it.id
+            holder.addView(it)
+        }
         holder.addView(body(
             "Used when an app does not name a voice itself. The sample on the " +
             "Setup page speaks with this one."))
@@ -326,6 +371,7 @@ class SettingsActivity : Activity() {
     }
     private fun heading(t: String) = TextView(this).apply {
         text = t; textSize = 20f; setPadding(0, pad, 0, pad / 2)
+        if (android.os.Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true
     }
     private fun body(t: String) = TextView(this).apply { text = t; textSize = 15f }
     private fun tabParams(wide: Boolean) =
@@ -335,6 +381,7 @@ class SettingsActivity : Activity() {
 
     private fun spinner(items: List<String>, selected: Int, onPick: (Int) -> Unit) =
         Spinner(this).apply {
+            id = View.generateViewId()
             adapter = ArrayAdapter(this@SettingsActivity,
                 android.R.layout.simple_spinner_dropdown_item, items)
             setSelection(selected, false)
@@ -359,6 +406,7 @@ class SettingsActivity : Activity() {
         val label = body(describe(value)).apply { importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO }
         root.addView(label)
         val slider = SeekBar(this).apply {
+            id = View.generateViewId()
             max = limit
             progress = value
             keyProgressIncrement = 1
@@ -393,8 +441,25 @@ class SettingsActivity : Activity() {
                 true
             }
         }
+        label.labelFor = slider.id
         root.addView(slider)
         return slider
+    }
+
+    private fun preferenceCheck(root: LinearLayout, title: String, key: String,
+                                fallback: Boolean) = android.widget.CheckBox(this).apply {
+        id = View.generateViewId()
+        text = title
+        val prefs = PantheraEngine.prefs(this@SettingsActivity)
+        fun currentKey() = PantheraEngine.settingKey(key, PantheraEngine.activeGen(this@SettingsActivity))
+        fun value() = prefs.getBoolean(currentKey(), prefs.getBoolean(key, fallback))
+        isChecked = value()
+        // The stock CheckBox owns its label, focus and checked state. Avoid a
+        // separate clickable parent or a second accessible label for the row.
+        setOnCheckedChangeListener { _, checked ->
+            if (checked != value()) prefs.edit().putBoolean(currentKey(), checked).apply()
+        }
+        root.addView(this)
     }
 
     private fun rateText(wpm: Int) =

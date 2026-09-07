@@ -55,6 +55,8 @@ object PantheraNative {
     external fun nativeSetNumberStyle(style: String)
 
     external fun nativeSetVolume(level: Int, generation: String)
+    external fun nativeSetExpandAbbreviations(expand: Boolean)
+    external fun nativeSetPhrasing(style: String): Int
 
     /** Read a .SpeechVoice bundle's VoiceSpec: returns [creator, id], or null if
      * the bundle has no VoiceDescription.  A plain file read -- safe before

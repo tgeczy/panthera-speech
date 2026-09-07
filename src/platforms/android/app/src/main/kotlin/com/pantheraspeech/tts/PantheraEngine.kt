@@ -230,7 +230,14 @@ object PantheraEngine {
     // Settings are read together once per utterance, after resolving its voice.
     // Legacy global values remain the fallback until a generation is customized.
     fun settingKey(key: String, gen: String) = "${key}_$gen"
-    data class Settings(val volume: Int, val rate: Int, val numbers: String) {
+    const val PREF_COMMANDS = "accept_commands"
+    const val PREF_ABBREVIATIONS = "expand_abbreviations"
+    const val PREF_PHRASING = "phrasing"
+    val PHRASING_VALUES = listOf("fewest", "fewer", "more", "most", "leopard")
+    fun supportsPhrasing(generation: String) = generation != GEN_TIGER
+    data class Settings(val volume: Int, val rate: Int, val numbers: String,
+                        val acceptCommands: Boolean = false, val expandAbbreviations: Boolean = true,
+                        val phrasing: String = "fewest") {
         fun wpm(requestRate: Int): Int = if (rate > 0) rate.coerceIn(80, 500)
             else (180 * (if (requestRate <= 0) 100 else requestRate) / 100).coerceIn(80, 500)
     }
@@ -241,7 +248,10 @@ object PantheraEngine {
             ((value(PREF_VOLUME) as? Int) ?: if (gen == GEN_TIGER) 100 else 90).coerceIn(0, 100),
             (value(PREF_RATE) as? Int) ?: 0,
             (value(PREF_NUMBER_STYLE) as? String)?.takeIf { it in listOf("fix", "words", "off") }
-                ?: NUMBER_STYLE_DEFAULT)
+                ?: NUMBER_STYLE_DEFAULT,
+            (value(PREF_COMMANDS) as? Boolean) ?: false,
+            (value(PREF_ABBREVIATIONS) as? Boolean) ?: true,
+            (value(PREF_PHRASING) as? String)?.takeIf { it in PHRASING_VALUES } ?: "fewest")
     }
     fun volume(ctx: Context): Int = settings(ctx).volume
 
@@ -258,10 +268,17 @@ object PantheraEngine {
         } }
     }
 
-    private fun open(ctx: Context, gen: String): IPantheraWorker {
+    private fun open(ctx: Context, gen: String, phrasing: String = settings(ctx, gen).phrasing): IPantheraWorker {
         val root = genRoot(ctx, gen) ?: error("Engine data missing for $gen")
-        val next = PantheraWorkers.get(ctx, gen)
-        val hz = next.open(mtIn(root, gen).absolutePath, sdIn(root, gen).absolutePath)
+        val requested = if (supportsPhrasing(gen)) phrasing else "leopard"
+        var next = PantheraWorkers.get(ctx, gen)
+        var hz = next.open(mtIn(root, gen).absolutePath, sdIn(root, gen).absolutePath, requested)
+        if (hz == PantheraWorkerService.RECONFIGURE) {
+            worker = null
+            PantheraWorkers.restart(ctx, gen)
+            next = PantheraWorkers.get(ctx, gen)
+            hz = next.open(mtIn(root, gen).absolutePath, sdIn(root, gen).absolutePath, requested)
+        }
         check(hz > 0) { "Engine could not open: $gen" }
         worker = next
         openedGen = gen
@@ -277,7 +294,7 @@ object PantheraEngine {
             val chunks = ArrayList<ShortArray>()
             var total = 0
             val buffer = ShortArray(4096)
-            for (piece in PantheraText.pieces(text)) {
+            for (piece in PantheraText.pieces(text, snapshot, voice.gen)) {
                 check(speakStart(ctx, voice, PantheraText.bytes(piece), wpm, snapshot) == 0)
                 while (true) {
                     val count = pull(buffer)
@@ -298,8 +315,8 @@ object PantheraEngine {
     fun speakStart(ctx: Context, voice: VoiceInfo, text: ByteArray, wpm: Int,
                    snapshot: Settings = settings(ctx, voice.gen)): Int = synchronized(lock) {
         try {
-            open(ctx, voice.gen).start(voice.dir, voice.creator, voice.voiceId, text, wpm,
-                snapshot.volume, voice.gen, snapshot.numbers)
+            open(ctx, voice.gen, snapshot.phrasing).start(voice.dir, voice.creator, voice.voiceId, text, wpm,
+                snapshot.volume, voice.gen, snapshot.numbers, snapshot.expandAbbreviations)
         } catch (e: Exception) {
             android.util.Log.e("PantheraEngine", "Speech failed", e); -1
         }

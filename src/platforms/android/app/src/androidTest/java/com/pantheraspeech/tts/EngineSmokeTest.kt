@@ -21,9 +21,15 @@ import java.util.concurrent.TimeUnit
 class EngineSmokeTest : Instrumentation() {
     private var nativeGen: String? = null
     private var nativeVoice: String? = null
+    private var nativeText = "Hello there."
+    private var nativePhrasing = "leopard"
+    private var audioOnly = false
     override fun onCreate(arguments: Bundle?) {
         nativeGen = arguments?.getString("nativeGeneration")
         nativeVoice = arguments?.getString("nativeVoice")
+        nativeText = arguments?.getString("nativeText") ?: nativeText
+        nativePhrasing = arguments?.getString("nativePhrasing") ?: nativePhrasing
+        audioOnly = arguments?.getString("audioOnly") == "true"
         super.onCreate(arguments); start()
     }
 
@@ -31,6 +37,7 @@ class EngineSmokeTest : Instrumentation() {
         val result = Bundle()
         try {
             val root = File(targetContext.filesDir, "panthera-data/$gen")
+            check(PantheraNative.nativeSetPhrasing(nativePhrasing) == 0)
             check(PantheraNative.nativeOpen(File(root, "MacinTalk").path,
                 File(root, "SpeechDictionary.framework/Versions/A/SpeechDictionary").path) == 0)
             PantheraNative.nativeSetVolume(-1, gen)
@@ -39,7 +46,7 @@ class EngineSmokeTest : Instrumentation() {
             var reference: ShortArray? = null
             repeat(5) { i ->
                 val pcm = PantheraNative.nativeRender(voice.dir, voice.creator, voice.voiceId,
-                    PantheraText.bytes("Hello there."), 180) ?: error("No PCM")
+                    PantheraText.bytes(nativeText), 180) ?: error("No PCM")
                 check(pcm.size > 12000) { "Short render: ${pcm.size}" }
                 if (reference != null) check(pcm.contentEquals(reference)) { "Render $i differs" }
                 reference = pcm
@@ -56,9 +63,65 @@ class EngineSmokeTest : Instrumentation() {
         }
     }
 
+    /** Exact variants measured over forty resident native Windows renders per
+     * input. Lion Fred is not sample-identical on every repeated utterance. */
+    private fun checkLionReference(text: String, wav: ByteArray, wpm: Int = 180) {
+        val variants = when ("$wpm:$text") {
+            "180:Hello there." -> setOf(
+                "0e29a652fe28b36857c525714cc53407f8f9eb04b266d29309831ebaf03c3fa7",
+                "3a6cc0ccf89db6587bba3ffdca012e82dfff75f378d4284e6bccd1b9770eeeab")
+            "300:Hello there." -> setOf(
+                "017fb05711553f96e6b64a1e38e42e9c775fb8afd1efae3c6e86d49821838f59",
+                "e93df555e12053bc3ffba34606e3c23cd5aef3acf3f3998ba8a7299341317559")
+            "180:D R X I V" -> setOf(
+                "b71c9a56edc4a924f33fac5c558cf66674c5d3876a46be50b0cecd3c9b00989e",
+                "a6c6ec2960d1437597078638b73282dfd177a47c198afb102dd7859ac0712bdd")
+            "180:The file is 5KB and 20ish." -> setOf(
+                "381e168e1be3300ae5dee393216f62366f0f521f1a48e64f5362b627ae11b054",
+                "b5fa6a79845480404a95ff58af91bf4092c5487a58b93347c6a2a6dd39c81380")
+            "180:The fox jumped over the dog. Later it ran again." -> setOf(
+                "3b18c4bd07bf426b004e352fd890d8aa77885246cfdd280e8c1730298c16b6b6",
+                "4a91d1f82f769b1b643026a1bcdcbb74d8530f385dcd2e6fc42dbabe5dfd6846",
+                "ace87f22942ea7899420a10b2169089227c4f7960fbe099e6c277210e9121f45",
+                "0d22ade479d6de8e24aab4f5b7aae92704522a7309e26bed5ef9a4ddd8453983")
+            else -> error("Missing native Lion reference: $wpm:$text")
+        }
+        val hash = MessageDigest.getInstance("SHA-256").digest(wav.copyOfRange(44, wav.size))
+            .joinToString("") { "%02x".format(it) }
+        check(hash in variants) { "Lion differs from native at $wpm wpm: $text ($hash)" }
+    }
+
     private fun descendants(v: android.view.View): List<android.view.View> =
         listOf(v) + if (v is android.view.ViewGroup)
             (0 until v.childCount).flatMap { descendants(v.getChildAt(it)) } else emptyList()
+
+    /** Same amplitude-normalized breath signature as tests/leopard/test_breath.py:
+     * at least 300 ms of quiet turbulent audio, rather than inserted silence. */
+    private fun breathCount(wav: ByteArray): Int {
+        val samples = IntArray((wav.size - 44) / 2) { i ->
+            ((wav[44 + i*2].toInt() and 255) or (wav[45 + i*2].toInt() shl 8)).toShort().toInt()
+        }
+        val peak = samples.maxOf { kotlin.math.abs(it) }
+        if (peak == 0) return 0
+        if (kotlin.math.abs(peak - 14000) > 700)
+            samples.indices.forEach { samples[it] = (samples[it] * (14000.0 / peak)).toInt() }
+        var start = -1
+        var found = 0
+        for (i in 0 until samples.size - 220 step 220) {
+            val quiet = (i until i + 220).all { kotlin.math.abs(samples[it]) < 900 }
+            if (quiet) { if (start < 0) start = i }
+            else if (start >= 0) {
+                val count = i - start
+                if (count >= 22050 * 300 / 1000) {
+                    val rms = kotlin.math.sqrt((start until i).sumOf { samples[it].toDouble() * samples[it] } / count)
+                    val crossings = (start + 1 until i).count { (samples[it-1] < 0) != (samples[it] < 0) }
+                    if (crossings * 22050.0 / count >= 2200 && rms > 20) found++
+                }
+                start = -1
+            }
+        }
+        return found
+    }
 
     private fun checkSettingsPersistence(activity: Activity) {
         val prefs = PantheraEngine.prefs(targetContext)
@@ -90,6 +153,9 @@ class EngineSmokeTest : Instrumentation() {
             prefs.edit().putInt(PantheraEngine.settingKey("rate_wpm", voice.gen), 221 + i*100)
                 .putInt(PantheraEngine.settingKey("volume", voice.gen), 37 + i*25)
                 .putString(PantheraEngine.settingKey("number_style", voice.gen), if (i == 0) "off" else "words")
+                .putBoolean(PantheraEngine.settingKey(PantheraEngine.PREF_COMMANDS, voice.gen), i == 0)
+                .putBoolean(PantheraEngine.settingKey(PantheraEngine.PREF_ABBREVIATIONS, voice.gen), i != 0)
+                .putString(PantheraEngine.settingKey(PantheraEngine.PREF_PHRASING, voice.gen), if (i == 0) "fewer" else "most")
                 .commit()
             select(voice)
         }
@@ -98,6 +164,22 @@ class EngineSmokeTest : Instrumentation() {
             runOnMainSync {
                 val views = descendants(activity.window.decorView)
                 val sliders = views.filterIsInstance<android.widget.SeekBar>()
+                val phrasing = views.filterIsInstance<android.widget.Spinner>().first { it.contentDescription == "Engine phrase breaks" }
+                check(phrasing.isEnabled == PantheraEngine.supportsPhrasing(choices[i].gen))
+                check(phrasing.selectedItemPosition == if (i == 0) 1 else 3)
+                val commands = views.filterIsInstance<android.widget.CheckBox>().first { it.text == "Accept embedded speech commands" }
+                val abbreviations = views.filterIsInstance<android.widget.CheckBox>().first { it.text == "Expand abbreviations" }
+                check(commands.isChecked == (i == 0))
+                check(abbreviations.isChecked == (i != 0))
+                for (box in listOf(commands, abbreviations)) {
+                    val before = box.isChecked
+                    box.performClick()
+                    val now = PantheraEngine.settings(targetContext)
+                    check((if (box === commands) now.acceptCommands else now.expandAbbreviations) == !before)
+                    box.performClick()
+                    check(box.isChecked == before)
+                    check(box.createAccessibilityNodeInfo().isCheckable)
+                }
                 check(sliders[0].progress == 221 + i*100 - 80 + 1)
                 check(sliders[1].progress == 37 + i*25)
                 check(views.filterIsInstance<android.widget.Spinner>()
@@ -107,11 +189,23 @@ class EngineSmokeTest : Instrumentation() {
                 check(descendants(activity.window.decorView).any { it === spinner })
                 check(sliders[1].progress == 38 + i*25)
             }
+            if (PantheraEngine.supportsPhrasing(choices[i].gen)) {
+                fun pickPhrase(position: Int) {
+                    runOnMainSync {
+                        descendants(activity.window.decorView).filterIsInstance<android.widget.Spinner>()
+                            .first { it.contentDescription == "Engine phrase breaks" }.setSelection(position)
+                    }
+                    waitForIdleSync()
+                    check(PantheraEngine.settings(targetContext).phrasing == PantheraEngine.PHRASING_VALUES[position])
+                }
+                pickPhrase(2)
+                pickPhrase(3)
+            }
         }
         runOnMainSync {
             val views = descendants(activity.window.decorView)
             views.filterIsInstance<android.widget.EditText>().single().setText("Saved sample text.")
-            val box = views.filterIsInstance<android.widget.CheckBox>().single()
+            val box = views.filterIsInstance<android.widget.CheckBox>().first { it.text == "Use selected voice in all apps" }
             if (!box.isChecked) box.performClick()
         }
         val monitor = addMonitor(SettingsActivity::class.java.name, null, false)
@@ -122,11 +216,13 @@ class EngineSmokeTest : Instrumentation() {
         runOnMainSync {
             val views = descendants(recreated.window.decorView)
             check(views.filterIsInstance<android.widget.EditText>().single().text.toString() == "Saved sample text.")
-            check(views.filterIsInstance<android.widget.CheckBox>().single().isChecked)
+            check(views.filterIsInstance<android.widget.CheckBox>().first { it.text == "Use selected voice in all apps" }.isChecked)
             check(views.filterIsInstance<android.widget.Button>().first { it.text == "Engine settings" }.isSelected)
             check(views.filterIsInstance<android.widget.SeekBar>()[0].progress == 221 - 80 + 1)
+            check(views.filterIsInstance<android.widget.CheckBox>().first { it.text == "Accept embedded speech commands" }.isChecked)
+            check(!views.filterIsInstance<android.widget.CheckBox>().first { it.text == "Expand abbreviations" }.isChecked)
             prefs.edit().putBoolean("override_voice", false).commit()
-            check(!views.filterIsInstance<android.widget.CheckBox>().single().isChecked)
+            check(!views.filterIsInstance<android.widget.CheckBox>().first { it.text == "Use selected voice in all apps" }.isChecked)
             recreated.finish()
         }
     }
@@ -145,41 +241,72 @@ class EngineSmokeTest : Instrumentation() {
         prefs.edit().putBoolean("override_voice", false).putInt(volumeKey, baselineVolume)
             .putInt(rateKey, 0).commit()
         try {
-            val activity = startActivitySync(android.content.Intent(targetContext,
-                SettingsActivity::class.java).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
-            runOnMainSync {
-                fun descendants(v: android.view.View): List<android.view.View> =
-                    listOf(v) + if (v is android.view.ViewGroup)
-                        (0 until v.childCount).flatMap { descendants(v.getChildAt(it)) } else emptyList()
-                val views = descendants(activity.window.decorView)
-                views.filterIsInstance<android.widget.Button>().first { it.text == "Engine settings" }.performClick()
-                val sliders = views.filterIsInstance<android.widget.SeekBar>()
-                check(sliders.size == 2)
-                for (slider in sliders) {
-                    check(!slider.contentDescription.isNullOrBlank())
-                    slider.requestFocus()
-                    fun key(code: Int) {
-                        slider.dispatchKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, code))
-                        slider.dispatchKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, code))
-                    }
-                    key(android.view.KeyEvent.KEYCODE_MOVE_END); check(slider.progress == slider.max)
-                    key(android.view.KeyEvent.KEYCODE_MOVE_HOME); check(slider.progress == 0)
-                    key(android.view.KeyEvent.KEYCODE_DPAD_RIGHT); check(slider.progress == 1)
-                    key(android.view.KeyEvent.KEYCODE_DPAD_LEFT); check(slider.progress == 0)
-                    if (android.os.Build.VERSION.SDK_INT >= 30) check(!slider.stateDescription.isNullOrBlank())
+            // Generated by the independent desktop Python abbreviation rules;
+            // these are text fixtures only, with no engine files or recordings.
+            val cases = org.json.JSONArray(context.assets.open("abbreviation-oracle.json").bufferedReader().use { it.readText() })
+            for (i in 0 until cases.length()) {
+                val c = cases.getJSONObject(i)
+                check(SpeechTextOptions.abbreviations(c.getString("text"), c.getBoolean("expand")) == c.getString("expected")) {
+                    "Abbreviation oracle case $i: ${c.getString("text")}"
                 }
-                check(prefs.getInt(volumeKey, -1) == 0)
-                check(prefs.getInt(rateKey, -1) == 0)
             }
-            checkSettingsPersistence(activity)
+            check(SpeechTextOptions.prepare("[[rate 200]]Dr. Kirk", false, true, "tiger") == "Doctor Kirk")
+            check(SpeechTextOptions.prepare("[ [ rate 200 ] ]DR", true, false, "tiger") == "[[ rate 200 ]]D R")
+            check(SpeechTextOptions.prepare("[[inpt PHON]]DR", true, false, "lion") == "D R")
+            check(SpeechTextOptions.prepare("[[cmnt Dr. XIV]]Dr. Kirk", true, false, "leopard") == "[[cmnt Dr. XIV]]D R. Kirk")
+            results.putString("textRules", "${cases.length()} desktop abbreviation cases passed")
+            if (!audioOnly) {
+                val keyguard = targetContext.getSystemService(android.app.KeyguardManager::class.java)
+                check(!keyguard.isKeyguardLocked) { "Unlock the device before running the settings UI checks" }
+                val activity = startActivitySync(android.content.Intent(targetContext,
+                    SettingsActivity::class.java).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+                runOnMainSync {
+                    fun descendants(v: android.view.View): List<android.view.View> =
+                        listOf(v) + if (v is android.view.ViewGroup)
+                            (0 until v.childCount).flatMap { descendants(v.getChildAt(it)) } else emptyList()
+                    val views = descendants(activity.window.decorView)
+                    views.filterIsInstance<android.widget.Button>().first { it.text == "Engine settings" }.performClick()
+                    val sliders = views.filterIsInstance<android.widget.SeekBar>()
+                    val sample = views.filterIsInstance<android.widget.EditText>().single()
+                    check(sample.contentDescription.isNullOrEmpty()) {
+                        "The sample's associated label must not replace its editable text"
+                    }
+                    for (control in views.filter { it is android.widget.SeekBar || it is android.widget.Spinner || it is android.widget.EditText }) {
+                        check(control.id != android.view.View.NO_ID)
+                        check(views.filterIsInstance<android.widget.TextView>().any { it !== control && it.labelFor == control.id }) {
+                            "Control has no associated label: ${control.contentDescription}"
+                        }
+                    }
+                    check(sliders.size == 2)
+                    for (slider in sliders) {
+                        check(!slider.contentDescription.isNullOrBlank())
+                        slider.requestFocus()
+                        fun key(code: Int) {
+                            slider.dispatchKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, code))
+                            slider.dispatchKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, code))
+                        }
+                        key(android.view.KeyEvent.KEYCODE_MOVE_END); check(slider.progress == slider.max)
+                        key(android.view.KeyEvent.KEYCODE_MOVE_HOME); check(slider.progress == 0)
+                        key(android.view.KeyEvent.KEYCODE_DPAD_RIGHT); check(slider.progress == 1)
+                        key(android.view.KeyEvent.KEYCODE_DPAD_LEFT); check(slider.progress == 0)
+                        if (android.os.Build.VERSION.SDK_INT >= 30) check(!slider.stateDescription.isNullOrBlank())
+                    }
+                    check(prefs.getInt(volumeKey, -1) == 0)
+                    check(prefs.getInt(rateKey, -1) == 0)
+                }
+                checkSettingsPersistence(activity)
+            }
             for (gen in PantheraEngine.availableGens(targetContext)) {
                 prefs.edit().putInt(PantheraEngine.settingKey("rate_wpm", gen), 0)
+                    .putBoolean(PantheraEngine.settingKey(PantheraEngine.PREF_COMMANDS, gen), false)
+                    .putBoolean(PantheraEngine.settingKey(PantheraEngine.PREF_ABBREVIATIONS, gen), true)
+                    .putString(PantheraEngine.settingKey(PantheraEngine.PREF_PHRASING, gen), "leopard")
                     .putString(PantheraEngine.settingKey("number_style", gen), "fix").commit()
             }
             prefs.edit().putString("engine_generation", generation).commit()
             prefs.edit().putInt(volumeKey, baselineVolume)
                 .putInt(rateKey, 0).commit()
-            results.putString("sliders", "PASS: arrows, Home/End, labels, per-generation settings, recreation, sample text, live refresh")
+            results.putString("sliders", if (audioOnly) "Skipped: audio-only run" else "PASS: arrows, Home/End, labels, per-generation settings, recreation, sample text, live refresh")
             val ready = CountDownLatch(1)
             var init = TextToSpeech.ERROR
             runOnMainSync {
@@ -241,10 +368,11 @@ class EngineSmokeTest : Instrumentation() {
                     "panthera-tiger-vicki" -> 15713
                     "panthera-leopard-fred", "panthera-snowleopard-fred", "panthera-lion-fred" -> 17360
                     "panthera-leopard-vicki" -> 17887
-                    "panthera-leopard-alex" -> 17973
+                    "panthera-leopard-alex" -> 17851
                     "panthera-lion-alex" -> 19387
                     "panthera-lion-vicki" -> 19517
                     "panthera-snowleopard-vicki" -> 19610
+                    "panthera-snowleopard-alex" -> 19450
                     else -> return
                 }
                 check(wav.size == 44 + expectedFrames * 2) {
@@ -259,7 +387,8 @@ class EngineSmokeTest : Instrumentation() {
                 val digest = MessageDigest.getInstance("SHA-256")
                 digest.update(wav, 44, wav.size - 44)
                 val actual = digest.digest().joinToString("") { "%02x".format(it.toInt() and 255) }
-                check(actual == expectedHash) { "$voiceName differs from desktop PCM: $actual" }
+                if (voiceName == "panthera-lion-fred") checkLionReference("Hello there.", wav)
+                else check(actual == expectedHash) { "$voiceName differs from desktop PCM: $actual" }
             }
 
             var firstWav: ByteArray? = null
@@ -441,16 +570,81 @@ class EngineSmokeTest : Instrumentation() {
                 checkReference(voice.name, wav)
                 val genRate = PantheraEngine.settingKey("rate_wpm", gen)
                 val genVolume = PantheraEngine.settingKey("volume", gen)
+                val genCommands = PantheraEngine.settingKey(PantheraEngine.PREF_COMMANDS, gen)
+                val genAbbreviations = PantheraEngine.settingKey(PantheraEngine.PREF_ABBREVIATIONS, gen)
+                checkReference(voice.name, pcmOf("$gen-commands-off", "[[rate 90]][[volm 0]]Hello there."))
+                prefs.edit().putBoolean(genCommands, true).commit()
+                val slowCommand = pcmOf("$gen-command-rate", "[[rate 90]]Hello there.")
+                check(slowCommand.size > wav.size * 1.3) { "$gen embedded rate was ignored" }
+                val paused = pcmOf("$gen-command-pause", "[[slnc 500]]Hello there.")
+                check(paused.size > wav.size + 18000) { "$gen embedded pause was ignored" }
+                check(energy(pcmOf("$gen-command-mute", "[[volm 0]]Hello there.")) == 0.0)
+                prefs.edit().putBoolean(genCommands, false).commit()
+                checkReference(voice.name, pcmOf("$gen-command-recovery", "Hello there."))
+                // Lexical and dictionary halves, with off/on/off transitions on
+                // the already-open worker. A setting change must affect audio.
+                val expanded = pcmOf("$gen-abbrev-on", "The file is 5KB and 20ish.")
+                val lexicalExpanded = pcmOf("$gen-lexical-on", "DR XIV")
+                prefs.edit().putBoolean(genAbbreviations, false).commit()
+                val unexpanded = pcmOf("$gen-abbrev-off", "The file is 5KB and 20ish.")
+                // Native oracles show these dictionary rules in Leopard and
+                // Snow Leopard. Tiger/Lion use different quantity handling.
+                if (gen == "leopard" || gen == "snowleopard") check(!expanded.contentEquals(unexpanded)) {
+                    "$gen dictionary abbreviation toggle had no effect"
+                }
+                val lexicalOff = pcmOf("$gen-lexical", "DR XIV")
+                check(!lexicalOff.contentEquals(lexicalExpanded))
+                val letters = pcmOf("$gen-letters", "D R X I V")
+                if (gen == "lion") {
+                    for (audio in listOf(lexicalOff, letters)) checkLionReference("D R X I V", audio)
+                } else check(lexicalOff.contentEquals(letters))
+                prefs.edit().putBoolean(genAbbreviations, true).commit()
+                val restoredAbbreviations = pcmOf("$gen-abbrev-restored", "The file is 5KB and 20ish.")
+                if (gen == "lion") {
+                    for (audio in listOf(expanded, unexpanded, restoredAbbreviations))
+                        checkLionReference("The file is 5KB and 20ish.", audio)
+                } else check(restoredAbbreviations.contentEquals(expanded))
+                if (PantheraEngine.supportsPhrasing(gen)) {
+                    val phraseKey = PantheraEngine.settingKey(PantheraEngine.PREF_PHRASING, gen)
+                    val phraseText = "The fox jumped over the dog. Later it ran again."
+                    val originalPhrase = pcmOf("$gen-phrase-default", phraseText)
+                    if (gen == "leopard") check(pcmOf("$gen-debug-default", "Restart with debug logging enabled.").size == 44 + 2 * 56896)
+                    // Independently rendered with native Windows, all at 180
+                    // wpm. Endpoints alone miss a real change: on Snow/Lion
+                    // this sentence differs only at the middle position.
+                    val frames = when (gen) {
+                        "leopard" -> listOf(77168, 79632, 79632, 80304, 77168)
+                        "snowleopard" -> listOf(78624, 78624, 80752, 78624, 78624)
+                        else -> listOf(78470, 78470, 79702, 78470, 78470)
+                    }
+                    for ((i, style) in PantheraEngine.PHRASING_VALUES.withIndex()) {
+                        prefs.edit().putString(phraseKey, style).commit()
+                        val phrase = pcmOf("$gen-phrase-$style", phraseText)
+                        check(phrase.size == 44 + 2 * frames[i]) {
+                            "$gen $style phrase breaks differ from native: ${(phrase.size - 44) / 2} frames"
+                        }
+                        if (gen == "leopard" && style == "fewest")
+                            check(pcmOf("$gen-debug-fewest", "Restart with debug logging enabled.").size == 44 + 2 * 50960)
+                    }
+                    prefs.edit().putString(phraseKey, "leopard").commit()
+                    val restoredPhrase = pcmOf("$gen-phrase-restore", phraseText)
+                    if (gen == "lion") {
+                        for (audio in listOf(originalPhrase, restoredPhrase)) checkLionReference(phraseText, audio)
+                    } else check(restoredPhrase.contentEquals(originalPhrase))
+                }
                 prefs.edit().putInt(genRate, 300).commit()
                 val fast = pcmOf("$gen-rate-300", "Hello there.")
                 check(fast.size > 2048 && fast.size < wav.size * 0.85) { "$gen ignored changed speech rate" }
                 check(client.setSpeechRate(0.75f) == TextToSpeech.SUCCESS)
-                check(pcmOf("$gen-rate-locked", "Hello there.").contentEquals(fast))
+                val lockedRate = pcmOf("$gen-rate-locked", "Hello there.")
+                if (gen == "lion") {
+                    for (audio in listOf(fast, lockedRate)) checkLionReference("Hello there.", audio, 300)
+                } else check(lockedRate.contentEquals(fast))
                 check(client.setSpeechRate(1.0f) == TextToSpeech.SUCCESS)
                 prefs.edit().putInt(genRate, 0).putInt(genVolume, 0).commit()
                 check(energy(pcmOf("$gen-mute", "Hello there.")) == 0.0)
                 prefs.edit().putInt(genVolume, if (gen == "tiger") 100 else 50).commit()
-                check(pcmOf("$gen-settings-restored", "Hello there.").contentEquals(wav))
+                checkReference(voice.name, pcmOf("$gen-settings-restored", "Hello there."))
                 // AAC plus repeated worker retirement, on the same bound client.
                 val aac = client.voices.firstOrNull { it.name == "panthera-$gen-alex" }
                     ?: client.voices.firstOrNull { it.name == "panthera-$gen-vicki" }
@@ -458,6 +652,22 @@ class EngineSmokeTest : Instrumentation() {
                     check(client.setVoice(aac) == TextToSpeech.SUCCESS)
                     val reference = pcmOf("switch-$gen-aac", "Hello there.")
                     checkReference(aac.name, reference)
+                    if (aac.name.endsWith("-alex")) {
+                        // The existing NVDA breath regression paragraph. Keep
+                        // it whole; its single breath lies inside the request.
+                        val paragraph = "The US Chamber of Commerce had also warned Tuesday that higher tariffs " +
+                            "would damage both economies, drive up costs for families, further " +
+                            "disrupt critical supply chains, and risk the 13 million American jobs " +
+                            "that depend on trade. Negotiators met again on Wednesday morning, but neither side would say " +
+                            "whether a deal was close, and the deadline is now only days away."
+                        check(PantheraText.pieces(paragraph, PantheraEngine.settings(targetContext, gen), gen).size == 1)
+                        val breathing = pcmOf("$gen-alex-breath", paragraph)
+                        // Native references disable the optional SQLite table,
+                        // matching Android's app linker namespace.
+                        val frames = when (gen) { "leopard" -> 508455; "snowleopard" -> 520641; else -> 527288 }
+                        check(breathing.size == 44 + frames * 2) { "$gen paragraph differs from native: ${(breathing.size - 44) / 2} frames" }
+                        check(breathCount(breathing) == 1) { "$gen lost Alex's paragraph breath" }
+                    }
                     for (i in 1..24) {
                         check(pcmOf("$gen-aac-$i", "Hello there.").contentEquals(reference)) {
                             "$gen AAC render $i changed during the session"
@@ -471,7 +681,7 @@ class EngineSmokeTest : Instrumentation() {
                     client.stop()
                     check(pcmOf("$gen-after-stop", "Hello there.").contentEquals(reference))
                     val elapsed = android.os.SystemClock.elapsedRealtime() - stopAt
-                    check(elapsed < 10000) { "$gen cancellation recovery took ${elapsed}ms" }
+                    check(elapsed < 3000) { "$gen cancellation recovery took ${elapsed}ms" }
                     Log.i("PantheraTest", "$gen AAC: 24 exact repeats and cancellation recovery ${elapsed}ms")
                 }
                 check(client.setVoice(fred) == TextToSpeech.SUCCESS)

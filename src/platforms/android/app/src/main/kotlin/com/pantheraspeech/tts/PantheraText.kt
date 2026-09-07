@@ -1,24 +1,6 @@
-// Text on its way to the engine: how an utterance is cut into pieces.
-//
-// The engine cannot be interrupted. Measured on a Pixel Watch 2, a 700-character
-// request rendered all 7041 slices of itself -- the whole fifty seconds of audio
-// -- inside a single _SEStopSpeechAt call that returned noErr and took twenty
-// seconds. Neither whereToStop value helps, the Speech Manager's 'rset' answers
-// paramErr, and failing the scheduled slice from the audio shim is ignored. The
-// engine finishes what it was given, and the only thing left to control is how
-// much that is.
-//
-// So an utterance is handed over a piece at a time, and cancelling costs the
-// remainder of the piece in flight rather than the remainder of the paragraph.
-// Emulated Fred renders at about 2.5x realtime on that watch, which is what
-// makes this affordable in the other direction too: while one piece plays, the
-// next renders roughly two and a half times faster than it will be heard, so
-// the seam between them is covered.
-//
-// The rules for *where* to cut are the desktop driver's, ported from
-// synthDrivers/_panthera/text.py rather than reinvented, because they were
-// arrived at by ear over several releases and the failure they prevent -- a
-// full stop heard in the middle of a sentence -- is the one that matters.
+// Streaming keeps each incoming request whole to preserve engine-composed
+// pauses, breaths and input modes. The legacy splitter remains available for
+// non-streaming callers; Android TTS and preview do not use it.
 package com.pantheraspeech.tts
 
 object PantheraText {
@@ -114,6 +96,16 @@ object PantheraText {
      * it hands the desktop driver words already -- so there is nothing to port
      * from there and this is Android's own problem. */
     fun pieces(text: String): List<String> = split(Emoji.describe(text, true))
+
+    fun pieces(text: String, settings: PantheraEngine.Settings, generation: String): List<String> {
+        val prepared = SpeechTextOptions.prepare(text, settings.acceptCommands,
+            settings.expandAbbreviations, generation)
+        // Streaming already delivers the first samples promptly. Preserve the
+        // complete request, as the NVDA streaming driver does: sentence breaks
+        // inside one utterance are where Alex composes breaths and pauses.
+        // Synthetic utterance boundaries lose them, and also reset input modes.
+        return listOf(prepared)
+    }
 
     /** One utterance, described and encoded, for callers that do not stream. */
     fun forEngine(text: String): ByteArray = MacRoman.encode(Emoji.describe(text, true))

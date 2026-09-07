@@ -25,6 +25,24 @@ internal object PantheraWorkers {
         override fun onNullBinding(name: ComponentName) { ready.countDown() }
     }
     private val connections = mutableMapOf<String, Connection>()
+    fun restart(context: Context, generation: String) {
+        val connection = connections.remove(generation) ?: return
+        val api = connection.api
+        val binder = api?.asBinder()
+        context.applicationContext.unbindService(connection)
+        if (binder == null || !binder.isBinderAlive) return
+        val stopped = CountDownLatch(1)
+        val recipient = IBinder.DeathRecipient { stopped.countDown() }
+        try {
+            binder.linkToDeath(recipient, 0)
+            try { api.shutdown() } catch (_: android.os.DeadObjectException) { }
+            check(stopped.await(10, TimeUnit.SECONDS)) { "Engine worker did not stop" }
+        } catch (_: android.os.DeadObjectException) {
+            // It exited between the liveness check and death registration.
+        } finally {
+            try { binder.unlinkToDeath(recipient, 0) } catch (_: NoSuchElementException) { }
+        }
+    }
     // Calls are serialized by PantheraEngine's synthesis lock, never on the UI thread.
     fun get(context: Context, generation: String): IPantheraWorker {
         check(Looper.myLooper() != Looper.getMainLooper())

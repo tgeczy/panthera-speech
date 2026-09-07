@@ -9,17 +9,72 @@ next request.
 
 The app process owns preferences. Workers receive a settings snapshot for each
 utterance, rather than reading a separate process's SharedPreferences cache.
-Voice, rate, volume and number handling are saved per generation. Existing
+Voice, rate, volume, phrase breaks, number handling, embedded-command acceptance and
+abbreviation expansion are saved per generation. Existing
 global settings remain migration fallbacks. Rate zero follows the requesting
 app; a saved rate overrides it. The optional **Use selected voice in all apps**
 setting overrides explicit client voice requests. It is off by default.
+
+**Engine phrase breaks** is available on Leopard and later; Tiger's control is
+disabled with an explanation. Its choices use the NVDA/SAPI mapping: Fewest
+(-8), Fewer (-4), More (0), Most (5), or Engine default (no threshold override).
+Fewest is the app default. The engine caches this preference beyond channel
+lifetime. A changed choice replaces only that generation's private worker
+before the next utterance and configures it before loading the engine. The
+public TTS service and its clients remain connected.
+
+**Accept embedded speech commands** defaults off and removes command blocks
+from incoming text. When enabled, commands such as `[[rate 200]]`,
+`[[slnc 500]]` and `[[volm 0]]` reach the engine. Command-containing requests
+stay intact to preserve their state. Lion input
+mode commands are excluded, matching the desktop driver.
+
+**Expand abbreviations** defaults on. The Kotlin lexical rules match the NVDA
+driver; the worker also updates the dictionary abbreviation switch before
+each request. Compiled dictionary rules are retained and their matches gated
+at execution time, allowing off/on changes without restarting a worker.
+The quantity-rule effect is specific to Leopard and Snow Leopard; native
+Tiger and Lion use different quantity handling. Lexical spelling controls such
+as Dr. and XIV are tested on all four generations.
 
 The sample uses the same streaming path as Android TTS. Sample text and the
 selected settings page survive activity recreation. The sliders follow
 TG Speechbox's View-based accessibility model: named values, single-step
 arrows, Home/End, and standard accessibility range actions.
+Spinners, sliders and the sample field have associated labels. Section titles
+are accessibility headings, and native checkboxes own their labels and checked
+states without an additional clickable parent.
+
+Each incoming request stays whole while its audio streams. This follows the
+NVDA driver's paragraph handling: splitting at sentence boundaries removes
+Alex's breaths and composed pauses. Explicit stops still cancel speech; separate
+Android requests retain their own boundaries. No artificial gaps or audio
+silence trimming are added. An explicit stop retires an active private worker
+and the next request reopens it. The emulated engines can drain a whole
+paragraph inside their stop call, or return with deferred work that truncates
+the next utterance. Process isolation makes cancellation a reliable boundary
+without disconnecting the public service. Completed requests retain their
+warm worker; stopping idle playback does not retire it.
 
 ## Native fixes
+
+The emulator now binds `__DefaultRuneLocale` as immutable guest data rather
+than a function trampoline. Tiger and Leopard's inlined digit checks had been
+reading instruction bytes, rejecting numeric command arguments. This also
+fixes embedded volume in the emulated Linux host. A generated libc check reads
+the table through Unicorn and checks it against the initialized host table.
+
+An ordinary audio-unit reset now drains queued speech before completing its
+callbacks. Engines also reset between sentences; treating that as cancellation
+discarded sentence tails on slower hosts. Explicit cancellation still discards
+audio through its separate flag. The two-sentence phrase-break reference exposed
+this on Android and Linux emulation, while faster native runs hid the loss.
+
+The emulator registry grows under its existing mapping lock. Snow Leopard's
+Alex can overlap more than sixteen dispatch workers during a long paragraph;
+the former fixed registry terminated the host even though retiring workers
+were releasing their emulators. Finished MP tasks now release their guest
+stacks and emulators as dispatch workers already do.
 
 The Snow Leopard/Lion startup failure was in the host's loader: compressed
 dyld bindings and external relocations bypassed the guest-call bridge. It was
@@ -54,7 +109,14 @@ Galaxy S22 tests cover both Android ABIs: settings recreation and generation
 round trips, reference speech, live rate/volume changes, voice override,
 preview/service agreement, 24 repeated AAC utterances per installed generation,
 and cancellation followed by correct speech through the same TTS client.
-The sampled AAC voices are Leopard Alex, Snow Leopard Vicki and Lion Alex;
+Settings coverage includes 294 independently generated desktop abbreviation
+fixtures, live command and abbreviation switches, and all five phrase-break
+choices compared with native frame counts on Leopard, Snow Leopard and Lion.
+The same TTS client survives every private worker replacement.
+Alex's longer paragraph is checked against native duration and the existing
+NVDA breath detector, which distinguishes turbulent breath audio from silence.
+The sampled AAC voices include Alex on Leopard, Snow Leopard and Lion, plus
+Snow Leopard Vicki;
 this is not a claim that every voice bundle has been individually tested.
 
 For `Hello there.` at 180 wpm, native Windows and desktop Unicorn agree
@@ -80,6 +142,11 @@ Linux x86_64. Native Linux Tiger/Leopard streaming, volume and cancellation
 remain covered by the existing client harness. No Apple files or generated
 speech are stored in the repository or sent to CI; all render comparisons
 use the owner's extracted data locally.
+
+Native Lion can produce different exact waveforms for repeated input even in
+the same resident session. The tests accept only independently verified native
+variants for their Fred reference phrases;
+repeat identity alone is not a universal speech-correctness oracle.
 
 See [the arm64 build and device commands](android-arm64.md). Numerical checks
 need only built hosts and NumPy/pytest:

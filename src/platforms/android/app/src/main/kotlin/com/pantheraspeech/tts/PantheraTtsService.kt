@@ -133,16 +133,10 @@ class PantheraTtsService : TextToSpeechService() {
         val bytes = ByteArray(samples.size * 2)
         var total = 0
 
-        // Hand the engine one piece at a time, and stream each piece's PCM as
-        // it is produced -- audio starts within a chunk instead of after a whole
-        // render. Render-then-stream went silent because TalkBack gave up
-        // waiting the few seconds a full render took before any audio arrived.
-        //
-        // The pieces exist because the engine cannot be interrupted: it renders
-        // whatever it was handed, and a stop waits for it. Cancelling therefore
-        // costs the rest of the current piece, not the rest of the paragraph --
-        // see PantheraText for the measurement and the cutting rules.
-        val pieces = PantheraText.pieces(text)
+        // Stream the complete request. Keeping sentence boundaries inside the
+        // same utterance preserves the engine's pauses and Alex's breaths.
+        // onStop posts cancellation to the worker without entering guest code.
+        val pieces = PantheraText.pieces(text, snapshot, voice.gen)
         for (piece in pieces) {
             if (stopRequested) break
             val started = PantheraEngine.speakStart(
@@ -154,6 +148,7 @@ class PantheraTtsService : TextToSpeechService() {
                 if (total == 0) { callback.error(TextToSpeech.ERROR_SYNTHESIS); return }
                 break
             }
+            if (stopRequested) PantheraEngine.stop()
             while (!stopRequested) {
                 val n = PantheraEngine.pull(samples)
                 if (n < 0) {
