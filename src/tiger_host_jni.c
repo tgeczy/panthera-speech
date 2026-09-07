@@ -173,11 +173,9 @@ void panthera_stop(void)
     /* The Binder caller must never enter the shared guest channel concurrently
      * with the synthesis thread, so this posts flags and nothing else.
      *
-     * g_au_cancel is the one that ends the utterance: it makes the audio shim
-     * refuse the engine's next scheduled slice, which unwinds its render loop
-     * from the inside.  It is a host-side flag, so setting it from Binder is
-     * safe -- that is exactly why the cancellation lives there rather than in
-     * a Speech Manager call this thread is not allowed to make. */
+     * g_au_cancel makes the pacer discard subsequent audio and remove its
+     * playback delay. It does not stop the producer; panthera_finish requests
+     * that separately and waits for callbacks before allowing channel reuse. */
     InterlockedExchange(&g_pt_stop, 1);
     InterlockedExchange(&g_au_cancel, 1);
 }
@@ -198,11 +196,9 @@ void panthera_finish(void)
          * different fault if the 20 s were spent here. */
         PT_ENSURE_ENGINE();
         t_ready = wall_ms();
-        /* Tell the channel as well, so its own notion of state agrees with
-         * ours.  This is not what makes the cancellation quick -- refusing the
-         * next slice is -- but by the time we get here the engine's loop is
-         * already unwinding, so the call no longer has to wait out the rest of
-         * the sentence to be answered.
+        /* Ask the channel to stop. This call can block behind an engine worker's
+         * critical region; setting g_au_cancel only discards audio and removes
+         * pacing, so it does not guarantee prompt completion of this call.
          *
          * ('rset' used to be attempted here on the strength of a comment in
          * serve mode.  It answers paramErr on this engine, and serve mode's

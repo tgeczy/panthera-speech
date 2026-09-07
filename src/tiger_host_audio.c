@@ -160,11 +160,6 @@ static int __cdecl sh_DisposeAUGraph(void *g)
 #define kAUProp_ScheduleAudioSlice  3300
 #define kAUProp_ScheduleStartTime   3301
 
-/* AudioUnit's own "not right now" -- what a ScheduledSoundPlayer answers when
- * it cannot take the slice it is being handed.  Used to cancel an utterance;
- * see the schedule case in sh_AudioUnitSetProperty. */
-#define kAudioUnitErr_CannotDoInCurrentContext (-10863)
-
 /* The slice begins with an AudioTimeStamp, whose first field is a Float64
  * sample time saying *where in the output* this slice belongs.  Appending in
  * arrival order ignored it, and the positions are not always consecutive. */
@@ -784,26 +779,12 @@ static int __cdecl sh_AudioUnitSetProperty(au_obj *unit, unsigned id,
                *(const unsigned *)(p + 12), g_channels,
                *(const unsigned *)(p + 32));
     } else if (id == kAUProp_ScheduleAudioSlice && data) {
-        /* Failing the schedule is how an utterance is cancelled.
-         *
-         * The engine hands over finished PCM by scheduling it here, so this
-         * call is the one place per slice where its render loop asks us a
-         * question and reads the answer.  _SEStopSpeechAt is not that place:
-         * measured on a Pixel Watch 2 it returns noErr but takes 20 s, because
-         * it waits for the worker, and the worker is busy rendering the very
-         * text we are trying to abandon -- 7032 slices went by inside one such
-         * call.  A screen reader cannot wait 20 s.
-         *
-         * The slice is taken first and refused second, and the order is the
-         * whole trick.  Simply returning the error took the utterance from 20 s
-         * to never: the engine had scheduled a slice whose completion then had
-         * nobody to fire it, and waited for it forever -- the wedge this file
-         * warns about two hundred lines up, walked straight into.  So take it
-         * (which queues the completion, and with g_au_cancel set the pacer
-         * fires it at once and throws the audio away), and *then* answer the
-         * failure a real ScheduledSoundPlayer would give if it could not accept
-         * the sound.  The engine's clock keeps ticking either way; the error is
-         * what lets it stop early rather than finish the sentence. */
+        /* Accepted slices must receive their completion even during cancel.
+         * The pacer discards cancelled audio and removes its playback delay.
+         * This keeps completion accounting valid; it does not abort synthesis.
+         * Returning an error after accepting a slice was tried and removed:
+         * Leopard treated it as unscheduled while our completion still fired,
+         * leaving the next utterance wedged. */
         take_slice((unsigned char *)data);
     } else if (id == kAUProp_ScheduleStartTime) {
         if (g_verbose) printf("  [au] ScheduleStartTime sampleTime %.1f\n",

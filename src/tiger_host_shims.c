@@ -454,18 +454,50 @@ static int __cdecl sh_once(unsigned *ctl, void (__cdecl *fn)(void))
  * guest can address, and the store into its slot has to be four bytes wide.
  * A host `void **` write puts eight there and takes the next variable with
  * it -- the same bug as the loader's pointer slots, one layer up. */
+typedef struct {
+    CRITICAL_SECTION cs;
+    /* Owned by the lock holder; recursive acquisition is timed as one hold.
+     * The guest sees only an opaque four-byte ID, never this host layout. */
+    unsigned depth;
+    unsigned long long held_since;
+} mpregion;
+
 static int __cdecl sh_mp_create_region(gptr *id)
 {
-    CRITICAL_SECTION *cs = (CRITICAL_SECTION *)GMEM_ALLOC(sizeof(*cs));
-    if (!cs) return -108;               /* memFullErr */
-    InitializeCriticalSection(cs);
-    if (id) *id = GP(cs);
+    mpregion *r = (mpregion *)GMEM_ALLOC(sizeof(*r));
+    if (!r) return -108;               /* memFullErr */
+    r->depth = 0;
+    InitializeCriticalSection(&r->cs);
+    if (id) *id = GP(r);
     return 0;
 }
 static int __cdecl sh_mp_enter_region(void *id, int timeout)
-{ (void)timeout; if (id) EnterCriticalSection((CRITICAL_SECTION *)id); return 0; }
+{
+    unsigned long long began = g_cancel_trace ? qpc_us() : 0;
+    (void)timeout;
+    if (id) {
+        mpregion *r = (mpregion *)id;
+        EnterCriticalSection(&r->cs);
+        if (g_cancel_trace && !r->depth++) r->held_since = qpc_us();
+    }
+    if (g_cancel_trace && qpc_us() - began >= 10000)
+        fprintf(stderr, "  [cancel] region=%p thread=%lu wait=%.1fms\n", id,
+                (unsigned long)GetCurrentThreadId(), (qpc_us() - began) / 1000.0);
+    return 0;
+}
 static int __cdecl sh_mp_exit_region(void *id)
-{ if (id) LeaveCriticalSection((CRITICAL_SECTION *)id); return 0; }
+{
+    if (id) {
+        mpregion *r = (mpregion *)id;
+        unsigned long long held = 0;
+        if (g_cancel_trace && !--r->depth) held = qpc_us() - r->held_since;
+        LeaveCriticalSection(&r->cs);
+        if (held >= 10000)
+            fprintf(stderr, "  [cancel] region=%p thread=%lu held=%.1fms\n", id,
+                    (unsigned long)GetCurrentThreadId(), held / 1000.0);
+    }
+    return 0;
+}
 
 /* Multiprocessing Services tasks and queues.
  *

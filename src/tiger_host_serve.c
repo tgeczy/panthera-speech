@@ -679,6 +679,8 @@ static int serve(image *mt, void *chan, const char *voicesdir)
                     }
                 }
                 if (cancel_requested()) {
+                    double cancel_started = wall_ms(), cancel_stopped;
+                    unsigned cancel_slices = g_slices;
                     /* The listener has moved on.  Stop the engine rather than
                      * render the rest of a sentence nobody will hear -- the
                      * driver cannot start the next utterance until this
@@ -686,6 +688,7 @@ static int serve(image *mt, void *chan, const char *voicesdir)
                     InterlockedExchange(&g_au_cancel, 1);
                     if (stopnow)
                         call_aligned2((void *)stopnow, chan, (void *)0);
+                    cancel_stopped = wall_ms();
                     /* Stopping the channel loses its rate and pitch.
                      *
                      * These are cached so that an unchanged setting costs no
@@ -725,6 +728,10 @@ static int serve(image *mt, void *chan, const char *voicesdir)
                      * callbacks from this one. On failure close the protocol;
                      * the client must replace this process before speaking. */
                     if (!settle_cancelled_audio()) return 1;
+                    if (g_cancel_trace)
+                        fprintf(stderr, "  [cancel] stop=%.1fms settle=%.1fms slices=%u->%u\n",
+                                cancel_stopped - cancel_started,
+                                wall_ms() - cancel_stopped, cancel_slices, g_slices);
                     cancelled = 1;
                     break;
                 }

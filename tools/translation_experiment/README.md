@@ -50,6 +50,16 @@ microbenchmark; its speedup must not be generalized to arbitrary engine code.
 
 ## Building and running
 
+Cancellation remains a separate release blocker. A quiet standalone Box86 run
+on the watch, interrupting a roughly 2,000-character paragraph after first PCM,
+spent 22.5 seconds waiting to acquire an MP critical region held by a synthesis
+worker. The replacement then produced first PCM in 63 ms and matched the normal
+6,026-frame Seven reference exactly. Repeating with lock tracing located the
+wait inside the stop call, rather than emulator initialization or the final
+37 ms callback settle. This is a failed responsiveness result, despite correct
+replacement PCM and successful process exit. The app still needs a proven
+cancellation strategy; faster ordinary rendering does not establish one.
+
 On this Windows development setup, with NDK 27.2, CMake 3.22.1, Git Bash, Python
 3.13, and the existing FAAD2 objects already built:
 

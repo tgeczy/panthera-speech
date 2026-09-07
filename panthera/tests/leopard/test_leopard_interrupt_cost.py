@@ -69,12 +69,11 @@ def test_interrupting_does_not_restart_the_host(driver):
     being avoided is a process start plus a voice load, and a machine under
     load can hide that in a wall-clock number while still paying it.
 
-    Each interruption waits for the response to end before the next one, which
-    is what a person arrowing through text does -- the keystroke that
-    interrupts is also the one that asks for the next thing.  Firing eight
-    cancels at a fixed 30 ms regardless made this fail on a loaded machine for
-    a reason that was not the bug: the worker really was still rendering when
-    the grace period expired, and the backstop was right to act.
+    Each interruption waits for the response to end before the next one. This
+    checks reuse after completed cancellation; it does not model rapid arrowing,
+    where replacement speech is queued immediately and the next key can arrive
+    before this response ends. tools/rapid_navigation_check.py measures that
+    separate case without waiting for cancelled work to finish.
     """
     driver.speak(["warming up the engine"])
     assert _waitFor(lambda: _pid(driver) is not None), "no host was started"

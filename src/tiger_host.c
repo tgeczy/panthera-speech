@@ -355,6 +355,8 @@ static float GFLOAT(unsigned bits)
 /* ---- shared state ------------------------------------------------------ */
 static image *g_primary;        /* MacinTalk; the image addresses resolve against */
 static int g_verbose = 1;
+/* Opt-in cancellation/lock timing, independent of per-sample audio tracing. */
+static int g_cancel_trace;
 static unsigned g_mp_waits;     /* how many times a worker has blocked */
 static volatile long g_stopped; /* AUGraphStop: the engine's end-of-utterance */
 /* "Expand abbreviations", off by TIGER_NO_ABBREV; see tiger_host_regex.c.
@@ -663,6 +665,7 @@ static int host_open(const char *mtpath, const char *sdpath)
     /* Unbuffered stderr: this program's other job is to crash informatively,
      * and buffered output is discarded when it does. */
     setvbuf(stderr, NULL, _IONBF, 0);
+    g_cancel_trace = getenv("TIGER_CANCEL_TRACE") ? 1 : 0;
 #ifdef TIGER_UC
     /* Bring the emulator up before a single image loads: it reserves the guest
      * regions at their own addresses, which a later image slide must never be
