@@ -482,7 +482,7 @@ $label = New-Object Windows.Forms.Label
 $label.Text = 'Mac OS X speech voices:'; $label.AutoSize = $true; $label.Location = New-Object Drawing.Point(12,14)
 $list = New-Object Windows.Forms.CheckedListBox
 $list.Name = 'speechEngineList'; $list.AccessibleName = 'Mac OS X speech engines'
-$list.AccessibleDescription = 'Tiger, Leopard, and Lion speech data installation status'
+$list.AccessibleDescription = 'Tiger, Leopard, Snow Leopard, and Lion speech data installation status'
 $list.CheckOnClick = $true
 $list.Location = New-Object Drawing.Point(12,38); $list.Size = New-Object Drawing.Size(680,200)
 $status = New-Object Windows.Forms.Label
@@ -498,7 +498,7 @@ $progress.Location = New-Object Drawing.Point(12,266); $progress.Size = New-Obje
 $progress.Minimum = 0; $progress.Maximum = 100; $progress.Visible = $false
 
 # The two NVDA driver settings SAPI users were living without.  Read by the
-# engine DLL from HKCU on every utterance -- each Speak is a fresh host, so a
+# engine DLL on every utterance, replacing the resident host when needed. A
 # change takes effect on the next thing spoken, in every SAPI application at
 # once.  Commands default OFF for the same reason NVDA's checkbox does: the
 # engine really parses [[...]], and measured, [[Main Page]] in a wiki article
@@ -551,16 +551,47 @@ $numLabel.Location = New-Object Drawing.Point(500,320)
 $numberStyle = New-Object Windows.Forms.ComboBox
 $numberStyle.DropDownStyle = 'DropDownList'; $numberStyle.AccessibleName = 'Long numbers'
 $numberStyle.Location = New-Object Drawing.Point(592,318); $numberStyle.Size = New-Object Drawing.Size(100,24)
-$numberValues = @('fix','off')
-foreach ($item in 'Fixed','Engine') { [void]$numberStyle.Items.Add($item) }
+$numberValues = @('fix','off','words')
+foreach ($item in 'Fixed','Engine','Words') { [void]$numberStyle.Items.Add($item) }
+
+# Diagnostics: off, and off means no file is created at all.  A checkbox
+# rather than a registry value because the people most likely to be asked for
+# a log are the least likely to want to be talked through regedit.  It offers
+# level 1 only -- the measurements, which are what actually settle bugs.
+# Level 2 adds the spoken text and stays a deliberate registry edit, because a
+# transcript of everything the machine says should take more than one click.
+$diagnostics = New-Object Windows.Forms.CheckBox
+$diagnostics.Text = 'Write a &diagnostic log'
+$diagnostics.AccessibleName = 'Write a diagnostic log'
+$diagnostics.AccessibleDescription = 'Off by default. Records what the engine did, not what was spoken, to a file in your temp folder. Turn it on only if a bug report asks for it.'
+$diagnostics.Location = New-Object Drawing.Point(340,362); $diagnostics.AutoSize = $true
 
 function Save-Setting([string]$name, $value) {
-    New-Item -Path $dataPrefKey -Force | Out-Null
-    Set-ItemProperty -Path $dataPrefKey -Name $name -Value $value
+    # Registry New-Item -Force clears an existing key, including its values.
+    if (!(Test-Path -LiteralPath $dataPrefKey)) {
+        New-Item -Path $dataPrefKey -Force | Out-Null
+    }
+    $kind = if ($value -is [string]) { 'String' } else { 'DWord' }
+    New-ItemProperty -Path $dataPrefKey -Name $name -Value $value -PropertyType $kind -Force | Out-Null
 }
 function Load-Setting([string]$name, $default) {
     try { (Get-ItemProperty -Path $dataPrefKey -Name $name -ErrorAction Stop).$name }
     catch { $default }
+}
+function Load-EngineSetting([string]$name, $default) {
+    # Match the DLL's per-value, typed HKCU -> HKLM lookup. Tool state and
+    # explicit choices to mirror still use Load-Setting (HKCU only).
+    $kind = if ($default -is [string]) { 'String' } else { 'DWord' }
+    foreach ($path in $dataPrefKey,('HKLM:\' + $machinePrefPath)) {
+        $key = $null
+        try {
+            $key = Get-Item -LiteralPath $path -ErrorAction Stop
+            if ($key.GetValueKind($name).ToString() -eq $kind) {
+                return $key.GetValue($name)
+            }
+        } catch {} finally { if ($key) { $key.Dispose() } }
+    }
+    return $default
 }
 # This person's settings, packed for the elevated process to mirror into HKLM.
 # Only the ones actually set travel: a value nobody chose has no business
@@ -573,13 +604,13 @@ function Get-SettingsArgument {
     }
     $pairs -join ';'
 }
-$acceptCommands.Checked = [bool](Load-Setting 'AcceptCommands' 0)
-$pauses.SelectedIndex = [Math]::Max(0, $pausesValues.IndexOf([string](Load-Setting 'Phrasing' 'fewest')))
-$expandAbbrev.Checked = [bool](Load-Setting 'ExpandAbbreviations' 1)
-$rateBoost.Checked = [bool](Load-Setting 'RateBoost' 0)
-$inflection.Value = [Math]::Max(0, [Math]::Min(100, [int](Load-Setting 'Inflection' 50)))
-$numberStyle.SelectedIndex = [Math]::Max(0, $numberValues.IndexOf([string](Load-Setting 'NumberStyle' 'fix')))
-$diagnostics.Checked = [bool](Load-Setting 'Diagnostics' 0)
+$acceptCommands.Checked = [bool](Load-EngineSetting 'AcceptCommands' 0)
+$pauses.SelectedIndex = [Math]::Max(0, $pausesValues.IndexOf([string](Load-EngineSetting 'Phrasing' 'fewest')))
+$expandAbbrev.Checked = [bool](Load-EngineSetting 'ExpandAbbreviations' 1)
+$rateBoost.Checked = [bool](Load-EngineSetting 'RateBoost' 0)
+$inflection.Value = [Math]::Max(0, [Math]::Min(100, [int](Load-EngineSetting 'Inflection' 50)))
+$numberStyle.SelectedIndex = [Math]::Max(0, $numberValues.IndexOf([string](Load-EngineSetting 'NumberStyle' 'fix')))
+$diagnostics.Checked = [bool](Load-EngineSetting 'Diagnostics' 0)
 $acceptCommands.Add_CheckedChanged({ Save-Setting 'AcceptCommands' ([int]$acceptCommands.Checked) })
 $pauses.Add_SelectedIndexChanged({ if ($pauses.SelectedIndex -ge 0) { Save-Setting 'Phrasing' $pausesValues[$pauses.SelectedIndex] } })
 $expandAbbrev.Add_CheckedChanged({ Save-Setting 'ExpandAbbreviations' ([int]$expandAbbrev.Checked) })
@@ -995,17 +1026,6 @@ $extractTimer.Add_Tick({
 $selectAll = New-Object Windows.Forms.Button; $selectAll.Text = '&Select all'; $selectAll.Location = New-Object Drawing.Point(12,360); $selectAll.AutoSize=$true
 $deselectAll = New-Object Windows.Forms.Button; $deselectAll.Text = '&Deselect all'; $deselectAll.Location = New-Object Drawing.Point(110,360); $deselectAll.AutoSize=$true
 $chooseRoot = New-Object Windows.Forms.Button; $chooseRoot.Text = 'Data &location...'; $chooseRoot.Location = New-Object Drawing.Point(220,360); $chooseRoot.AutoSize=$true
-# Diagnostics: off, and off means no file is created at all.  A checkbox
-# rather than a registry value because the people most likely to be asked for
-# a log are the least likely to want to be talked through regedit.  It offers
-# level 1 only -- the measurements, which are what actually settle bugs.
-# Level 2 adds the spoken text and stays a deliberate registry edit, because a
-# transcript of everything the machine says should take more than one click.
-$diagnostics = New-Object Windows.Forms.CheckBox
-$diagnostics.Text = 'Write a &diagnostic log'
-$diagnostics.AccessibleName = 'Write a diagnostic log'
-$diagnostics.AccessibleDescription = 'Off by default. Records what the engine did, not what was spoken, to a file in your temp folder. Turn it on only if a bug report asks for it.'
-$diagnostics.Location = New-Object Drawing.Point(340,362); $diagnostics.AutoSize = $true
 $open = New-Object Windows.Forms.Button; $open.Text = '&Open data folder'; $open.Location = New-Object Drawing.Point(12,405); $open.AutoSize=$true
 $extract = New-Object Windows.Forms.Button; $extract.Text = '&Extract from disc image...'; $extract.Location = New-Object Drawing.Point(145,405); $extract.AutoSize=$true
 $register = New-Object Windows.Forms.Button; $register.Text = '&Register'; $register.Location = New-Object Drawing.Point(290,405); $register.AutoSize=$true
@@ -1157,8 +1177,7 @@ function Invoke-ChooseRoot([bool]$explain = $true) {
         # Remembered per user, so the choice survives the next launch; the
         # elevated register call gets it as an argument instead, because the
         # elevated HKCU may belong to a different account.
-        New-Item -Path $dataPrefKey -Force | Out-Null
-        Set-ItemProperty -Path $dataPrefKey -Name DataPath -Value $script:data
+        Save-Setting 'DataPath' $script:data
         Refresh-Voices
         if (Test-AnyPantheraTokens) {
             # Every registered voice token carries the old DataPath, so a

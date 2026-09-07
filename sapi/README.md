@@ -111,13 +111,26 @@ mispronounced), **Pauses** (the phrase-break threshold, from fewest to the
 engine's own default), **Expand abbreviations**, **Rate boost** (the top of
 the range rises to about 1200 wpm; the bottom never moves), **Inflection**
 (0-100, 50 is the voice exactly as Apple ships it) and **Long numbers**
-(grouping separators restored into seven-plus digit runs, which the engine
-otherwise spells out one digit at a time). All apply to every SAPI
+(Fixed, Engine, or Words, using the shared native number rules). All apply to every SAPI
 application at once, from the next utterance spoken. SAPI's own per-voice
 pitch XML is honoured too. Not ported, with reasons: sentence joining and
 the announcement gap are driver-architecture (SAPI applications control
 their own chunking), and the stress respelling assumes NVDA's symbol
 dictionary has already turned ":" into the word "colon", which SAPI input
 never has.
+
+The settings window shows effective per-user or machine defaults. Changing
+one control preserves the other settings and the selected data location.
+Native control names and parents are checked alongside saving and reopening;
+the diagnostics checkbox participates in the same persistence checks.
+Pauses has no effect on Tiger, as its accessible description explains.
+
+Application volume is applied to each PCM chunk, including changes during
+speech. Mute retains the utterance's duration, and restoring 100 returns the
+original samples without restarting the host. Embedded commands retain their
+payloads through abbreviation processing; spaced delimiters are recognized,
+and Lion excludes input-mode commands consistently with NVDA and Android.
+The build runs resident voice checks through both x86 and x64 SAPI code with
+isolated registry settings, using personal engine data when available.
 
 This is development work: do not distribute it with extracted Apple data.

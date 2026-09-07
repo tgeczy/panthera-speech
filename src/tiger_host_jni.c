@@ -234,10 +234,9 @@ void panthera_finish(void)
 
 /* The number style, and the one place the rewriting happens on this path.
  *
- * The NVDA driver and the SAPI bridge do this themselves, before the text
- * reaches here, so nothing is applied twice: this is for the front ends that
- * have no rewriting of their own, which today means Android.  When those two
- * hand the job over, they simply stop doing it and this keeps working.
+ * Android calls this API; NVDA and SAPI select the same native rules through
+ * the request flags in tiger_host_serve.c. NVDA retains its Python reference
+ * before abbreviation despelling when expansion is off, then sends style off.
  *
  * (Applying it twice would in fact be harmless -- "1,234,567" regroups to
  * itself and words contain no digits -- but "harmless" is a poor thing to

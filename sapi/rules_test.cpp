@@ -56,7 +56,20 @@ int wmain() {
                      c.in, c.expand ? 1 : 0, c.want, t.c_str());
         }
     }
+    struct CommandCase {const wchar_t *in,*want; bool accept,expand; const wchar_t *gen;};
+    const CommandCase commands[]={
+        {L"a [ [rate 200] ] b",L"a  b",false,true,L"tiger"},
+        {L"[[ctxt Dr. Kirk 1234567]] Dr. Kirk",L"[[ctxt Dr. Kirk 1234567]] D R. Kirk",true,false,L"leopard"},
+        {L"[ [rate 200] ] Dr. Kirk",L"[[rate 200]] Doctor Kirk",true,true,L"leopard"},
+        {L"[[INPT PHON]] DR",L" D R",true,false,L"Lion"},
+        {L"[[inpt TEXT]] Dr. Kirk",L"[[inpt TEXT]] Doctor Kirk",true,true,L"snowleopard"},
+        {L"[[unclosed Dr. Kirk",L"[[unclosed Doctor Kirk",false,true,L"tiger"},
+    };
+    for(const auto &c:commands){
+        std::wstring got=prepare_text(c.in,c.accept,c.expand,c.gen);
+        if(got!=c.want){failed++;fwprintf(stderr,L"FAIL command %ls -> %ls\n",c.in,got.c_str());}
+    }
     if (!failed) wprintf(L"all %u cases pass\n",
-                         (unsigned)(sizeof CASES / sizeof CASES[0]));
+                         (unsigned)(sizeof CASES / sizeof CASES[0] + sizeof commands / sizeof commands[0]));
     return failed ? 1 : 0;
 }

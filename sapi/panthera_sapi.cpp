@@ -349,49 +349,6 @@ static std::wstring setting_string(const wchar_t *name, const wchar_t *def) {
     return def;
 }
 
-/* The engine really parses [[...]] in any text it is handed, and a wiki
- * page's [[Main Page]] does not merely change how things sound -- measured,
- * the engine eats the bracketed words entirely.  Same bounds as the NVDA
- * driver's COMMAND_RE: a close within 64 characters, and an unclosed "[["
- * stays literal rather than swallowing the paragraph. */
-static void strip_commands(std::wstring &t) {
-    size_t i=0;
-    while((i=t.find(L"[[",i))!=std::wstring::npos){
-        size_t close=t.find(L"]]",i+2);
-        if(close==std::wstring::npos||close-(i+2)>64){i+=2;continue;}
-        t.erase(i,close+2-i);
-    }
-}
-
-/* The engine reads numbers well up to six digits and spells them out one
- * digit at a time from seven -- and grouped digits read correctly, so the
- * repair is the NVDA driver's: put the separators back.  Runs only, so
- * "0.7.3" (three one-digit runs) is untouched, and never inside a [[...]]
- * command, where a comma would corrupt it. */
-static void fix_long_numbers(std::wstring &t) {
-    size_t i=0;
-    while(i<t.size()){
-        if(t.compare(i,2,L"[[")==0){
-            size_t close=t.find(L"]]",i+2);
-            if(close!=std::wstring::npos&&close-(i+2)<=64){i=close+2;continue;}
-        }
-        if(iswdigit(t[i])){
-            size_t start=i;
-            while(i<t.size()&&iswdigit(t[i]))i++;
-            size_t len=i-start;
-            if(len>=7){
-                for(size_t pos=i-3;pos>start;pos-=3){
-                    t.insert(pos,1,L',');
-                    i++;
-                    if(pos<start+4)break;
-                }
-            }
-            continue;
-        }
-        i++;
-    }
-}
-
 /* The abbreviation rules, ported from pantheraabbrev.py -- that module and
  * its tests are the spec; nothing here decides anything the Python side has
  * not measured.  Authored without lookbehind on both sides, because
@@ -494,6 +451,32 @@ struct CsLock {
     CsLock(CRITICAL_SECTION *c):cs(c){EnterCriticalSection(cs);}
     ~CsLock(){LeaveCriticalSection(cs);}
 };
+
+/* Match the NVDA/Android command boundary, including spaced delimiters.
+ * Only prose passes through lexical rewrites; command payloads stay intact. */
+static std::wstring prepare_text(const std::wstring &text, bool commands,
+                                 bool expand, const std::wstring &generation) {
+    static const std::wregex command(L"\\[\\s*\\[([^\\]]{0,64})\\]\\s*\\]");
+    static const std::wregex input(L"\\s*inpt\\s+[A-Za-z]{0,16}\\s*",
+                                   std::regex_constants::icase);
+    std::wstring out; size_t at=0;
+    auto prose=[&](size_t end){
+        std::wstring part=text.substr(at,end-at);
+        disambiguate(part,expand);
+        if(!expand)despell(part);
+        out+=part;
+    };
+    for(auto i=std::wsregex_iterator(text.begin(),text.end(),command);
+        i!=std::wsregex_iterator();++i){
+        prose(i->position());
+        if(commands&&(_wcsicmp(generation.c_str(),L"lion")!=0||
+                      !std::regex_match(i->str(1),input)))
+            out+=L"[["+i->str(1)+L"]]";
+        at=i->position()+i->length();
+    }
+    prose(text.size());
+    return out;
+}
 
 class Engine : public ISpTTSEngine, public ISpObjectWithToken {
     LONG refs; ISpObjectToken *token;
@@ -618,17 +601,9 @@ public:
          * where it is cheapest to forget. */
         if(text.empty()&&marks.empty())return S_OK;
         size_t textChars=text.size();
-        if(!setting_dword(L"AcceptCommands",0))
-            strip_commands(text);
-        if(setting_string(L"NumberStyle",L"fix")==L"fix")
-            fix_long_numbers(text);
-        /* Same rules, same order as the NVDA driver: the wrong-guess
-         * rewrites whichever way the abbreviations setting points, then
-         * despelling only when it is off. */
         bool expand=setting_dword(L"ExpandAbbreviations",1)!=0;
-        disambiguate(text,expand);
-        if(!expand)
-            despell(text);
+        std::wstring gen=token_string(token,L"Generation");
+        text=prepare_text(text,setting_dword(L"AcceptCommands",0)!=0,expand,gen);
         /* Phrasing rides the same TIGER_PARAMS the NVDA host reads, and
          * abbreviations the same TIGER_NO_ABBREV -- but the host reads its
          * environment once, at startup, so with a resident engine these are
@@ -642,7 +617,7 @@ public:
                                  ph==L"more"?L"0":ph==L"most"?L"5":NULL;
             if(thr)params=std::wstring(L"Boundaries.SilThreshold=")+thr;
         }
-        std::wstring root=token_string(token,L"DataPath"), gen=token_string(token,L"Generation"), voice=token_string(token,L"EngineVoiceName");
+        std::wstring root=token_string(token,L"DataPath"), voice=token_string(token,L"EngineVoiceName");
         /* New registrations expose a generation-qualified VoiceName because
          * some clients incorrectly use it as the token identity.  Old tokens
          * and the resident test only have VoiceName, so retain that fallback. */
@@ -671,7 +646,9 @@ public:
             if(pa<-10)pa=-10;if(pa>10)pa=10;
             pitch=(int)(pa*12);
         }
-        unsigned request=REQ_MAGIC_STREAM,flags=0;
+        std::wstring numberStyle=setting_string(L"NumberStyle",L"fix");
+        unsigned request=REQ_MAGIC_STREAM;
+        unsigned flags=numberStyle==L"fix"?2u:numberStyle==L"words"?4u:0u;
         CsLock lock(&g_hostLock);
         bool ok=true;int status=0;bool aborted=false;
         unsigned long long total=0;
@@ -787,6 +764,18 @@ public:
                     host_drop();
                     host_ensure(tree,mt,sd,vd,params,noAbbrev);
                     break;         /* g_out belongs to the replacement now */
+                }
+                /* SAPI owns the application slider; the engine applies its
+                 * gain. Read it per chunk so a change during a paragraph
+                 * does not restart synthesis or disturb Alex's breaths.
+                 * Scaling the final PCM also preserves embedded volm commands. */
+                USHORT volume=100;
+                if(FAILED(site->GetVolume(&volume))){ok=false;break;}
+                if(volume>100)volume=100;
+                if(volume!=100){
+                    short *samples=(short*)audio.data();
+                    for(unsigned i=0;i<frames;i++)
+                        samples[i]=(short)((int)samples[i]*volume/100);
                 }
                 ULONG wrote=0;if(FAILED(site->Write(audio.data(),bytes,&wrote))){ok=false;break;}
                 total+=bytes;

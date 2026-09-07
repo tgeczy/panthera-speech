@@ -18,6 +18,37 @@
 #include <cstdio>
 
 static int g_fail;
+
+/* Redirect only this process's registry access. Build checks must neither
+ * change the listener's preferences nor turn an inherited default into an
+ * explicit user choice. Child hosts receive their settings via environment. */
+class TestSettings {
+    HKEY user, machine;
+    std::wstring path;
+public:
+    bool ready;
+    TestSettings():user(0),machine(0),ready(false) {
+        wchar_t suffix[80];
+        swprintf_s(suffix,L"Software\\PantheraTests\\Resident-%lu",GetCurrentProcessId());
+        path=suffix;
+        if(RegCreateKeyExW(HKEY_CURRENT_USER,(path+L"\\User").c_str(),0,0,0,
+                          KEY_ALL_ACCESS,0,&user,0) ||
+           RegCreateKeyExW(HKEY_CURRENT_USER,(path+L"\\Machine").c_str(),0,0,0,
+                          KEY_ALL_ACCESS,0,&machine,0))return;
+        if(RegOverridePredefKey(HKEY_CURRENT_USER,user))return;
+        if(RegOverridePredefKey(HKEY_LOCAL_MACHINE,machine)){
+            RegOverridePredefKey(HKEY_CURRENT_USER,0);return;
+        }
+        ready=true;
+    }
+    ~TestSettings() {
+        if(ready){RegOverridePredefKey(HKEY_CURRENT_USER,0);
+                  RegOverridePredefKey(HKEY_LOCAL_MACHINE,0);}
+        if(user)RegCloseKey(user);
+        if(machine)RegCloseKey(machine);
+        RegDeleteTreeW(HKEY_CURRENT_USER,path.c_str());
+    }
+};
 static void check(bool ok, const char *what) {
     if(!ok){ g_fail++; printf("  FAIL  %s\n", what); }
     else     printf("  ok    %s\n", what);
@@ -79,6 +110,8 @@ class FakeSite : public ISpTTSEngineSite {
     LONG refs;
 public:
     std::vector<BYTE> audio; ULONG marks; DWORD abortAfter; bool abortNow;
+    USHORT volume=100, laterVolume=100;
+    DWORD changeVolumeAfter=0;
     FakeSite(DWORD abortAfterBytes)
         :refs(1),marks(0),abortAfter(abortAfterBytes),abortNow(false){}
     STDMETHODIMP QueryInterface(REFIID,void**p){*p=this;AddRef();return S_OK;}
@@ -95,7 +128,10 @@ public:
         if(w)*w=n; return S_OK;
     }
     STDMETHODIMP GetRate(long *r){*r=0;return S_OK;}
-    STDMETHODIMP GetVolume(USHORT *v){*v=100;return S_OK;}
+    STDMETHODIMP GetVolume(USHORT *v){
+        *v=changeVolumeAfter&&audio.size()>=changeVolumeAfter?laterVolume:volume;
+        return S_OK;
+    }
     STDMETHODIMP GetSkipInfo(SPVSKIPTYPE*,long*){return E_NOTIMPL;}
     STDMETHODIMP CompleteSkip(long){return E_NOTIMPL;}
 };
@@ -105,10 +141,14 @@ public:
 static std::wstring g_root, g_gen, g_voice;
 
 static HRESULT say(Engine *e, const wchar_t *text, std::vector<BYTE> *out,
-                   DWORD abortAfter) {
+                   DWORD abortAfter, USHORT volume=100,
+                   DWORD changeVolumeAfter=0, USHORT laterVolume=100) {
     FakeSite site(abortAfter);
+    site.volume=volume; site.changeVolumeAfter=changeVolumeAfter;
+    site.laterVolume=laterVolume;
     SPVTEXTFRAG frag; memset(&frag,0,sizeof frag);
     frag.State.eAction=SPVA_Speak;
+    frag.State.Volume=100;
     frag.pTextStart=text; frag.ulTextLen=(ULONG)wcslen(text);
     HRESULT hr=e->Speak(0,GUID_NULL,0,&frag,&site);
     if(out)*out=site.audio;
@@ -304,6 +344,8 @@ static void rogue_checks() {
 }
 
 int wmain(int argc, wchar_t **argv) {
+    TestSettings settings;
+    if(!settings.ready){fprintf(stderr,"cannot isolate test settings\n");return 1;}
     InitializeCriticalSection(&g_hostLock); g_lockReady=true;
     rogue_checks();
     wchar_t appdata[MAX_PATH];
@@ -341,6 +383,55 @@ int wmain(int argc, wchar_t **argv) {
           "a cold utterance speaks");
     check(SUCCEEDED(say(e,LINE,&second,0)),"a warm utterance speaks");
     check(first==second,"the warm utterance is byte-identical to the cold one");
+
+    /* Application volume changes PCM gain, never text or paragraph timing. */
+    std::vector<BYTE> quiet, silent, full, changed;
+    DWORD volumePid=GetProcessId(g_proc);
+    check(SUCCEEDED(say(e,LINE,&quiet,0,25)),"quarter-volume utterance speaks");
+    bool scaled=quiet.size()==first.size();
+    for(size_t i=0;scaled&&i<first.size()/2;i++)
+        scaled=((const short*)quiet.data())[i]==((const short*)first.data())[i]/4;
+    check(scaled,"application volume scales every sample without changing duration");
+    say(e,LINE,&silent,0,0);
+    check(silent.size()==first.size()&&
+          std::all_of(silent.begin(),silent.end(),[](BYTE b){return b==0;}),
+          "zero volume keeps timing and silences every sample");
+    say(e,LINE,&full,0,100);
+    check(full==first,"restoring full volume restores the original PCM");
+    say(e,LINE,&changed,0,100,1,0);
+    bool prefix=false, tail=false;
+    if(changed.size()==first.size()){
+        size_t i=0;
+        while(i<first.size()&&changed[i]==first[i])i++;
+        prefix=i>0&&i<first.size();
+        tail=std::all_of(changed.begin()+i,changed.end(),[](BYTE b){return b==0;});
+    }
+    check(prefix&&tail,"a volume change during speech reaches the next PCM chunk");
+    check(GetProcessId(g_proc)==volumePid,"volume changes retain the resident host");
+
+    /* The checkbox must affect the next request and be reversible. */
+    const wchar_t *ABBREVIATIONS=L"Dr. Kirk carried 4kg down Main St.";
+    std::vector<BYTE> expanded, spelled, expandedAgain;
+    say(e,ABBREVIATIONS,&expanded,0);
+    set_dword(L"ExpandAbbreviations",0);
+    say(e,ABBREVIATIONS,&spelled,0);
+    check(!spelled.empty()&&spelled!=expanded,"abbreviations off changes the next utterance");
+    set_dword(L"ExpandAbbreviations",1);
+    say(e,ABBREVIATIONS,&expandedAgain,0);
+    check(expandedAgain==expanded,"abbreviations on restores the original utterance");
+
+    std::vector<BYTE> numbers, numberReference;
+    set_string(L"NumberStyle",L"off");
+    say(e,L"There are 1,234,567 people.",&numberReference,0);
+    set_string(L"NumberStyle",L"fix");
+    say(e,L"There are 1234567 people.",&numbers,0);
+    check(numbers==numberReference,"fixed numbers reach the shared native rules");
+    set_string(L"NumberStyle",L"off");
+    say(e,L"There are twelve people.",&numberReference,0);
+    set_string(L"NumberStyle",L"words");
+    say(e,L"There are 12 people.",&numbers,0);
+    check(numbers==numberReference,"words number style applies on the next request");
+    set_string(L"NumberStyle",L"fix");
 
     /* 2. Inflection comes back.  Channel state outlives the utterance now,
      *    so returning the slider to the middle has to be *said*; the proof

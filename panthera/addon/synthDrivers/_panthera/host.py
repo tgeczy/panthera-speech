@@ -618,6 +618,9 @@ class HostMixin(object):
         text = text.strip()
         if not text:
             return b""
+        # The engine accepts spaced delimiters too. Canonicalize before
+        # stripping or protecting command spans from lexical/number rewrites.
+        text = COMMAND_RE.sub(lambda m: "[[" + m.group(1) + "]]", text)
         if not self._acceptCommands:
             # The front end really does parse "[[rate 100]]", "[[volm 0.5]]"
             # and even "[[inpt TUNE]]" -- all measured working.  That is a
@@ -670,15 +673,18 @@ class HostMixin(object):
             if lastSwitch:
                 self._inputMode = (None if lastSwitch == "TEXT"
                                    else lastSwitch)
-        if self._numberStyle != "off":
-            #: Only between the commands, never inside one.  With embedded
-            #: commands accepted, "[[rate 200]]" is still in the text at this
-            #: point, and rewriting the 200 inside it would leave the engine
-            #: reading "[[rate two hundred]]" as an unparseable command.
-            text = "".join(
-                part if part.startswith("[[")
-                else pantheranumbers.expand(part, self._numberStyle)
-                for part in COMMAND_SPLIT_RE.split(text))
+        # Number rewriting can move to the host when abbreviation expansion
+        # is enabled. With expansion disabled, despelling turns 1234567mm
+        # into 1234567 M M and changes which numbers the later pass recognizes.
+        # Keep the released order in that mode until both steps live natively.
+        nativeNumberStyle = self._numberStyle
+        if not self._expandAbbreviations:
+            nativeNumberStyle = "off"
+            if self._numberStyle != "off":
+                text = "".join(
+                    part if part.startswith("[[")
+                    else pantheranumbers.expand(part, self._numberStyle)
+                    for part in COMMAND_SPLIT_RE.split(text))
         #: The engine's measured wrong guesses, settled in the text whichever
         #: way the abbreviations setting points: "<proper noun> Dr." read as
         #: a street mid-news-article, and "X's" after NVDA's camel-case split
@@ -811,8 +817,11 @@ class HostMixin(object):
             # take the host away from.
             self._rendering = True
             self._renderSeq += 1
+            # Flags 2/4 select the native number rules for this request;
+            # flag 0 keeps legacy client-prepared text unchanged.
             proc.stdin.write(struct.pack("<IiiIII", req, wpm, pitch,
-                                         0, len(v), len(t)) + v + t)
+                                         {"fix": 2, "words": 4}.get(nativeNumberStyle, 0),
+                                         len(v), len(t)) + v + t)
             proc.stdin.flush()
             if not streaming:
                 magic, status, nframes = struct.unpack(

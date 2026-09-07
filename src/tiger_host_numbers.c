@@ -18,12 +18,10 @@
  * depending which product the user happens to be in.  So it lives in the host
  * now, where every front end reaches the same code.
  *
- * **Placement was measured, not assumed.**  Python and SAPI both run numbers
- * BEFORE abbreviations; the host necessarily runs after everything the front
- * end did.  Running both orders over 183 inputs from the two test suites, plus
- * crossings written to break it ("Dr. 1234567 Main St.", "1234567mm"), gives
- * byte-identical output in both styles -- the two stages touch disjoint token
- * classes, so they commute.
+ * Order matters when abbreviation expansion is disabled: despelling
+ * "1234567mm" exposes a digit token that numbers would otherwise leave alone.
+ * NVDA preserves its released number-before-despelling order with the Python
+ * reference in that mode; its normal path selects these rules over IPC.
  *
  * The engine's behaviour this repairs, measured on Alex:
  *

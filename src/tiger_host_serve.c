@@ -23,6 +23,9 @@
  *
  *   request   'TGR3' | i32 wpm | i32 pitch | u32 flags | u32 namelen
  *                      | u32 textlen | name | text
+ * Flags: bit 1 (2) repairs numbers; bit 2 (4) spells numbers as words.
+ * With neither bit set, legacy client-prepared text is preserved. Bit 0 is reserved.
+ * Number style is per request, so changing it never restarts the host.
  *   response  'TGRS' | i32 status | u32 nframes | i16 pcm[nframes]
  *
  * `pitch` is an **offset in tenths of a semitone** from the voice's own pitch,
@@ -437,6 +440,13 @@ static int serve(image *mt, void *chan, const char *voicesdir)
         text = (char *)malloc(textlen + 1);
         if (!text || !read_all(g_in, text, textlen)) { free(text); return 1; }
         text[textlen] = 0;
+        if(flags & 6u){
+            char *expanded = num_expand(text, (flags & 4u) ? NUM_STYLE_WORDS : NUM_STYLE_FIX);
+            free(text);
+            if(!expanded)return 1;
+            text=expanded;
+            textlen=(unsigned)strlen(text);
+        }
         text = break_letter_runs(text, &textlen);
 
         voicechanged = 0;

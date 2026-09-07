@@ -26,9 +26,9 @@ import codecs
 import re
 import unicodedata
 
-#: An embedded speech command, as the engine's front end parses it.  Non-greedy, and
-#: it will not run past a newline, so an unclosed "[[" cannot eat a paragraph.
-COMMAND_RE = re.compile(r"\[\[[^\]]{0,64}\]\]")
+#: Embedded commands accept spaced delimiters and a bounded payload. An
+#: unclosed "[[" stays literal instead of swallowing the rest of a paragraph.
+COMMAND_RE = re.compile(r"\[\s*\[([^\]]{0,64})\]\s*\]")
 #: The same thing, capturing, for splitting text into "command" and "not a
 #: command" runs.  `re.split` keeps the separators only when the pattern has a
 #: group -- without one it deletes every command it splits on.
@@ -41,11 +41,11 @@ COMMAND_SPLIT_RE = re.compile(r"(\[\[[^\]]{0,64}\]\])")
 #: command sets a parameter and leaves the text alone, which is why this one
 #: needs its own pattern: it is the only family whose failure changes what the
 #: rest of the utterance means.
-INPUT_MODE_RE = re.compile(r"\[\[\s*inpt\s+[A-Za-z]{0,16}\s*\]\]", re.I)
+INPUT_MODE_RE = re.compile(r"\[\s*\[\s*inpt\s+[A-Za-z]{0,16}\s*\]\s*\]", re.I)
 #: The same family, capturing the mode word -- for carrying an unclosed mode
 #: across utterance boundaries.  See the carry block in `_render` and
 #: panthera-speech#9.
-INPUT_MODE_CAPTURE_RE = re.compile(r"\[\[\s*inpt\s+([A-Za-z]{1,16})\s*\]\]",
+INPUT_MODE_CAPTURE_RE = re.compile(r"\[\s*\[\s*inpt\s+([A-Za-z]{1,16})\s*\]\s*\]",
                                    re.I)
 
 #: Characters MacRoman has no room for, mapped to something it can say.
