@@ -60,6 +60,11 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <ctype.h>
+/* malloc.h, for the one question the guest's allocator has to ask the host's:
+ * how large a block really is (_msize / malloc_usable_size), so that a
+ * realloc fills what it grew by and not one byte more.  Not in the C
+ * standard; present on all three toolchains this builds with. */
+#include <malloc.h>
 
 /* The in-process synthesis API the Android JNI layer calls -- declared up here
  * so main()'s --jni-check sees the prototypes; defined at the end of the TU
@@ -821,14 +826,16 @@ static int host_open(const char *mtpath, const char *sdpath)
 int main(int argc, char **argv)
 {
     int err, i;
-    /* Defaults speak Fred, because he is the voice everyone means.  The ids
-     * come from each bundle's VoiceDescription: 'mtk3' 1 is Fred, 'gala' 100
-     * is Bruce, 'meow' 200 is Vicki. */
+    /* The VoiceSpec the engine is told to use.  It falls back to Fred --
+     * 'mtk3' 1, the voice everyone means -- but only when the voice bundle
+     * cannot say who it is; see below.  The other two families, for reading
+     * the logs: 'gala' 100 is Bruce, 'meow' 200 is Vicki. */
     const char *voicedir;
     const char *servedir = NULL;
     int pmodcheck = 0;
     unsigned creator = 'mtk3';
     int voiceid = 1;
+    int spec_given = 0;
 
     /* --serve <MacinTalk> <SpeechDictionary> <VoicesDir> : stay resident and
      * answer requests on stdin/stdout.  Otherwise render one utterance and
@@ -949,8 +956,51 @@ int main(int argc, char **argv)
         host_quiet();
     }
     voicedir = (argc > 3) ? argv[3] : NULL;
-    if (argc > 4 && !servedir) creator = (unsigned)strtoul(argv[4], NULL, 16);
+    if (argc > 4 && !servedir) {
+        creator = (unsigned)strtoul(argv[4], NULL, 16);
+        spec_given = 1;
+    }
     if (argc > 5 && !servedir) voiceid = atoi(argv[5]);
+
+    /* Ask the voice bundle who it is, unless the command line already said.
+     *
+     * This used to default to 'mtk3' 1 whatever bundle it was pointed at, so
+     * `tiger_host ... Vicki.SpeechVoice` told the engine "MacinTalk 3, voice
+     * 1" and handed it Vicki -- a `meow` voice.  SEUseVoice returns 0 to
+     * that, and the crash arrives much later and somewhere else, in
+     * MEOWReader::GetWordEntry reading a field of an object the mtk3 path
+     * never set up.  Leopard's AAC voices therefore "segfaulted on Linux",
+     * which was true, and had nothing to do with Linux: the same command
+     * crashes the same way on Windows, and serve mode -- which has always
+     * called voice_spec -- was fine on both.
+     *
+     * The diagnostic entry point is where a wrong voice is hardest to notice
+     * and most expensive to misread, since its whole job is to tell you what
+     * the engine did.  So it now reads the VoiceDescription exactly as serve
+     * mode does, and Fred remains the answer only when there is no bundle to
+     * ask.  An explicit creator still wins: pointing the wrong engine at a
+     * voice on purpose is a legitimate experiment, and it is how the above
+     * was confirmed. */
+    if (!servedir && !pmodcheck && voicedir && !spec_given) {
+        unsigned c;
+        int id;
+        if (voice_spec(voicedir, &c, &id)) {
+            creator = c;
+            voiceid = id;
+        } else {
+            /* No VoiceDescription to read -- almost always a path that does
+             * not exist.  Say so and stop, because the old behaviour here was
+             * to quietly fall back to Fred and hand him the missing bundle,
+             * which segfaults several thousand instructions later.  Every
+             * MacinTalk voice bundle has this file; serve mode has always
+             * required it. */
+            setvbuf(stderr, NULL, _IONBF, 0);
+            fprintf(stderr, "tiger_host: no voice at %s\n"
+                            "  (expected %s/Contents/Resources/"
+                            "VoiceDescription)\n", voicedir, voicedir);
+            return 2;
+        }
+    }
 
     if (argc < 4) {
         setvbuf(stderr, NULL, _IONBF, 0);
@@ -959,6 +1009,8 @@ int main(int argc, char **argv)
                 "  tiger_host <MacinTalk> <SpeechDictionary> "
                 "<Voice.SpeechVoice> [creator-hex] [voice-id]\n"
                 "      render one utterance and write tiger-out.wav\n"
+                "      creator and id come from the voice bundle unless "
+                "given\n"
                 "  tiger_host --serve <MacinTalk> <SpeechDictionary> "
                 "<VoicesDir>\n"
                 "      stay resident and answer requests on stdin/stdout\n"

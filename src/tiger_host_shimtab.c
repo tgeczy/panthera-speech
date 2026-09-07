@@ -13,8 +13,13 @@ static const shim g_shims[] = {
     { "_malloc",    (void *)sh_uc_malloc  }, { "_free",    (void *)sh_uc_free    },
     { "_calloc",    (void *)sh_uc_calloc  }, { "_realloc", (void *)sh_uc_realloc },
 #else
-    { "_malloc",    (void *)malloc  }, { "_free",    (void *)free    },
-    { "_calloc",    (void *)calloc  }, { "_realloc", (void *)realloc },
+    /* The host's allocator, behind a wrapper that does nothing unless
+     * TIGER_MALLOC_FILL asks it to poison what it hands out -- the instrument
+     * that answers "is the engine reading memory it never wrote?".  It is
+     * not, measurably.  See sh_guest_malloc in tiger_host_shims.c.  calloc
+     * needs no wrapper: zero is its whole contract. */
+    { "_malloc",    (void *)sh_guest_malloc }, { "_free", (void *)free },
+    { "_calloc",    (void *)calloc }, { "_realloc", (void *)sh_guest_realloc },
 #endif
     { "_memset",    (void *)memset  }, { "_memmove", (void *)sh_memmove },
     { "_memchr",    (void *)memchr  }, { "_strcmp",  (void *)strcmp  },

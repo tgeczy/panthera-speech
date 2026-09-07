@@ -31,6 +31,78 @@ static void  __cdecl sh_bcopy(const void *s, void *d, size_t n) { memmove(d, s, 
 static void  __cdecl sh_bzero(void *d, size_t n)                { memset(d, 0, n); }
 static int   __cdecl sh_abort_(void) { die("engine called abort()"); return 0; }
 
+#ifndef TIGER_UC
+/* The guest's malloc, which is the host's, plus one instrument.
+ *
+ * TIGER_MALLOC_FILL=<byte> poisons every block the engine is handed, so that
+ * "does the engine read memory before writing it?" becomes a question with an
+ * answer instead of a worry.  Unset -- always, in shipping -- nothing is
+ * filled and this is the host allocator with one predictable branch in front
+ * of it.
+ *
+ * The measured answer, for Leopard's Vicki through the serve path: 17887
+ * frames and the same md5 poisoned as clean, on Windows and on Linux.  The
+ * engine does not read what it has not written, so nothing here zeroes
+ * anything -- and a wrapper that quietly did would have made every render
+ * depend on the host allocator being generous, which is the accident it would
+ * have been meant to cure.  See [[bugs-that-work-by-accident]]. */
+/* Read once and cached.  The MP workers allocate, so several guest threads
+ * can reach this at once -- a benign race: every racer computes the same
+ * value from the same environment and stores an int.  Left rather than locked
+ * because a lock here would sit on the allocator's hot path to protect a
+ * constant. */
+static int guest_fill(void)
+{
+    static int fill = -2;               /* -2 unread, -1 no fill, else byte */
+    if (fill == -2) {
+        const char *e = getenv("TIGER_MALLOC_FILL");
+        fill = (e && *e) ? (int)(strtoul(e, NULL, 0) & 0xff) : -1;
+        if (fill >= 0 && g_verbose)
+            printf("  [mem] guest malloc poisoned with 0x%02x\n", fill);
+    }
+    return fill;
+}
+
+static void * __cdecl sh_guest_malloc(size_t n)
+{
+    void *p = malloc(n ? n : 1);
+    int f = guest_fill();
+    if (p && f >= 0) memset(p, f, n);
+    return p;
+}
+
+/* realloc fills only what it grew by: the old bytes are the engine's and have
+ * to survive.  `guest_usable` asks the allocator how large the old block
+ * really was, because the slack between the requested size and the usable
+ * size is memory the engine may already hold. */
+static size_t guest_usable(void *p)
+{
+#if defined(_MSC_VER)
+    return p ? _msize(p) : 0;
+#elif defined(__GLIBC__) || defined(__ANDROID__)
+    return p ? malloc_usable_size(p) : 0;
+#else
+    (void)p; return 0;
+#endif
+}
+
+static void * __cdecl sh_guest_realloc(void *old, size_t n)
+{
+    size_t had;
+    void *p;
+    int f = guest_fill();
+    if (f < 0) return realloc(old, n ? n : 1);   /* before guest_usable: the
+                                                  * shipping path must not pay
+                                                  * an _msize per realloc for
+                                                  * an instrument it is not
+                                                  * using */
+    had = guest_usable(old);
+    p = realloc(old, n ? n : 1);
+    if (p && n > had) memset((char *)p + had, f, n - had);
+    return p;
+}
+#endif  /* !TIGER_UC */
+
 /* Thread-local storage, which libstdc++ keeps its locale and exception state
  * in.
  *
