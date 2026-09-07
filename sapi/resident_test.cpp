@@ -16,6 +16,7 @@
  */
 #include "panthera_sapi.cpp"
 #include <cstdio>
+#include <algorithm>
 
 static int g_fail;
 

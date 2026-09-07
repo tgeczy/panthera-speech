@@ -3,6 +3,12 @@
 This is a SAPI 5 engine shim built for x86 and x64. Both variants launch the
 existing 32-bit `panthera_host.exe`, because Apple's engine itself is i386.
 
+The COM adapter is in `panthera_sapi.cpp`. Separately compiled modules own
+the resident child and pipe reads (`runtime`), per-value registry fallback
+(`settings`), opt-in logging (`diagnostics`), and command/abbreviation handling
+(`text`). The lexical test links the same text module as the DLL; the resident
+integration test links the same runtime and settings modules on both bitnesses.
+
 **The host stays resident.** It used to be started and killed once per
 utterance; keeping it takes the time from asking for speech to hearing it
 from 19 ms to 11 on Tiger, 29 to 11 on Leopard, 26 to 10 on Snow Leopard,

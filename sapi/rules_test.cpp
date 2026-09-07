@@ -1,8 +1,9 @@
 /* Parity check for the abbreviation rules against pantheraabbrev.py --
  * that module's tests are the spec; every case here mirrors one of them.
- * Compiled as a console exe that #includes the DLL source, so the rules
+ * Compiled as a console exe linked to the same text module, so the rules
  * under test are the rules that ship, not a copy. */
-#include "panthera_sapi.cpp"
+#include "text.h"
+using namespace panthera_sapi;
 #include <cstdio>
 
 struct Case { const wchar_t *in; bool expand; const wchar_t *want; };
