@@ -17,14 +17,13 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
-import android.widget.AdapterView
-import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.RadioButton
+import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.SeekBar
-import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 
@@ -43,19 +42,21 @@ class SettingsActivity : Activity() {
     private var volumeSlider: ValueSlider? = null
     private var inflectionSlider: ValueSlider? = null
     private var volumeLevels = PantheraEngine.volumeLevels(PantheraEngine.VOLUME_SYSTEM_DEFAULT)
-    private var numberSpinner: Spinner? = null
+    private var numberChoice: Choice? = null
     private var overrideVoice: android.widget.CheckBox? = null
     private var commandCheck: android.widget.CheckBox? = null
     private var abbreviationCheck: android.widget.CheckBox? = null
-    private var phrasingSpinner: Spinner? = null
+    private var phrasingChoice: Choice? = null
     private var phrasingHelp: TextView? = null
     private var voiceLabel: TextView? = null
     private var voiceSignature = ""
-    private var voiceSpinner: Spinner? = null
+    private var voiceButton: Button? = null
+    private var filterButton: Button? = null
+    private var voiceFilter = FILTER_ALL
     private var listedVoices: List<PantheraEngine.VoiceInfo> = emptyList()
     private var currentPage = 0
     private val preferenceListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-        if (key != "sample_text" && key != "settings_page")
+        if (key != "sample_text" && key != "settings_page" && key != PREF_VOICE_FILTER)
             refreshSettings(key == PantheraEngine.PREF_GEN || key?.startsWith("default_voice") == true)
     }
 
@@ -137,13 +138,13 @@ class SettingsActivity : Activity() {
         super.onSaveInstanceState(out)
     }
     private fun refreshSettings(voiceSelection: Boolean = false) {
-        overrideVoice?.isChecked = PantheraEngine.prefs(this).getBoolean("override_voice", false)
+        overrideVoice?.isChecked = PantheraEngine.prefs(this).getBoolean("override_voice", true)
         val settings = PantheraEngine.settings(this)
         commandCheck?.isChecked = settings.acceptCommands
         abbreviationCheck?.isChecked = settings.expandAbbreviations
         val phrasesSupported = PantheraEngine.supportsPhrasing(PantheraEngine.activeGen(this))
-        phrasingSpinner?.isEnabled = phrasesSupported
-        phrasingSpinner?.setSelection(PantheraEngine.PHRASING_VALUES.indexOf(settings.phrasing), false)
+        phrasingChoice?.enableAll(phrasesSupported)
+        phrasingChoice?.select(PantheraEngine.PHRASING_VALUES.indexOf(settings.phrasing))
         phrasingHelp?.text = if (phrasesSupported) "How often the engine inserts pauses within a sentence. Applies from the next request."
             else "Engine phrase breaks are available with Leopard and later. Tiger does not support this setting."
         rateSlider?.progress = wpmToProgress(settings.rate)
@@ -152,9 +153,8 @@ class SettingsActivity : Activity() {
         volumeSlider?.progress = volumeLevels.indexOf(settings.volume)
         volumeSlider?.refreshValue()
         inflectionSlider?.progress = settings.inflection
-        numberSpinner?.setSelection(listOf("fix", "words", "off").indexOf(settings.numbers), false)
-        if (voiceSelection && listedVoices.isNotEmpty())
-            voiceSpinner?.setSelection(preferredVoiceIndex(listedVoices), false)
+        numberChoice?.select(listOf("fix", "words", "off").indexOf(settings.numbers))
+        if (voiceSelection) refreshVoiceButton()
 
     }
 
@@ -185,10 +185,13 @@ class SettingsActivity : Activity() {
         // Say which page this is, and say it out loud. A sighted user sees the
         // content swap; a screen-reader user whose focus is still on the tab
         // button hears nothing at all unless it is announced.
-        setupTab.contentDescription =
-            "Setup, tab 1 of 2" + if (page == 0) ", selected" else ""
-        engineTab.contentDescription =
-            "Engine settings, tab 2 of 2" + if (page == 1) ", selected" else ""
+        //
+        // The selected state is the button's own (isSelected, above) and
+        // TalkBack already says it. Putting the word in the description as
+        // well made it say "selected" twice, which sounds like two different
+        // things being true of one control.
+        setupTab.contentDescription = "Setup, tab 1 of 2"
+        engineTab.contentDescription = "Engine settings, tab 2 of 2"
         val name = if (page == 0) "Setup" else "Engine settings"
         try { window.decorView.announceForAccessibility("$name page") }
         catch (e: Throwable) { /* announcing is a courtesy, never a failure */ }
@@ -297,18 +300,27 @@ class SettingsActivity : Activity() {
 
         voiceLabel = heading("Voice").also { root.addView(it) }
         root.addView(body("Choosing a voice also chooses its engine generation."))
+        voiceFilter = p.getString(PREF_VOICE_FILTER, null) ?: PantheraEngine.activeGen(this)
         voiceHolder = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(voiceHolder!!)
         rebuildVoices()
+        // On by default. A screen reader never names a voice of its own: it
+        // asks this engine for a default once, when it connects, and sends
+        // that name with every request from then on. With this off, choosing
+        // a voice here changed nothing until the engine was restarted -- the
+        // setting looked broken, and to the person using it, it was.
         root.addView(android.widget.CheckBox(this).apply {
             text = "Use selected voice in all apps"
-            isChecked = p.getBoolean("override_voice", false)
+            isChecked = p.getBoolean("override_voice", true)
             overrideVoice = this
             setOnCheckedChangeListener { _, checked ->
-                if (checked != p.getBoolean("override_voice", false))
+                if (checked != p.getBoolean("override_voice", true))
                     p.edit().putBoolean("override_voice", checked).apply()
             }
         })
+        root.addView(body(
+            "Every app hears the voice chosen above, straight away. Turn this " +
+            "off only for an app that picks a voice of its own."))
 
         // Data that is present and cannot run. Saying so is the point: someone
         // who has copied Lion's folder across and then sees nothing would
@@ -351,14 +363,14 @@ class SettingsActivity : Activity() {
 
         val phrasingLabel = heading("Engine phrase breaks").also { root.addView(it) }
         phrasingHelp = body("").also { root.addView(it) }
-        phrasingSpinner = spinner(listOf("Fewest pauses", "Fewer pauses", "More pauses", "Most pauses", "Engine default"),
+        phrasingChoice = choice("Engine phrase breaks",
+            listOf("Fewest pauses", "Fewer pauses", "More pauses", "Most pauses", "Engine default"),
             PantheraEngine.PHRASING_VALUES.indexOf(PantheraEngine.settings(this).phrasing)) { i ->
             val gen = PantheraEngine.activeGen(this)
             val value = PantheraEngine.PHRASING_VALUES[i]
             if (PantheraEngine.supportsPhrasing(gen) && PantheraEngine.settings(this).phrasing != value)
                 p.edit().putString(PantheraEngine.settingKey(PantheraEngine.PREF_PHRASING, gen), value).apply()
         }.also {
-            it.contentDescription = "Engine phrase breaks"
             phrasingLabel.labelFor = it.id
             root.addView(it)
         }
@@ -375,12 +387,12 @@ class SettingsActivity : Activity() {
             "Read out in full",
             "Leave numbers alone")
         val current = PantheraEngine.settings(this).numbers
-        numberSpinner = spinner(numberNames, numberValues.indexOf(current).coerceAtLeast(0)) { i ->
+        numberChoice = choice("How to read numbers", numberNames,
+            numberValues.indexOf(current).coerceAtLeast(0)) { i ->
             if (PantheraEngine.settings(this).numbers != numberValues[i])
                 p.edit().putString(PantheraEngine.settingKey(PantheraEngine.PREF_NUMBER_STYLE,
                 PantheraEngine.activeGen(this)), numberValues[i]).apply()
         }.also {
-            it.contentDescription = "How to read numbers"
             numberLabel.labelFor = it.id
             root.addView(it)
         }
@@ -398,40 +410,111 @@ class SettingsActivity : Activity() {
 
     }
 
+    /** The listed voice that is in use, or -1 when none of them is.
+     *
+     * -1 matters: with the list filtered to a generation other than the one
+     * speaking, nothing is the voice in use, and a radio button that says
+     * "checked" of a voice nobody is hearing is a lie the ear cannot catch. */
     private fun preferredVoiceIndex(voices: List<PantheraEngine.VoiceInfo>): Int {
         val gen = PantheraEngine.activeGen(this)
         val saved = PantheraEngine.defaultVoiceName(this, gen)
         return voices.indexOfFirst { it.gen == gen && it.name.equals(saved, true) }.takeIf { it >= 0 }
             ?: voices.indexOfFirst { it.gen == gen && it.name.equals("Fred", true) }.takeIf { it >= 0 }
-            ?: voices.indexOfFirst { it.gen == gen }.coerceAtLeast(0)
+            ?: voices.indexOfFirst { it.gen == gen }
+    }
+
+    /** The button says which voice is in use, so it has to be re-read whenever
+     * the choice changes -- from the dialog, or from another screen. */
+    private fun refreshVoiceButton() {
+        val button = voiceButton ?: return
+        val voices = listedVoices
+        val labelled = voiceFilter == FILTER_ALL && PantheraEngine.availableGens(this).size > 1
+        val at = preferredVoiceIndex(voices)
+        val name = voices.getOrNull(at)?.let { if (labelled) it.label else it.name }
+        button.text = "Voice: " + (name ?: "none")
     }
 
     private fun rebuildVoices() {
         val holder = voiceHolder ?: return
         holder.removeAllViews()
-        val voices = PantheraEngine.allVoices(this)
-        listedVoices = voices
-        if (voices.isEmpty()) {
+        val all = PantheraEngine.allVoices(this)
+        if (all.isEmpty()) {
+            listedVoices = all
+            filterButton = null
+            voiceButton = null
             holder.addView(body("No voices in the engine data folder."))
             return
         }
-        // Only one generation is labelled when there is only one to tell apart:
+        val gens = PantheraEngine.availableGens(this)
+        if (voiceFilter != FILTER_ALL && voiceFilter !in gens) voiceFilter = FILTER_ALL
+
+        // Which generation's voices are listed. One button that opens a list,
+        // not a column of radios: the engine is a filter on the choice below
+        // it, and giving it the same shape as the choice itself made two
+        // lists of radio buttons stacked on one screen, which is exactly as
+        // confusing as it sounds. The button says what is set, so it needs no
+        // separate label. With one generation present there is nothing to
+        // filter and it is not shown.
+        if (gens.size > 1) {
+            val options = listOf(FILTER_ALL) + gens
+            val names = listOf("All engines") + gens.map { PantheraEngine.genLabel(it) }
+            filterButton = Button(this).apply {
+                id = View.generateViewId()
+                text = "Engine: ${names[options.indexOf(voiceFilter).coerceAtLeast(0)]}"
+                setOnClickListener {
+                    val at = options.indexOf(voiceFilter).coerceAtLeast(0)
+                    android.app.AlertDialog.Builder(this@SettingsActivity)
+                        .setTitle("Engine")
+                        .setSingleChoiceItems(names.toTypedArray(), at) { dialog, which ->
+                            dialog.dismiss()
+                            if (options[which] != voiceFilter) {
+                                voiceFilter = options[which]
+                                PantheraEngine.prefs(this@SettingsActivity).edit()
+                                    .putString(PREF_VOICE_FILTER, voiceFilter).apply()
+                                rebuildVoices()
+                            }
+                        }
+                        .setNegativeButton("Cancel", null)
+                        .show()
+                }
+                holder.addView(this)
+            }
+        } else filterButton = null
+
+        val voices = if (voiceFilter == FILTER_ALL) all else all.filter { it.gen == voiceFilter }
+        listedVoices = voices
+        // Generations are named only when more than one is in the list:
         // "Fred (Tiger)" twenty-three times is noise to read and worse to hear.
-        val single = PantheraEngine.availableGens(this).size < 2
-        val names = voices.map { if (single) it.name else it.label }
-        val at = preferredVoiceIndex(voices)
-        voiceSpinner = spinner(names, at) { i ->
-            val v = voices[i]
-            if (v.gen != PantheraEngine.activeGen(this) ||
-                v.name != PantheraEngine.defaultVoiceName(this, v.gen)) PantheraEngine.chooseVoice(this, v)
-        }.also {
-            it.contentDescription = "Voice"
-            voiceLabel?.labelFor = it.id
-            holder.addView(it)
+        val labelled = voiceFilter == FILTER_ALL && gens.size > 1
+        val names = voices.map { if (labelled) it.label else it.name }
+
+        // A button that opens the list, not the list itself. Tiger alone has
+        // twenty-three voices, and inline they were twenty-three stops to
+        // swipe past to reach the rate slider below -- with no way out but
+        // through. In a dialog the whole choice is one stop, Back leaves it,
+        // and the list scrolls on its own.
+        voiceButton = Button(this).apply {
+            id = View.generateViewId()
+            val at = preferredVoiceIndex(voices)
+            text = "Voice: " + (names.getOrNull(at) ?: "none")
+            setOnClickListener {
+                android.app.AlertDialog.Builder(this@SettingsActivity)
+                    .setTitle("Voice")
+                    .setSingleChoiceItems(names.toTypedArray(), preferredVoiceIndex(voices)) { dialog, which ->
+                        dialog.dismiss()
+                        val v = voices[which]
+                        if (v.gen != PantheraEngine.activeGen(this@SettingsActivity) ||
+                            v.name != PantheraEngine.defaultVoiceName(this@SettingsActivity, v.gen))
+                            PantheraEngine.chooseVoice(this@SettingsActivity, v)
+                        refreshVoiceButton()
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .show()
+            }
+            voiceLabel?.labelFor = id
+            holder.addView(this)
         }
-        holder.addView(body(
-            "Used when an app does not name a voice itself. The sample on the " +
-            "Setup page speaks with this one."))
+        holder.addView(body("The sample on the Setup page speaks with this one."))
     }
 
     // ---- small builders ----------------------------------------------------
@@ -450,25 +533,59 @@ class SettingsActivity : Activity() {
         else LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
-    private fun spinner(items: List<String>, selected: Int, onPick: (Int) -> Unit) =
-        Spinner(this).apply {
-            id = View.generateViewId()
-            adapter = ArrayAdapter(this@SettingsActivity,
-                android.R.layout.simple_spinner_dropdown_item, items)
-            setSelection(selected, false)
-            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                private var previous = selected
-                override fun onItemSelected(a: AdapterView<*>?, v: View?, pos: Int, id: Long) {
-                    // setSelection fires this once as the view attaches, and a
-                    // preference should change because somebody chose it, not
-                    // because a screen was built.
-                    if (pos == previous) return
-                    previous = pos
-                    onPick(pos)
-                }
-                override fun onNothingSelected(a: AdapterView<*>?) {}
+    /** A set of radio buttons: one focus stop per option, and each option
+     * says its own name and whether it is the one in use -- "Fred, radio
+     * button, checked".
+     *
+     * These were Spinners. A Spinner's collapsed item is a CheckedTextView,
+     * so exploring one by touch read a drop-down role and then "not checked"
+     * for the very option that was chosen -- two roles for one control, and
+     * the one state that matters said backwards. The stock RadioButton owns
+     * its label, its focus and its checked state, and says each once. */
+    private class Choice(context: android.content.Context) : RadioGroup(context) {
+        private var quiet = false
+        var onPick: ((Int) -> Unit)? = null
+
+        /** The chosen option's index, or -1 when none is. */
+        fun index(): Int = (0 until childCount).indexOfFirst { (getChildAt(it) as RadioButton).isChecked }
+
+        /** Show an option as chosen without treating that as the user's doing:
+         * a preference changes because somebody chose it, not because a screen
+         * was built or refreshed. -1 clears the choice. */
+        fun select(i: Int) {
+            quiet = true
+            try { if (i in 0 until childCount) check(getChildAt(i).id) else clearCheck() }
+            finally { quiet = false }
+        }
+
+        /** RadioGroup.isEnabled does not reach its buttons; this does. */
+        fun enableAll(enabled: Boolean) {
+            isEnabled = enabled
+            for (i in 0 until childCount) getChildAt(i).isEnabled = enabled
+        }
+
+        init {
+            orientation = VERTICAL
+            setOnCheckedChangeListener { _, checkedId ->
+                if (quiet || checkedId == View.NO_ID) return@setOnCheckedChangeListener
+                val i = (0 until childCount).indexOfFirst { getChildAt(it).id == checkedId }
+                if (i >= 0) onPick?.invoke(i)
             }
         }
+    }
+
+    private fun choice(name: String, items: List<String>, selected: Int,
+                       onPick: (Int) -> Unit) = Choice(this).apply {
+        id = View.generateViewId()
+        tag = name
+        for (item in items) addView(RadioButton(this@SettingsActivity).apply {
+            id = View.generateViewId()
+            text = item
+            textSize = 16f
+        })
+        select(selected)
+        this.onPick = onPick
+    }
 
     // View-based equivalent of TG Speechbox's AccessibleSlider: named value,
     // one-step arrows, Home/End, and the stock accessibility range actions.
@@ -688,5 +805,8 @@ class SettingsActivity : Activity() {
         // The engine's own range; PantheraEngine clamps to it as well.
         const val RATE_MIN = 80
         const val RATE_MAX = 500
+        // Which generation the voice list shows: a generation name, or all.
+        const val PREF_VOICE_FILTER = "voice_filter"
+        const val FILTER_ALL = "all"
     }
 }
