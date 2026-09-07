@@ -97,8 +97,9 @@ static unsigned  g_arena_next;
 static CRITICAL_SECTION g_arena_cs;
 static struct { unsigned addr, size; } g_regions[512];
 static int       g_nregions;
-static uc_engine *g_engines[16];
+static uc_engine **g_engines;
 static int       g_nengines;
+static int       g_engine_capacity;
 static CRITICAL_SECTION g_map_cs;         /* guards g_regions and g_engines */
 static int       g_uc_cs_ready;
 
@@ -270,6 +271,10 @@ static void * __cdecl sh_uc_realloc(void *old, size_t n)
 static struct { const char *name; unsigned size; void *host; void *guest; }
         g_data_syms[] = {
     { "___stack_chk_guard", 4, NULL, NULL },
+    /* BSD ctype's immutable table, initialized before binding any image.
+     * Treating it as a function made the inline digit test read trampoline
+     * instructions and reject every numeric embedded command. */
+    { "__DefaultRuneLocale", 0x34 + 3 * 256 * 4 + 64, NULL, NULL },
     { NULL, 0, NULL, NULL }
 };
 
@@ -702,9 +707,17 @@ static uc_engine *uc_new_engine(void)
         uc_must(uc_mem_map_ptr(u, g_regions[i].addr, g_regions[i].size,
                 UC_PROT_ALL, (void *)(uintptr_t)g_regions[i].addr),
                 "replay region");
-    if (g_nengines < (int)(sizeof g_engines / sizeof g_engines[0]))
-        g_engines[g_nengines++] = u;
-    else die("too many engines");
+    /* Snow Leopard can overlap more than sixteen dispatch workers while old
+     * sources retire. Grow the registry under the mapping lock; retired
+     * threads still unregister and close their emulator below. */
+    if (g_nengines == g_engine_capacity) {
+        int capacity = g_engine_capacity ? g_engine_capacity * 2 : 16;
+        uc_engine **engines = (uc_engine **)realloc(g_engines, capacity * sizeof(*engines));
+        if (!engines) die("no memory for emulator registry");
+        g_engines = engines;
+        g_engine_capacity = capacity;
+    }
+    g_engines[g_nengines++] = u;
     LeaveCriticalSection(&g_map_cs);
     uc_must(uc_hook_add(u, &hd, UC_HOOK_CODE, (void *)uc_dispatch, NULL,
             g_uc_tramp, g_uc_tramp + UC_TRAMP_SZ - 1), "dispatch hook");

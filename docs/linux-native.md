@@ -6,6 +6,9 @@ The host can render files or serve a client over pipes. It does not install a
 Speech Dispatcher module or a settings application. Supply your own extracted
 engine and voice data; none is included in the build.
 
+Other projects may provide Speech Dispatcher integrations; they can use
+Panthera's host protocol.
+
 ## Build and check AAC
 
 On Ubuntu/Debian x86-64:
@@ -34,6 +37,22 @@ installed only for x86-64 cannot satisfy a 32-bit host. A build made without
 AAC support must be rebuilt after installing the development package.
 SQLite is loaded separately at runtime for Leopard phrasing dictionaries.
 
+## Render a WAV from the command line
+
+For an extracted Tiger tree, set the text and pass the synthesizer, dictionary
+and voice bundle paths. The host reads the bundle's voice identifier and writes
+`tiger-out.wav` in the current directory:
+
+```sh
+TIGER_TEXT='Hello there.' ./build/linux-i686/tiger_host \
+  /path/to/speech-tiger/x86/Speech/Synthesizers/MacinTalk.SpeechSynthesizer/Contents/MacOS/MacinTalk \
+  /path/to/speech-tiger/x86/SpeechDictionary.framework/Versions/A/SpeechDictionary \
+  /path/to/speech-tiger/x86/Speech/Voices/Fred.SpeechVoice
+```
+
+The output is mono PCM16 WAV. Playback and client settings are independent of
+the host; use the audio application or integration of your choice.
+
 ## Client protocol
 
 Start `tiger_host --serve ENGINE DICTIONARY VOICES`, passing paths to the
@@ -53,10 +72,12 @@ handler only sets a flag; the synthesis thread stops the engine.
 
 Native i686 streaming has been checked with Tiger and Leopard, including
 volume commands, repeated utterances, cancellation and recovery. The x86_64
-Unicorn build passes the generated ABI tests, but embedded volume commands
-still fail the streaming mute check; use i686 for Linux integrations while
-that discrepancy is investigated. Android applies volume through the engine's
-parameter API and passes its separate mute/recovery checks on both ABIs.
+Unicorn build also passes the Fred streaming volume and recovery checks after
+correcting the guest character-classification table binding. Native i686 is
+the preferred x86 Linux build for latency: cancelling a long Tiger request
+under emulation can still wait for the remainder of that request to render.
+Cancellation uses a separate audio-discard flag from ordinary sentence resets;
+status queries also marshal their output into guest-visible memory.
 
 ## Android volume
 

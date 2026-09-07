@@ -113,10 +113,9 @@ static int speak_with_volume(const speech_api *api, void *chan,
     p = strstr(name, ".SpeechVoice");
     if (p) name[p-name] = 0;
     milli = volume_milli(g_volume_level, g_volume_generation, name);
-    /* Use the Speech Manager's volume parameter, like rate. The embedded
-     * volm command alone did not change PCM under emulation; the direct
-     * parameter is read back correctly and passes mute/recovery tests.
-     * Reapply every utterance, including after a voice change or mute. */
+    /* Use the Speech Manager's volume parameter, like rate. Reapply every
+     * utterance, including after a voice change or an embedded volume command.
+     * This leaves command acceptance under the front end's control. */
     result = set_param(api, chan, PARAM_VOLUME, (unsigned)(milli * 65536u / 1000));
     if (result) return result;
     return speak_text(api, chan, text, len);

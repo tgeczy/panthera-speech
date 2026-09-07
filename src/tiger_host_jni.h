@@ -52,6 +52,14 @@ int  panthera_pull(short *out, int maxSamples);
  * of the utterance; it applies from the next utterance onwards. */
 void panthera_set_number_style(const char *style);
 
+/* Dictionary abbreviation rules; the front end also handles lexical tokens.
+ * Set between utterances under synthesis ownership. */
+void panthera_set_expand_abbreviations(int expand);
+/* Leopard onward: fewest/fewer/more/most/leopard (engine default).
+ * Set before panthera_init; changing it after init returns an error because
+ * the engine caches the threshold beyond a channel's lifetime. */
+int panthera_set_phrasing(const char *style);
+
 /* NVDA scale, 0..100. Tiger defaults to 100, later generations to 90.
  * Generation selects its measured voice table. Set under synthesis ownership.
  * A negative level leaves volume to the caller's embedded commands. */

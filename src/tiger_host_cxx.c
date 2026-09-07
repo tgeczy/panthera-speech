@@ -268,6 +268,18 @@ static int libc_check(void)
     ok = ok && token && !strcmp(token, "beta") && p->guard == 0x12345678;
     token = sh_strtok_r(NULL, " ,", &p->save);
     ok = ok && !token && !p->save && p->guard == 0x12345678;
+#ifdef TIGER_UC
+    {
+        unsigned char copy[RUNE_SIZE];
+        void *guest;
+        init_rune_locale();
+        guest = uc_bind_target("__DefaultRuneLocale", g_rune_locale);
+        ok = ok && uc_data_size("__DefaultRuneLocale") == sizeof copy;
+        ok = ok && uc_mem_read(t_uc, (uintptr_t)guest, copy, sizeof copy) == UC_ERR_OK;
+        ok = ok && !memcmp(copy, g_rune_locale, sizeof copy);
+        ok = ok && (*(unsigned *)(copy + RUNE_RUNETYPE + '9' * 4) & _CTYPE_D);
+    }
+#endif
     GMEM_FREE(p);
     fprintf(stdout, "[libc] guest tokenizer %s\n", ok ? "PASS" : "FAIL");
     return ok ? 0 : 1;

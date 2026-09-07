@@ -538,7 +538,7 @@ static DWORD WINAPI pacer_thread(LPVOID arg)
          * written into the buffer the next one is filling.  Complete the slice
          * regardless -- that is the engine's clock, and refusing to tick it is
          * how the channel wedges -- but do not collect what it carries. */
-        if (job.utt == g_utt && !g_au_cancel && !g_p_reset)
+        if (job.utt == g_utt && !g_au_cancel)
             collect_slice((unsigned char *)job.slice);
         else
             g_stale_slices++;
@@ -557,11 +557,15 @@ static DWORD WINAPI pacer_thread(LPVOID arg)
 
 /* Finish reset callbacks before returning. The guest retires whatever
  * remains after AudioUnitReset, so a delayed completion would retire the
- * same slice twice. Drain through the existing pacer thread, without pacing
- * or collecting audio, to preserve the callback's other bookkeeping too. */
+ * same slice twice. Drain through the existing pacer without pacing.
+ * An ordinary reset also separates sentences: keep their queued audio.
+ * Cancellation has its own flag and discards audio in the pacer above.
+ * Treating every reset as cancellation lost a timing-dependent sentence tail
+ * on slower hosts, while fast native renders had already collected it. */
 static int reset_scheduled_audio(void)
 {
     unsigned waited = 0;
+    if (g_verbose) fprintf(stderr, "  [au] reset scheduled: queued=%d pcm=%u cancel=%ld\n", g_p_count, g_pcm_n, (long)g_au_cancel);
     InterlockedExchange(&g_p_reset, 1);
     while (!pacer_idle() && waited++ < 5000) Sleep(1);
     if (!pacer_idle()) die("audio reset timed out waiting for completion callbacks");

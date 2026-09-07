@@ -249,6 +249,30 @@ void panthera_set_number_style(const char *style)
     g_pt_number_style = num_style_of(style);
 }
 
+void panthera_set_expand_abbreviations(int expand)
+{
+    /* Called under synthesis ownership, between utterances. Retain compiled
+     * dictionary rules so switching back on does not require a new channel. */
+    re_lock();
+    g_no_abbrev = !expand;
+    re_unlock();
+}
+
+int panthera_set_phrasing(const char *style)
+{
+    static const char *names[] = { "leopard", "fewest", "fewer", "more", "most" };
+    int mode;
+    for (mode = 0; mode < 5; mode++)
+        if (style && !strcmp(style, names[mode])) break;
+    if (mode == 5) return -50;
+    /* The engine caches this beyond channel lifetime. Configure before init;
+     * a client changing it later must replace its private engine worker. */
+    if (g_pt_ready && (!g_phrase_override_set || mode != g_phrase_mode)) return -231;
+    g_phrase_override_set = 1;
+    g_phrase_mode = mode;
+    return 0;
+}
+
 /* Returns either a rewritten copy to free, or NULL meaning "use the original".
  * NULL on allocation failure too: speaking the text unrewritten is better than
  * not speaking it. */

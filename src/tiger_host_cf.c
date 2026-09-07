@@ -1018,6 +1018,12 @@ static void cf_params_init(void)
     }
 }
 
+/* In-process clients can override this one preference without changing the
+ * process environment or the user's extracted tree. NULL means engine default. */
+static int g_phrase_override_set;
+static int g_phrase_mode;
+static cfobj *g_phrase_override;
+
 static void * __cdecl sh_CFPreferencesCopyAppValue(const void *key,
                                                    const void *appid)
 {
@@ -1038,6 +1044,12 @@ static void * __cdecl sh_CFPreferencesCopyAppValue(const void *key,
         fprintf(stderr, "  [pref] asked for %s\n",
                 k ? k : "(unreadable key)");
     if (!k) return NULL;
+    if (g_phrase_override_set && !strcmp(k, "Boundaries.SilThreshold")) {
+        static const double values[] = { 0, -8, -4, 0, 5 };
+        if (!g_phrase_mode) return NULL;
+        if (!g_phrase_override) g_phrase_override = cf_value(CF_NUMBER, values[g_phrase_mode]);
+        return g_phrase_override;
+    }
     for (i = 0; i < g_nparams; i++)
         if (!strcmp(g_params[i].key, k)) {
             if (g_verbose)

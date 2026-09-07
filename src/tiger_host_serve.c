@@ -146,6 +146,23 @@ static void cancel_signal(int sig)
  * TIGER_RESET=1 puts it back for measuring; the settle below is what
  * carries the load. */
 static int g_use_reset;
+#define SEL_STATUS 0x73746174u          /* 'stat' -- soStatus */
+
+/* SpeechStatusInfo starts with byte-sized outputBusy/inputBusy flags. The
+ * engine writes through this pointer, so use guest-visible storage on UC. */
+static int speech_status_idle(const speech_api *api, void *chan, int *idle)
+{
+    unsigned char info[16] = {0};
+    unsigned char *slot;
+    int rc;
+    if (!api->getinfo) return -231;
+    slot = (unsigned char *)UC_IN(info, sizeof info);
+    if (!slot) return -108;
+    rc = call_aligned3((void *)api->getinfo, chan, (void *)SEL_STATUS, slot);
+    *idle = rc == 0 && slot[0] == 0;
+    UC_FREE(slot);
+    return rc;
+}
 
 static int cancel_requested(void)
 {
@@ -179,7 +196,6 @@ typedef int (*SEStatus_t)(void *chan, void *info);
 #define SEL_PITCH 0x70626173u           /* 'pbas' -- soPitchBase, Fixed */
 #define SEL_DELIM 0x646c696du           /* 'dlim' -- soCommandDelimiter */
 #define SEL_RESET 0x72736574u           /* 'rset' -- soReset */
-#define SEL_STATUS 0x73746174u          /* 'stat' -- soStatus */
 
 /* Flags word in the request. */
 #define REQF_COMMANDS 0x1               /* honour [[...]] in the text */
@@ -493,6 +509,7 @@ static int serve(image *mt, void *chan, const char *voicesdir)
         g_t_aac = g_t_fft = 0;
         g_n_aac = g_n_fft = 0;
         g_pcm_n = 0; g_slices = 0; g_stopped = 0; g_empty_run = 0;
+        InterlockedExchange(&g_au_cancel, 0);
         g_dup_slices = 0; g_have_last = 0; g_p_drops = 0;
         g_epoch_base = 0; g_last_stime = 0.0; g_have_origin = 0;
         /* A new utterance: anything still in flight for the last one is stale
@@ -643,12 +660,10 @@ static int serve(image *mt, void *chan, const char *voicesdir)
                  * necessarily started when the first tick runs and an idle
                  * answer then would end the utterance before it began. */
                 if (g_ask_status && api.getinfo && g_pcm_n) {
-                    long st[4];
-                    memset(st, 0, sizeof(st));
-                    if (call_aligned3((void *)api.getinfo, chan,
-                                      (void *)SEL_STATUS, st) == 0) {
+                    int idle = 0;
+                    if (speech_status_idle(&api, chan, &idle) == 0) {
                         g_stat_ok++;
-                        if (st[0] == 0) { g_stat_idle++; break; }
+                        if (idle) { g_stat_idle++; break; }
                     } else {
                         g_stat_refused++;
                     }
@@ -658,6 +673,7 @@ static int serve(image *mt, void *chan, const char *voicesdir)
                      * render the rest of a sentence nobody will hear -- the
                      * driver cannot start the next utterance until this
                      * response ends, so finishing it politely *is* the lag. */
+                    InterlockedExchange(&g_au_cancel, 1);
                     if (stopnow)
                         call_aligned2((void *)stopnow, chan, (void *)0);
                     /* Stopping the channel loses its rate and pitch.
@@ -728,7 +744,6 @@ static int serve(image *mt, void *chan, const char *voicesdir)
                          * the fixed wait, and it does not guess. */
                         unsigned last = g_slices, quiet = 0;
                         int spin;
-                        long info[4];
                         for (spin = 0; spin < 100 && quiet < 15; spin++) {
                             Sleep(2);
                             if (g_slices != last) { last = g_slices; quiet = 0; }
@@ -739,10 +754,8 @@ static int serve(image *mt, void *chan, const char *voicesdir)
                              * costs the full 200 ms instead of stopping as
                              * soon as the engine says it is idle. */
                             if (api.getinfo) {
-                                memset(info, 0, sizeof(info));
-                                if (call_aligned3((void *)api.getinfo, chan,
-                                                  (void *)SEL_STATUS,
-                                                  info) == 0 && info[0] == 0)
+                                int idle = 0;
+                                if (speech_status_idle(&api, chan, &idle) == 0 && idle)
                                     break;      /* it says it is idle */
                             }
                         }
