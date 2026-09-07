@@ -5,6 +5,7 @@ import android.content.Intent
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.text.InputType
@@ -15,6 +16,7 @@ import android.text.method.ScrollingMovementMethod
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowInsets
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
@@ -88,11 +90,28 @@ class SettingsActivity : Activity() {
         }
         pageHolders = listOf(pages.getChildAt(0), pages.getChildAt(1))
 
-        setContentView(LinearLayout(this).apply {
+        val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(tabs)
             addView(pages)
-        })
+        }
+
+        // Android 15 draws every activity edge to edge whether it asked to or
+        // not.  Without this the tab strip is laid out at y=0 -- underneath
+        // the status bar, invisible and untappable -- and the last button on
+        // the setup page disappears under the navigation bar.
+        //
+        // The instrumentation did not catch it and could not: it finds a view
+        // by its text and clicks it through the accessibility API, which works
+        // perfectly on a view behind the status bar.  The tabs were present,
+        // correct and reachable by every measure a test has.  Found by eye.
+        root.setOnApplyWindowInsetsListener { view, insets ->
+            val bars = systemBarInsets(insets)
+            view.setPadding(bars[0], bars[1], bars[2], bars[3])
+            insets
+        }
+
+        setContentView(root)
         show(savedInstanceState?.getInt("page") ?: PantheraEngine.prefs(this).getInt("settings_page", 0))
         PantheraEngine.prefs(this).registerOnSharedPreferenceChangeListener(preferenceListener)
         refresh()
@@ -138,6 +157,22 @@ class SettingsActivity : Activity() {
             voiceSpinner?.setSelection(preferredVoiceIndex(listedVoices), false)
 
     }
+
+    /** Left, top, right and bottom taken by the status and navigation bars.
+     *
+     * `WindowInsets.Type` arrived in API 30 and this app supports 26, so the
+     * older accessors stay for the watch and anything else on an early
+     * release.  Both report the same rectangle.
+     */
+    @Suppress("DEPRECATION")
+    private fun systemBarInsets(insets: WindowInsets): IntArray =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val bars = insets.getInsets(WindowInsets.Type.systemBars())
+            intArrayOf(bars.left, bars.top, bars.right, bars.bottom)
+        } else {
+            intArrayOf(insets.systemWindowInsetLeft, insets.systemWindowInsetTop,
+                       insets.systemWindowInsetRight, insets.systemWindowInsetBottom)
+        }
 
     private fun show(page: Int) {
         currentPage = page.coerceIn(0, 1)
