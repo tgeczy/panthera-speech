@@ -156,6 +156,7 @@ class EngineSmokeTest : Instrumentation() {
         for ((i, voice) in choices.withIndex()) {
             prefs.edit().putInt(PantheraEngine.settingKey("rate_wpm", voice.gen), 221 + i*100)
                 .putInt(PantheraEngine.settingKey("volume", voice.gen), 37 + i*25)
+                .putInt(PantheraEngine.settingKey(PantheraEngine.PREF_INFLECTION, voice.gen), 35 + i*30)
                 .putString(PantheraEngine.settingKey("number_style", voice.gen), if (i == 0) "off" else "words")
                 .putBoolean(PantheraEngine.settingKey(PantheraEngine.PREF_COMMANDS, voice.gen), i == 0)
                 .putBoolean(PantheraEngine.settingKey(PantheraEngine.PREF_ABBREVIATIONS, voice.gen), i != 0)
@@ -187,6 +188,8 @@ class EngineSmokeTest : Instrumentation() {
                 check(sliders[0].progress == 221 + i*100 - 80 + 1)
                 check(sliderValue(sliders[1]) == "${37 + i*25} percent")
                 check(PantheraEngine.settings(targetContext).volume == 37 + i*25)
+                check(sliders[2].progress == 35 + i*30)
+                check(PantheraEngine.settings(targetContext).inflection == 35 + i*30)
                 check(views.filterIsInstance<android.widget.Spinner>()
                     .first { it.contentDescription == "How to read numbers" }.selectedItemPosition == if (i == 0) 2 else 1)
                 val spinner = views.filterIsInstance<android.widget.Spinner>().first { it.contentDescription == "Voice" }
@@ -282,7 +285,7 @@ class EngineSmokeTest : Instrumentation() {
                             "Control has no associated label: ${control.contentDescription}"
                         }
                     }
-                    check(sliders.size == 2)
+                    check(sliders.size == 3)
                     for (slider in sliders) {
                         check(!slider.contentDescription.isNullOrBlank())
                         slider.requestFocus()
@@ -310,6 +313,7 @@ class EngineSmokeTest : Instrumentation() {
             }
             for (gen in PantheraEngine.availableGens(targetContext)) {
                 prefs.edit().putInt(PantheraEngine.settingKey("rate_wpm", gen), 0)
+                    .putInt(PantheraEngine.settingKey(PantheraEngine.PREF_INFLECTION, gen), 50)
                     .putBoolean(PantheraEngine.settingKey(PantheraEngine.PREF_COMMANDS, gen), false)
                     .putBoolean(PantheraEngine.settingKey(PantheraEngine.PREF_ABBREVIATIONS, gen), true)
                     .putString(PantheraEngine.settingKey(PantheraEngine.PREF_PHRASING, gen), "leopard")
@@ -664,6 +668,30 @@ class EngineSmokeTest : Instrumentation() {
                 check(energy(pcmOf("$gen-mute", "Hello there.")) == 0.0)
                 prefs.edit().putInt(genVolume, if (gen == "tiger") 100 else 50).commit()
                 checkReference(voice.name, pcmOf("$gen-settings-restored", "Hello there."))
+                // Match the public setting against the measured engine command,
+                // then prove that returning to default restores the voice itself.
+                // AAC Alex gives a stable Lion oracle; Fred covers Tiger.
+                val inflectionVoice = client.voices.firstOrNull { it.name == "panthera-$gen-alex" } ?: voice
+                check(client.setVoice(inflectionVoice) == TextToSpeech.SUCCESS)
+                val inflectionKey = PantheraEngine.settingKey(PantheraEngine.PREF_INFLECTION, gen)
+                val inflectionDefault = pcmOf("$gen-inflection-default", "Hello there.")
+                prefs.edit().putInt(inflectionKey, 20).commit()
+                val adjustedInflection = pcmOf("$gen-inflection-20", "Hello there.")
+                prefs.edit().putInt(inflectionKey, 50).commit()
+                check(pcmOf("$gen-inflection-restored", "Hello there.").contentEquals(inflectionDefault)) {
+                    "$gen inflection default changed the voice"
+                }
+                prefs.edit().putBoolean(genCommands, true).commit()
+                check(pcmOf("$gen-inflection-command", "[[pmod 40]]Hello there.").contentEquals(adjustedInflection)) {
+                    "$gen inflection disagrees with the engine command"
+                }
+                // Mark the channel adjusted, then return to default again so an
+                // accepted embedded command cannot contaminate later oracles.
+                prefs.edit().putInt(inflectionKey, 20).putBoolean(genCommands, false).commit()
+                pcmOf("$gen-inflection-reset-arm", "Hello there.")
+                prefs.edit().putInt(inflectionKey, 50).commit()
+                check(pcmOf("$gen-inflection-reset", "Hello there.").contentEquals(inflectionDefault))
+                check(client.setVoice(voice) == TextToSpeech.SUCCESS)
                 // AAC plus repeated worker retirement, on the same bound client.
                 val aac = client.voices.firstOrNull { it.name == "panthera-$gen-alex" }
                     ?: client.voices.firstOrNull { it.name == "panthera-$gen-vicki" }

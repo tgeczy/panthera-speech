@@ -13,11 +13,12 @@ open class PantheraWorkerService : Service() {
     private fun <T> runNative(block: () -> T): T = synthesis.submit(Callable(block)).get()
     @Volatile private var opened = false
     private var phrasing: String? = null
+    private var inflectionChanged = false
     private val requestState = Any()
     private var activeRequest = false
     private val binder = object : IPantheraWorker.Stub() {
-        override fun open(engine: String, dictionary: String, requestedPhrasing: String): Int = runNative {
-            if (opened && phrasing != requestedPhrasing) return@runNative RECONFIGURE
+        override fun open(engine: String, dictionary: String, requestedPhrasing: String, inflection: Int): Int = runNative {
+            if (opened && (phrasing != requestedPhrasing || (inflection == 50 && inflectionChanged))) return@runNative RECONFIGURE
             if (!opened) {
                 if (PantheraNative.nativeSetPhrasing(requestedPhrasing) != 0) return@runNative -1
                 opened = PantheraNative.nativeOpen(engine, dictionary) == 0
@@ -30,13 +31,21 @@ open class PantheraWorkerService : Service() {
         override fun shutdown() { android.os.Process.killProcess(android.os.Process.myPid()) }
         override fun start(voice: String, creator: Int, voiceId: Int, text: ByteArray,
                            wpm: Int, volume: Int, generation: String, numbers: String,
-                           expandAbbreviations: Boolean): Int = runNative {
+                           expandAbbreviations: Boolean, inflection: Int): Int = runNative {
             check(opened)
             PantheraNative.nativeSetVolume(volume, generation)
             PantheraNative.nativeSetNumberStyle(numbers)
             PantheraNative.nativeSetExpandAbbreviations(expandAbbreviations)
             synchronized(requestState) { activeRequest = true }
-            val status = PantheraNative.nativeSpeakStart(voice, creator, voiceId, text, wpm)
+            // The same 0..100 -> pmod 0..200 scale as NVDA/SAPI. At the
+            // midpoint leave the freshly opened voice at its own default.
+            // Returning there retires only this worker: pmod 100 is not the
+            // default for every voice (notably Lion Alex).
+            val input = if (inflection != 50) {
+                inflectionChanged = true
+                "[[pmod ${inflection.coerceIn(0, 100) * 2}]]".toByteArray(Charsets.US_ASCII) + text
+            } else text
+            val status = PantheraNative.nativeSpeakStart(voice, creator, voiceId, input, wpm)
             if (status != 0) synchronized(requestState) { activeRequest = false }
             status
         }

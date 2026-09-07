@@ -7,6 +7,14 @@ TTS service and its clients stay connected when the generation changes.
 Returning to a generation reuses its worker; a dead worker is rebound on the
 next request.
 
+The Android distribution is GPLv2; **Licenses and source** in Setup displays
+the notice and full license. After committing the sources used to build the
+APK, run `python tools/package_android_sources.py`. Distribute the resulting
+`build/panthera-android-sources.tar.gz` alongside that APK. It includes Panthera's
+build scripts and the exact tracked Unicorn/FAAD2 source checkouts, with commit
+identifiers and archive checksums. It excludes ignored engine data and build
+products. Windows NVDA and SAPI distributions remain MIT.
+
 The app process owns preferences. Workers receive a settings snapshot for each
 utterance, rather than reading a separate process's SharedPreferences cache.
 Voice, rate, volume, phrase breaks, number handling, embedded-command acceptance and
@@ -21,6 +29,12 @@ generations 90); Android still applies the requesting app's playback volume
 and device volume. Previously saved percentages remain available exactly,
 including values between the new steps. Changing generations refreshes both
 the displayed value and the slider's accessibility description.
+
+**Inflection** uses the NVDA/SAPI scale, 0–100 with 50 selecting the voice's
+own default. Nondefault values apply `pmod` at twice the selected percentage.
+Returning to 50 replaces only the private generation worker, because
+`pmod 100` is not every voice's default (notably Lion Alex). Settings take
+effect on the next request; no sentence boundaries or pauses are inserted.
 
 **Engine phrase breaks** is available on Leopard and later; Tiger's control is
 disabled with an explanation. Its choices use the NVDA/SAPI mapping: Fewest

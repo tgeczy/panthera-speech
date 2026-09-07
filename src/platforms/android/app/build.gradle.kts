@@ -25,6 +25,7 @@ android {
 
     // Kotlin sources live under src/main/kotlin.
     sourceSets["main"].java.srcDirs("src/main/kotlin")
+    sourceSets["main"].assets.srcDir(rootProject.file("../../../licenses"))
 
     buildTypes {
         release {

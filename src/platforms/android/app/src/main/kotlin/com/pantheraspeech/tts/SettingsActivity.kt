@@ -39,6 +39,7 @@ class SettingsActivity : Activity() {
     private var pad = 0
     private var rateSlider: ValueSlider? = null
     private var volumeSlider: ValueSlider? = null
+    private var inflectionSlider: ValueSlider? = null
     private var volumeLevels = PantheraEngine.volumeLevels(PantheraEngine.VOLUME_SYSTEM_DEFAULT)
     private var numberSpinner: Spinner? = null
     private var overrideVoice: android.widget.CheckBox? = null
@@ -131,6 +132,7 @@ class SettingsActivity : Activity() {
         volumeSlider?.max = volumeLevels.lastIndex
         volumeSlider?.progress = volumeLevels.indexOf(settings.volume)
         volumeSlider?.refreshValue()
+        inflectionSlider?.progress = settings.inflection
         numberSpinner?.setSelection(listOf("fix", "words", "off").indexOf(settings.numbers), false)
         if (voiceSelection && listedVoices.isNotEmpty())
             voiceSpinner?.setSelection(preferredVoiceIndex(listedVoices), false)
@@ -236,6 +238,21 @@ class SettingsActivity : Activity() {
             text = "Open Text-to-speech settings"
             setOnClickListener { openTtsSettings() }
         })
+        root.addView(Button(this).apply {
+            text = "Licenses and source"
+            setOnClickListener {
+                val notice = assets.open("DISTRIBUTION.txt").bufferedReader().use { it.readText() }
+                android.app.AlertDialog.Builder(this@SettingsActivity)
+                    .setTitle("Licenses and source").setMessage(notice)
+                    .setPositiveButton("Close", null)
+                    .setNeutralButton("GPLv2 license") { _, _ ->
+                        val license = assets.open("GPL-2.0.txt").bufferedReader().use { it.readText() }
+                        android.app.AlertDialog.Builder(this@SettingsActivity)
+                            .setTitle("GNU General Public License version 2")
+                            .setMessage(license).setPositiveButton("Close", null).show()
+                    }.show()
+            }
+        })
     }
 
     // ---- page 2: engine settings -------------------------------------------
@@ -286,6 +303,15 @@ class SettingsActivity : Activity() {
             volumeLevels.indexOf(savedVolume), { volumeText(volumeLevels[it]) }) {
             p.edit().putInt(PantheraEngine.settingKey(PantheraEngine.PREF_VOLUME,
                 PantheraEngine.activeGen(this)), volumeLevels[it]).apply()
+        }
+
+        root.addView(heading("Inflection"))
+        root.addView(body("Pitch variation within speech. 50 uses the voice's own default; " +
+            "some voices respond less than others. Changes apply to the next request."))
+        inflectionSlider = addSlider(root, "Inflection", 100, PantheraEngine.settings(this).inflection,
+            { if (it == 50) "50 percent, engine default" else "$it percent" }) {
+            p.edit().putInt(PantheraEngine.settingKey(PantheraEngine.PREF_INFLECTION,
+                PantheraEngine.activeGen(this)), it).apply()
         }
 
         val phrasingLabel = heading("Engine phrase breaks").also { root.addView(it) }
