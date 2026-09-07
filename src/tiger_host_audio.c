@@ -40,9 +40,9 @@ static void fourcc(char *out, unsigned v)
         if (out[v] < 32 || out[v] > 126) out[v] = '.';
 }
 
-static int __cdecl sh_NewAUGraph(au_obj **out)
+static int __cdecl sh_NewAUGraph(gptr *out)
 {
-    if (out) *out = g_graph;
+    if (out) *out = GP(g_graph);
     if (g_verbose) printf("  [au] NewAUGraph -> %p\n", (void *)g_graph);
     return 0;
 }
@@ -59,14 +59,14 @@ static int __cdecl sh_AUGraphNewNode(void *g, const unsigned *desc,
     return 0;
 }
 static int __cdecl sh_AUGraphGetNodeInfo(void *g, int node, unsigned *desc,
-                                         unsigned *csize, void **cdata,
-                                         au_obj **unit)
+                                         unsigned *csize, gptr *cdata,
+                                         gptr *unit)
 {
     (void)g; (void)desc; (void)csize; (void)cdata;
     if (node < 1 || node > 8) return -50;
     g_units[node - 1].tag = 0x41554e54u;        /* 'AUNT' */
     g_units[node - 1].id  = node;
-    if (unit) *unit = &g_units[node - 1];
+    if (unit) *unit = GP(&g_units[node - 1]);
     if (g_verbose) printf("  [au] GetNodeInfo node %d -> unit %p\n", node,
            (void *)&g_units[node - 1]);
     return 0;
@@ -90,7 +90,7 @@ static int __cdecl sh_AUGraphAddNode(void *g, const unsigned *desc, int *node)
 }
 
 static int __cdecl sh_AUGraphNodeInfo(void *g, int node, unsigned *desc,
-                                      au_obj **unit)
+                                      gptr *unit)
 {
     return sh_AUGraphGetNodeInfo(g, node, desc, NULL, NULL, unit);
 }
@@ -331,6 +331,7 @@ static volatile LONG    g_au_cancel;
  * utterance is complete only when the queue is empty *and* this is clear;
  * reading g_pcm before then is a snapshot of a half-collected timeline. */
 static volatile LONG    g_p_busy;
+static volatile LONG    g_p_reset; /* finish scheduled buffers promptly during reset */
 /* A dropped slice is audio the engine produced and we threw away, and its
  * completion never fires, so the engine waits on a slice that will never
  * finish.  Count it and say it out loud rather than absorbing it. */
@@ -529,7 +530,7 @@ static DWORD WINAPI pacer_thread(LPVOID arg)
              * empty-slice spin returns, so it wants measuring, not guessing. */
             double ms = job.frames * 1000.0 / g_rate * (g_pace / 100.0);
             if (ms < g_pace_floor) ms = g_pace_floor;
-            if (g_au_cancel) ms = 0.0;   /* cancelled: owed nobody any time */
+            if (g_au_cancel || g_p_reset) ms = 0.0;   /* cancelled: owed nobody any time */
             if (ms >= 1.0) Sleep((DWORD)ms);
             else SwitchToThread();        /* still yield, or the worker never runs */
         }
@@ -537,7 +538,7 @@ static DWORD WINAPI pacer_thread(LPVOID arg)
          * written into the buffer the next one is filling.  Complete the slice
          * regardless -- that is the engine's clock, and refusing to tick it is
          * how the channel wedges -- but do not collect what it carries. */
-        if (job.utt == g_utt && !g_au_cancel)
+        if (job.utt == g_utt && !g_au_cancel && !g_p_reset)
             collect_slice((unsigned char *)job.slice);
         else
             g_stale_slices++;
@@ -551,6 +552,20 @@ static DWORD WINAPI pacer_thread(LPVOID arg)
         call_aligned2((void *)job.proc, job.udata, job.slice);
         g_p_busy = 0;
     }
+    return 0;
+}
+
+/* Finish reset callbacks before returning. The guest retires whatever
+ * remains after AudioUnitReset, so a delayed completion would retire the
+ * same slice twice. Drain through the existing pacer thread, without pacing
+ * or collecting audio, to preserve the callback's other bookkeeping too. */
+static int reset_scheduled_audio(void)
+{
+    unsigned waited = 0;
+    InterlockedExchange(&g_p_reset, 1);
+    while (!pacer_idle() && waited++ < 5000) Sleep(1);
+    if (!pacer_idle()) die("audio reset timed out waiting for completion callbacks");
+    InterlockedExchange(&g_p_reset, 0);
     return 0;
 }
 

@@ -8,6 +8,7 @@ import android.speech.tts.UtteranceProgressListener
 import android.media.AudioAttributes
 import android.util.Log
 import java.io.File
+import java.security.MessageDigest
 import java.util.Locale
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -45,6 +46,9 @@ class EngineSmokeTest : Instrumentation() {
                          client.voices.joinToString { it.name })
             Log.i("PantheraTest", "generation under test: ${fred.name}")
             check(client.setVoice(fred) == TextToSpeech.SUCCESS)
+            // Pin the rate: otherwise the system TTS preference changes the oracle.
+            // 215% maps to 387 wpm and renders just 4032 frames on desktop too.
+            check(client.setSpeechRate(1.0f) == TextToSpeech.SUCCESS)
             results.putInt("voices", client.voices.size)
             Log.i("PantheraTest", "initialized: ${client.voices.size} voices, Fred selected")
 
@@ -67,6 +71,32 @@ class EngineSmokeTest : Instrumentation() {
                 Log.i("PantheraTest", "done $id")
             }
 
+            // Canonical user-supplied Tiger/Leopard data, "Hello there.",
+            // 180 wpm, mono PCM16 at 22050 Hz. These are desktop references,
+            // not hashes learned from the implementation under test.
+            fun checkReference(voiceName: String, wav: ByteArray) {
+                val expectedFrames = when (voiceName) {
+                    "panthera-tiger-fred" -> 15792
+                    "panthera-tiger-vicki" -> 15713
+                    "panthera-leopard-fred" -> 17360
+                    "panthera-leopard-vicki" -> 17887
+                    "panthera-leopard-alex" -> 17973
+                    else -> return
+                }
+                check(wav.size == 44 + expectedFrames * 2) {
+                    "$voiceName: expected $expectedFrames frames at 180 wpm, got ${(wav.size - 44) / 2}"
+                }
+                val expectedHash = when (voiceName) {
+                    "panthera-tiger-fred" -> "cef98214a9eb7c7052053619f027c73badfbf251c016313be31d6091278d8b91"
+                    "panthera-leopard-fred" -> "ec4be821f742fcd8facd6d215ce4443d01c55ac0dc983d482574c31cfb63c761"
+                    else -> return // AAC backends can differ by a PCM rounding unit.
+                }
+                val digest = MessageDigest.getInstance("SHA-256")
+                digest.update(wav, 44, wav.size - 44)
+                val actual = digest.digest().joinToString("") { "%02x".format(it.toInt() and 255) }
+                check(actual == expectedHash) { "$voiceName differs from desktop PCM: $actual" }
+            }
+
             var firstWav: ByteArray? = null
             for (i in 1..2) {
                 val file = File(targetContext.filesDir, "framework-fred-$i.wav")
@@ -75,25 +105,15 @@ class EngineSmokeTest : Instrumentation() {
                 }
                 val bytes = file.readBytes()
                 check(bytes.size > 2048) { "empty or very short WAV: ${bytes.size}" }
-                // Long enough to BE "Hello there.", not merely long enough to
-                // be audio.
-                //
-                // This check is here because its absence let a broken port
-                // look green: on the first arm64 build every phoneme duration
-                // collapsed to its minimum, so the sentence came back at 4032
-                // frames instead of the 18144 the desktop renders -- a quarter
-                // of a second of gabble with a healthy peak and perfect
-                // run-to-run determinism. Both the checks above passed it.
-                //
-                // 20000 bytes is about 0.45 s, comfortably under any real
-                // render of this sentence at any generation's default rate and
-                // far above a collapsed one. A tighter bound would have to
-                // know which generation is loaded; this does not need to.
+                // At the explicitly selected normal rate (180 wpm), this
+                // sentence must exceed 0.45 s. A bound without a pinned rate
+                // mistakes the user's fast speech preference for a port bug.
                 check(bytes.size > 20000) {
                     "far too short for \"Hello there.\": ${bytes.size} bytes " +
-                    "-- durations are collapsing, not merely quiet"
+                    "at the explicitly selected 180 wpm"
                 }
                 check(String(bytes, 0, 4) == "RIFF")
+                checkReference(fred.name, bytes)
                 var peak = 0
                 for (offset in 44 until bytes.size - 1 step 2) {
                     val sample = ((bytes[offset].toInt() and 255) or
@@ -164,6 +184,7 @@ class EngineSmokeTest : Instrumentation() {
                 }
                 check(bytes.size > 2048) { "$want produced almost nothing: ${bytes.size} bytes" }
                 check(peak > 100) { "$want decoded to silence: peak=$peak (AAC decoder?)" }
+                checkReference(voice.name, bytes)
                 results.putInt("${want}Bytes", bytes.size)
                 results.putInt("${want}Peak", peak)
                 Log.i("PantheraTest", "$want through AAC: ${bytes.size} bytes, peak=$peak")

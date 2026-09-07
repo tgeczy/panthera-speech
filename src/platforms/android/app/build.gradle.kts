@@ -33,18 +33,10 @@ android {
     sourceSets["main"].java.srcDirs("src/main/kotlin")
 
     buildTypes {
-        // arm64 is DEBUG-ONLY until it speaks, and the reason is not caution.
-        //
-        // When an APK carries both ABIs, the package manager picks the
-        // device's PRIMARY one, and on every dual-ABI device -- a Galaxy S22,
-        // Snapdragon 8 Gen 1, which still has AArch32 -- that is arm64.  So
-        // shipping a half-finished arm64 library does not "add 64-bit
-        // support": it takes the working 32-bit library away from every phone
-        // that had it and hands those users a crash instead.  A broken ABI in
-        // the APK is worse than an absent one.
-        //
-        // Add it back to defaultConfig, and delete this, on the day the arm64
-        // build renders an utterance.
+        // Tiger and Leopard pass the arm64 device suite, including Alex.
+        // Keep arm64 debug-only until Snow Leopard/Lion's remaining shared
+        // layouts and shims are covered too: a dual-ABI device selects arm64
+        // even when its currently selected generation only works on ARMv7.
         debug {
             ndk { abiFilters += listOf("arm64-v8a") }
         }

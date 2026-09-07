@@ -103,14 +103,70 @@ static unsigned long long __cdecl sh_umoddi3(unsigned alo, unsigned ahi,
 
 /* pthreads, on top of critical sections.
  *
- * Darwin's pthread_mutex_t is 44 bytes of opaque storage, which is room enough
- * to keep a CRITICAL_SECTION inside it rather than off to the side.  The magic
+ * Darwin i386's pthread_mutex_t is 44 bytes of opaque storage. On a 32-bit
+ * host that fits our wrapper; Bionic arm64 needs 48 bytes including magic
+ * and alignment, so 64-bit hosts keep native objects in a side table.  The magic
  * word means a mutex that was never passed to pthread_mutex_init -- a static
  * PTHREAD_MUTEX_INITIALIZER -- still works, because lock initialises it on
  * first use. */
 #define MTX_MAGIC 0x5449474d            /* 'TIGM' */
-typedef struct { unsigned magic; CRITICAL_SECTION cs; } mtx;
+#if GUEST_LOW
+/* Native synchronization objects do not fit the guest's opaque storage.
+ * Key them by guest address rather than storing a native pointer in the
+ * guest: its C++ objects can copy opaque bytes, which must not alias or
+ * double-destroy a native lock belonging to another address. */
+typedef struct guest_sync {
+    struct guest_sync *next;
+    const void *address;
+    int condition;
+    union { CRITICAL_SECTION mutex; CONDITION_VARIABLE cond; } native;
+} guest_sync;
+static guest_sync *g_guest_sync;
 
+static guest_sync *guest_sync_get(const void *address, int condition)
+{
+    guest_sync *entry;
+    EnterCriticalSection(&g_arena_cs);
+    for (entry = g_guest_sync; entry; entry = entry->next)
+        if (entry->address == address && entry->condition == condition) break;
+    if (!entry) {
+        entry = (guest_sync *)calloc(1, sizeof(*entry));
+        if (!entry) die("no memory for guest synchronization object");
+        entry->address = address;
+        entry->condition = condition;
+        if (condition) InitializeConditionVariable(&entry->native.cond);
+        else InitializeCriticalSection(&entry->native.mutex);
+        entry->next = g_guest_sync;
+        g_guest_sync = entry;
+    }
+    LeaveCriticalSection(&g_arena_cs);
+    return entry;
+}
+static void guest_sync_destroy(const void *address, int condition)
+{
+    guest_sync **link, *entry;
+    EnterCriticalSection(&g_arena_cs);
+    for (link = &g_guest_sync; (entry = *link) != NULL; link = &entry->next) {
+        if (entry->address != address || entry->condition != condition) continue;
+        *link = entry->next;
+        if (!condition) DeleteCriticalSection(&entry->native.mutex);
+#ifndef _WIN32
+        else pthread_cond_destroy(&entry->native.cond);
+#endif
+        free(entry);
+        break;
+    }
+    LeaveCriticalSection(&g_arena_cs);
+}
+typedef struct { unsigned magic; } mtx;
+static CRITICAL_SECTION *mtx_native(mtx *m)
+{ return &guest_sync_get(m, 0)->native.mutex; }
+static void mtx_ready(mtx *m) { (void)mtx_native(m); m->magic = MTX_MAGIC; }
+static int __cdecl sh_mutex_init(void *m, void *attr)
+{ (void)attr; guest_sync_destroy(m, 0); mtx_ready((mtx *)m); return 0; }
+#else
+typedef struct { unsigned magic; CRITICAL_SECTION cs; } mtx;
+static CRITICAL_SECTION *mtx_native(mtx *m) { return &m->cs; }
 static void mtx_ready(mtx *m)
 {
     if (m->magic != MTX_MAGIC) {
@@ -120,10 +176,12 @@ static void mtx_ready(mtx *m)
 }
 static int __cdecl sh_mutex_init(void *m, void *attr)
 { (void)attr; ((mtx *)m)->magic = 0; mtx_ready((mtx *)m); return 0; }
+#endif
+typedef char guest_mutex_must_fit[sizeof(mtx) <= 44 ? 1 : -1];
 static int __cdecl sh_mutex_lock(void *m)
-{ mtx_ready((mtx *)m); EnterCriticalSection(&((mtx *)m)->cs); return 0; }
+{ mtx_ready((mtx *)m); EnterCriticalSection(mtx_native((mtx *)m)); return 0; }
 static int __cdecl sh_mutex_unlock(void *m)
-{ mtx_ready((mtx *)m); LeaveCriticalSection(&((mtx *)m)->cs); return 0; }
+{ mtx_ready((mtx *)m); LeaveCriticalSection(mtx_native((mtx *)m)); return 0; }
 static int __cdecl sh_mutexattr_init(void *a) { (void)a; return 0; }
 /* The attribute is only ever set to PTHREAD_MUTEX_RECURSIVE, and every mutex
  * here is a CRITICAL_SECTION, which is recursive already. */
@@ -337,14 +395,14 @@ typedef struct {
     int              head, tail, count;
 } mpqueue;
 
-static int __cdecl sh_mp_create_queue(mpqueue **out)
+static int __cdecl sh_mp_create_queue(gptr *out)
 {
     mpqueue *q = (mpqueue *)GMEM_ALLOC(sizeof(*q));
     if (!q) return -108;
     InitializeCriticalSection(&q->cs);
     q->sem = CreateSemaphoreA(NULL, 0, MPQ_CAP, NULL);
     if (!q->sem) { GMEM_FREE(q); return -108; }
-    if (out) *out = q;
+    if (out) *out = GP(q);
     if (g_verbose) printf("  [mp] CreateQueue -> %p\n", (void *)q);
     return 0;
 }
@@ -615,7 +673,7 @@ static DWORD WINAPI mp_thunk(LPVOID arg)
 static int __cdecl sh_mp_create_task(mp_taskproc entry, void *param,
                                      unsigned stacksize, mpqueue *notify,
                                      void *t1, void *t2, unsigned options,
-                                     mptask **out)
+                                     gptr *out)
 {
     mptask *t;
     (void)options;
@@ -632,7 +690,7 @@ static int __cdecl sh_mp_create_task(mp_taskproc entry, void *param,
      * both builds. */
     t->thread = CreateThread(NULL, stacksize, mp_thunk, t, 0, NULL);
     if (!t->thread) { GMEM_FREE(t); return -108; }
-    if (out) *out = t;
+    if (out) *out = GP(t);
     return 0;
 }
 

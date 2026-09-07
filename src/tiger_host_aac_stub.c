@@ -59,7 +59,7 @@ static int  __cdecl sh_AudioConverterGetProperty(void)     { return AAC_UNAVAIL;
 static int  __cdecl sh_AudioConverterGetPropertyInfo(void) { return AAC_UNAVAIL; }
 static int  __cdecl sh_AudioConverterFillComplexBuffer(void){ return AAC_UNAVAIL; }
 static int  __cdecl sh_AudioFormatGetProperty(void)        { return AAC_UNAVAIL; }
-static int  __cdecl sh_AudioUnitReset(void)                { return 0; }
+static int  __cdecl sh_AudioUnitReset(void)                { return reset_scheduled_audio(); }
 
 /* A UPP is just the callback pointer in this host; the real one passes it
  * through, so the stub does too (harmless if a voice ever reaches it). */

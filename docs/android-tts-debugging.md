@@ -1,5 +1,9 @@
 # Android TTS bring-up: 2026-09-06
 
+For the later Tiger/Leopard AArch64 fixes and validation, see
+[android-arm64.md](android-arm64.md). The notes below describe the earlier
+ARMv7 bring-up.
+
 Fred playback is confirmed by Tomi on the Pixel Watch 2. Earlier AudioTrack
 logs established neither audible output nor a working persistent engine.
 

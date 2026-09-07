@@ -606,7 +606,7 @@ static void asbd_native(const au_asbd *src, au_asbd *dst)
 }
 
 static int __cdecl sh_AudioConverterNew(const au_asbd *insrc,
-                                        const au_asbd *out, void **conv)
+                                        const au_asbd *out, gptr *conv)
 {
     au_asbd native;
     const au_asbd *in = NULL;
@@ -645,7 +645,7 @@ static int __cdecl sh_AudioConverterNew(const au_asbd *insrc,
             }
         }
     }
-    if (conv) *conv = (void *)AC_MAGIC;
+    if (conv) *conv = AC_MAGIC;
     return 0;
 }
 
@@ -1049,7 +1049,7 @@ static int __cdecl sh_AudioConverterFillComplexBuffer(void *conv,
  * {long flags; OSType format; short channels; short sampleSize;
  *  UnsignedFixed sampleRate; long sampleCount; Byte *buffer; long reserved}. */
 static int __cdecl sh_SoundConverterOpen(const unsigned char *in,
-                                         const unsigned char *out, void **sc)
+                                         const unsigned char *out, gptr *sc)
 {
     int k;
     const unsigned char *p[2];
@@ -1078,7 +1078,7 @@ static int __cdecl sh_SoundConverterOpen(const unsigned char *in,
         g_sc.channels = ch;
         g_sc.rate = rate;
     }
-    if (sc) *sc = (void *)SND_MAGIC;       /* 'SNDC', a handle we never use */
+    if (sc) *sc = SND_MAGIC;       /* 'SNDC', a handle we never use */
     return 0;
 }
 
@@ -1099,5 +1099,5 @@ static int __cdecl sh_SoundConverterSetInfo(void *sc, unsigned sel,
 }
 
 static int __cdecl sh_AudioUnitReset(void *u, unsigned s, unsigned e)
-{ (void)u; (void)s; (void)e; fprintf(stderr, "  [au] Reset\n"); return 0; }
+{ (void)u; (void)s; (void)e; return reset_scheduled_audio(); }
 static int __cdecl sh_SpeechBusy(void) { return 0; }
