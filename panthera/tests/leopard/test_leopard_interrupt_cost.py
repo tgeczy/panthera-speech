@@ -23,6 +23,9 @@ Run against Leopard because both generations share `pantheradriver.py`, and
 Leopard's engine is the faster of the two to set up.
 """
 import time
+import threading
+import json
+from pathlib import Path
 
 import pytest
 
@@ -200,3 +203,47 @@ def test_speech_still_works_after_being_interrupted(driver, _run):
     while time.time() < end and driver._player.fed <= fed:
         time.sleep(0.01)
     assert driver._player.fed > fed, "nothing was spoken after an interruption"
+
+
+@pytest.mark.parametrize("voice", ["Alex", "Vicki"])
+@pytest.mark.parametrize("wpm", [180, 387])
+@pytest.mark.parametrize("delay", [0.005, 0.025])
+def test_cancel_preserves_every_sample_of_the_next_utterance(driver, voice, wpm, delay):
+    """Returning audio is insufficient: a fast cancel must leave it intact.
+
+    An experimental converter-error shortcut improved rapid navigation but
+    shortened Vicki's next render. Compare the whole replacement against its
+    warm reference, through the same host, after cancelling an active stream.
+    Direct rendering keeps simulated playback time out of the measurement.
+    """
+    text = "Seven. The next paragraph must begin here, and all its words must remain."
+    reference = driver._render(text, wpm, voice)
+    assert reference and len(reference) > 12000
+    assert driver._render(text, wpm, voice) == reference, "unstable reference"
+    pid = _pid(driver)
+    fixture = Path(__file__).resolve().parents[3] / "tools/fixtures/navigation-long-posts.json"
+    posts = json.loads(fixture.read_text(encoding="utf8"))
+    for post in posts * 2:
+        signals, timers = [], []
+
+        def signal():
+            signals.append(time.perf_counter())
+            driver._signalCancel()
+
+        def receive(chunk):
+            if not timers:
+                timer = threading.Timer(delay, signal)
+                timers.append(timer)
+                timer.start()
+            return True
+
+        try:
+            result = driver._render(post, wpm, voice, sink=receive)
+            ended = time.perf_counter()
+        finally:
+            for timer in timers:
+                timer.join()
+        assert result is not None, "cancelled stream failed"
+        assert signals and signals[0] < ended, "cancel missed the active render"
+        assert driver._render(text, wpm, voice) == reference, "replacement PCM changed"
+        assert _pid(driver) == pid, "recovery required a different host"

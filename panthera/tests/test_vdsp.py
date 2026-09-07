@@ -196,6 +196,15 @@ def test_catlas_sset_fills(out):
     close(out["sset"], numpy.full(8, 3.5))
 
 
+def test_magnitude_scores_keep_strides_and_accumulation_order(out):
+    values = numpy.array([-16777216, 1, -1, -0.0, 4, -0.5, 8],
+                         dtype=numpy.float32)
+    expected = [float(numpy.cumsum(numpy.abs(v), dtype=numpy.float32)[-1])
+                for v in (values, values[::-1], values[::2])]
+    expected.extend([3.5, 0.0])
+    assert out["svemg"] == expected
+
+
 def test_maxvi_index_is_strided(out):
     """vDSP returns `n * IA`, not the loop counter.
 

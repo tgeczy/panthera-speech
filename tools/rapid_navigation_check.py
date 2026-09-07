@@ -20,6 +20,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--generation", choices=["leopard", "lion"], required=True)
     parser.add_argument("--tree", type=Path, required=True)
+    parser.add_argument("--host", type=Path,
+                        help="Use an isolated host executable without replacing the staged build")
     parser.add_argument("--interval-ms", type=float, default=150)
     parser.add_argument("--requests", type=int, default=16)
     parser.add_argument("--posts", type=Path,
@@ -36,6 +38,9 @@ def main():
     fakes = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(fakes)
     module = importlib.import_module("synthDrivers." + args.generation + "speech")
+    if args.host:
+        host = args.host.resolve(strict=True)
+        module.SynthDriver.TREE.HOST_EXE = str(host)
     driver = module.SynthDriver()
     records = []
     lock = threading.Lock()
@@ -115,6 +120,7 @@ def main():
             row["before_next_request"] = (row["first_pcm_ms"] is not None
                                            and row["first_pcm_ms"] < args.interval_ms)
         result = {"generation": args.generation, "interval_ms": args.interval_ms,
+                  "host": str(Path(driver.TREE.HOST_EXE).resolve()),
                   "posts": str(args.posts), "host_mode": "library" if driver._useLibrary() else "process",
                   "measurement": "first nonquiet PCM at simulated player; not acoustic latency",
                   "requests": records, "events": events}

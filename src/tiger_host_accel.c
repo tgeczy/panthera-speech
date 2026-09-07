@@ -67,13 +67,16 @@ static void __cdecl sh_vDSP_svemg(const float *A, vdsp_stride IA,
      *
      * **The accumulation order is unchanged**, which is the part that matters:
      * these are floats, and adding them in a different order gives a different
-     * answer.  This only removes a multiply from the address arithmetic. */
+     * answer. Unit stride removes a multiply from the address arithmetic;
+     * fabsf also lets the compiler clear the sign bit instead of selecting
+     * between a sample and its negation. Keep the sequential float sum: a
+     * reassociated reduction can change which candidate the engine chooses. */
     if (IA == 1) {
         for (n = 0; n < N; n++)
-            sum += (A[n] < 0.0f) ? -A[n] : A[n];
+            sum += fabsf(A[n]);
     } else {
         for (n = 0; n < N; n++, p += IA)
-            sum += (*p < 0.0f) ? -*p : *p;
+            sum += fabsf(*p);
     }
     *C = sum;
     if (accel_debug()) {
@@ -947,6 +950,20 @@ static int vdsp_check(void)
       memcpy(&bits, &value, sizeof bits);
       sh_catlas_sset(8, bits, tmp, 1); }
     vd_emit("sset", tmp, 8);
+
+    /* Magnitude scoring must preserve strides and float accumulation order.
+     * Small terms after 2^24 distinguish this from a reassociated reduction. */
+    {
+        float magnitudes[] = {-16777216.0f, 1.0f, -1.0f, -0.0f,
+                               4.0f, -0.5f, 8.0f};
+        sh_vDSP_svemg(magnitudes, 1, tmp, 7);
+        sh_vDSP_svemg(magnitudes + 6, -1, tmp + 1, 7);
+        sh_vDSP_svemg(magnitudes, 2, tmp + 2, 4);
+        sh_vDSP_svemg(magnitudes + 5, 0, tmp + 3, 7);
+        tmp[4] = 123.0f;
+        sh_vDSP_svemg(magnitudes, 1, tmp + 4, 0);
+        vd_emit("svemg", tmp, 5);
+    }
 
     GMEM_FREE(rp);
     return 0;
