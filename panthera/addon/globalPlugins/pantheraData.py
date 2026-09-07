@@ -381,7 +381,7 @@ you and would like the reminder back.
 """
 
 
-_SNOWLEOPARD_README = """Snow Leopard speech needs Apple's speech engine, which
+_SNOWLEOPARD_README = r"""Snow Leopard speech needs Apple's speech engine, which
 this add-on does not ship.
 
 The easiest way to get it is NVDA's Tools menu: "Mac OS X speech data...", then

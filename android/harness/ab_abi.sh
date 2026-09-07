@@ -20,7 +20,7 @@
 # wrong library is worse than no measurement.  Removing it takes the pushed
 # engine data with it, so the data goes back each time.
 #
-#   ANDROID_SERIAL=R5CT20CQE3N ./ab_abi.sh [tiger|leopard]
+#   ANDROID_SERIAL=<your device serial> ./ab_abi.sh [tiger|leopard]
 set -e
 export MSYS_NO_PATHCONV=1
 
