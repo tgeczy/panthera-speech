@@ -14,8 +14,6 @@ open class PantheraWorkerService : Service() {
     @Volatile private var opened = false
     private var phrasing: String? = null
     private var inflectionChanged = false
-    private val requestState = Any()
-    private var activeRequest = false
     private val binder = object : IPantheraWorker.Stub() {
         override fun open(engine: String, dictionary: String, requestedPhrasing: String, inflection: Int): Int = runNative {
             if (opened && (phrasing != requestedPhrasing || (inflection == 50 && inflectionChanged))) return@runNative RECONFIGURE
@@ -36,7 +34,6 @@ open class PantheraWorkerService : Service() {
             PantheraNative.nativeSetVolume(volume, generation)
             PantheraNative.nativeSetNumberStyle(numbers)
             PantheraNative.nativeSetExpandAbbreviations(expandAbbreviations)
-            synchronized(requestState) { activeRequest = true }
             // The same 0..100 -> pmod 0..200 scale as NVDA/SAPI. At the
             // midpoint leave the freshly opened voice at its own default.
             // Returning there retires only this worker: pmod 100 is not the
@@ -45,9 +42,7 @@ open class PantheraWorkerService : Service() {
                 inflectionChanged = true
                 "[[pmod ${inflection.coerceIn(0, 100) * 2}]]".toByteArray(Charsets.US_ASCII) + text
             } else text
-            val status = PantheraNative.nativeSpeakStart(voice, creator, voiceId, input, wpm)
-            if (status != 0) synchronized(requestState) { activeRequest = false }
-            status
+            PantheraNative.nativeSpeakStart(voice, creator, voiceId, input, wpm)
         }
         override fun pull(capacity: Int): ByteArray? = runNative {
             val samples = ShortArray(capacity.coerceIn(1, 4096))
@@ -59,22 +54,8 @@ open class PantheraWorkerService : Service() {
                 }
             }
         }
-        override fun stop() {
-            synchronized(requestState) {
-                if (activeRequest) {
-                    // StopSpeech can either drain an entire paragraph or leave
-                    // deferred work that truncates the next utterance. Retire
-                    // this private worker at an explicit cancellation boundary.
-                    // The public service and client survive; normal completed
-                    // utterances keep their warm worker and paragraph breaths.
-                    android.util.Log.i("PantheraEngine", "Retiring cancelled engine worker")
-                    android.os.Process.killProcess(android.os.Process.myPid())
-                }
-            }
-        }
         override fun finish() { runNative {
-            try { if (opened) PantheraNative.nativeFinish() }
-            finally { synchronized(requestState) { activeRequest = false } }
+            if (opened) PantheraNative.nativeFinish()
         } }
     }
     override fun onBind(intent: Intent): IBinder = binder

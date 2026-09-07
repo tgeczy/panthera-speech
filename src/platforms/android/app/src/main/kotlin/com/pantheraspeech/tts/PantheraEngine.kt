@@ -125,7 +125,27 @@ object PantheraEngine {
     fun scanVoices(ctx: Context, gen: String): List<VoiceInfo> =
         genRoot(ctx, gen)?.let { scanVoicesIn(it, gen) } ?: emptyList()
 
-    private fun scanVoicesIn(root: File, gen: String): List<VoiceInfo> {
+    private data class VoiceCatalogue(val modified: Long, val voices: List<VoiceInfo>)
+    private val catalogueLock = Any()
+    private val catalogues = mutableMapOf<String, VoiceCatalogue>()
+
+    /** Bundle identity changes on import, not on every spoken digit. Directory
+     * changes invalidate automatically; Check Engine also refreshes descriptions
+     * edited inside an existing bundle without changing the parent directory. */
+    fun refreshVoiceCatalogue() = synchronized(catalogueLock) { catalogues.clear() }
+
+    private fun scanVoicesIn(root: File, gen: String): List<VoiceInfo> = synchronized(catalogueLock) {
+        val directory = voicesIn(root, gen)
+        val modified = directory.lastModified()
+        catalogues[directory.absolutePath]?.let {
+            if (it.modified == modified) return@synchronized it.voices
+        }
+        val voices = readVoiceDescriptions(root, gen)
+        catalogues[directory.absolutePath] = VoiceCatalogue(modified, voices)
+        voices
+    }
+
+    private fun readVoiceDescriptions(root: File, gen: String): List<VoiceInfo> {
         val files = voicesIn(root, gen).listFiles() ?: return emptyList()
         val out = ArrayList<VoiceInfo>()
         for (f in files.sortedBy { it.name.lowercase() }) {
@@ -222,6 +242,7 @@ object PantheraEngine {
 
     /** Run the check: does the data exist? Records the result as the gate. */
     fun checkEngine(ctx: Context): Boolean {
+        refreshVoiceCatalogue()
         val ok = genPresent(ctx, activeGen(ctx))
         prefs(ctx).edit().putBoolean(PREF_VERIFIED, ok).apply()
         return ok
@@ -264,15 +285,21 @@ object PantheraEngine {
 
     private val lock = Any()
     @Volatile private var worker: IPantheraWorker? = null
+    @Volatile private var request: PantheraRequest<IPantheraWorker>? = null
     @Volatile private var openedGen: String? = null
     @Volatile private var rate = 22050
     fun loadedGen(): String? = openedGen
     fun isOpen(): Boolean = worker != null
 
     fun <T> withSynthesis(block: () -> T): T = synchronized(lock) {
-        try { block() } finally { try { worker?.finish() } catch (e: Exception) {
-            android.util.Log.w("PantheraEngine", "Engine finish failed", e)
-        } }
+        val owned = PantheraRequest<IPantheraWorker>(PantheraWorkers::retire)
+        check(request == null) { "Nested synthesis request" }
+        request = owned
+        try { block() } finally {
+            try { owned.current()?.finish() } catch (e: Exception) {
+                android.util.Log.w("PantheraEngine", "Engine finish failed", e)
+            } finally { owned.complete(); request = null }
+        }
     }
 
     private fun open(ctx: Context, gen: String, phrasing: String = settings(ctx, gen).phrasing,
@@ -283,7 +310,7 @@ object PantheraEngine {
         var hz = next.open(mtIn(root, gen).absolutePath, sdIn(root, gen).absolutePath, requested, inflection)
         if (hz == PantheraWorkerService.RECONFIGURE) {
             worker = null
-            PantheraWorkers.restart(ctx, gen)
+            PantheraWorkers.restart(gen)
             next = PantheraWorkers.get(ctx, gen)
             hz = next.open(mtIn(root, gen).absolutePath, sdIn(root, gen).absolutePath, requested, inflection)
         }
@@ -323,18 +350,23 @@ object PantheraEngine {
     fun speakStart(ctx: Context, voice: VoiceInfo, text: ByteArray, wpm: Int,
                    snapshot: Settings = settings(ctx, voice.gen)): Int = synchronized(lock) {
         try {
-            open(ctx, voice.gen, snapshot.phrasing, snapshot.inflection).start(voice.dir, voice.creator, voice.voiceId, text, wpm,
+            val owned = checkNotNull(request) { "Speech requires withSynthesis" }
+            val next = open(ctx, voice.gen, snapshot.phrasing, snapshot.inflection)
+            // A stop during open stays attached to this request. It cannot be
+            // lost in the interval before nativeSpeakStart marks itself active.
+            if (!owned.attach(next)) return@synchronized -1
+            next.start(voice.dir, voice.creator, voice.voiceId, text, wpm,
                 snapshot.engineVolume(voice.gen), voice.gen, snapshot.numbers, snapshot.expandAbbreviations, snapshot.inflection)
         } catch (e: Exception) {
             android.util.Log.e("PantheraEngine", "Speech failed", e); -1
         }
     }
     fun pull(out: ShortArray): Int { return try {
-        val bytes = worker?.pull(out.size) ?: return -1
+        val bytes = request?.current()?.pull(out.size) ?: return -1
         for (i in 0 until bytes.size / 2)
             out[i] = ((bytes[i*2].toInt() and 255) or (bytes[i*2+1].toInt() shl 8)).toShort()
         bytes.size / 2
     } catch (e: Exception) { -1 } }
-    fun stop() { try { worker?.stop() } catch (e: Exception) { } }
+    fun stop() { request?.cancel() }
     fun sampleRate(): Int = rate
 }

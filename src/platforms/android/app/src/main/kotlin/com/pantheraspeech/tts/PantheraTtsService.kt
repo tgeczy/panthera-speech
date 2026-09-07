@@ -1,13 +1,7 @@
-// The Android TTS engine. One engine, many voices (like SAPI): every voice the
-// active engine generation exposes is one Android Voice, all served by the one
-// emulated MacinTalk. The framework hands us text + rate; we cut it into pieces
-// (see PantheraText), hand the engine one at a time, and stream each piece's
-// PCM back as it is produced.
-//
-// A piece at a time rather than the whole utterance because the engine cannot
-// be interrupted: it renders what it was given and a stop waits for it, so the
-// piece is what a cancellation costs. Streaming rather than render-then-play
-// because TalkBack gives up waiting.
+// Each voice selects a generation worker. Stream complete requests to preserve
+// sentence continuity and breaths; PantheraText separates only explicit pause
+// boundaries. Cancellation retires the private worker through its binding owner
+// because our current native stop path can wait for pending synthesis to drain.
 package com.pantheraspeech.tts
 
 import android.media.AudioFormat
@@ -103,6 +97,10 @@ class PantheraTtsService : TextToSpeechService() {
         android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO)
 
         val text = request.charSequenceText?.toString() ?: ""
+        // Opt-in device benchmark: tie the first audible sample to Android's
+        // playback-position callback instead of mistaking onStart for sound.
+        val latencyProbe = request.params.getBoolean("com.pantheraspeech.tts.latency_probe", false)
+        var probeMarked = false
         Log.i("PantheraTts", "synth: voice=${request.voiceName} lang=${request.language} " +
             "rate=${request.speechRate} verified=${PantheraEngine.verified(this)} textLen=${text.length}")
 
@@ -148,6 +146,7 @@ class PantheraTtsService : TextToSpeechService() {
             val started = PantheraEngine.speakStart(
                 this, voice, PantheraText.bytes(piece), snapshot.wpm(request.speechRate), snapshot)
             if (started != 0) {
+                if (stopRequested) return
                 Log.w("PantheraTts", "speakStart -> $started")
                 // Anything already spoken is real audio the user heard; only a
                 // failure on the very first piece is a failed utterance.
@@ -158,12 +157,20 @@ class PantheraTtsService : TextToSpeechService() {
             while (!stopRequested) {
                 val n = PantheraEngine.pull(samples)
                 if (n < 0) {
+                    if (stopRequested) return
                     Log.e("PantheraTts", "nativePull failed: $n")
                     PantheraEngine.stop()
                     callback.error(TextToSpeech.ERROR_SYNTHESIS)
                     return
                 }
                 if (n == 0) break
+                if (latencyProbe && !probeMarked) {
+                    val audible = (0 until n).firstOrNull { kotlin.math.abs(samples[it].toInt()) > 128 }
+                    if (audible != null) {
+                        callback.rangeStart(maxOf(1, total + audible), 0, minOf(1, text.length))
+                        probeMarked = true
+                    }
+                }
                 var bi = 0
                 for (i in 0 until n) {
                     val s = samples[i].toInt()

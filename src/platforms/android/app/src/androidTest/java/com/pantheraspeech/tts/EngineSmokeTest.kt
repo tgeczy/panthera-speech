@@ -24,12 +24,14 @@ class EngineSmokeTest : Instrumentation() {
     private var nativeText = "Hello there."
     private var nativePhrasing = "leopard"
     private var audioOnly = false
+    private var latency: String? = null
     override fun onCreate(arguments: Bundle?) {
         nativeGen = arguments?.getString("nativeGeneration")
         nativeVoice = arguments?.getString("nativeVoice")
         nativeText = arguments?.getString("nativeText") ?: nativeText
         nativePhrasing = arguments?.getString("nativePhrasing") ?: nativePhrasing
         audioOnly = arguments?.getString("audioOnly") == "true"
+        latency = arguments?.getString("latency")
         super.onCreate(arguments); start()
     }
 
@@ -250,6 +252,8 @@ class EngineSmokeTest : Instrumentation() {
     }
 
     override fun onStart() {
+        if (latency == "lifecycle") { PantheraWorkerCheck.run(this); return }
+        latency?.let { PantheraLatencyCheck.run(this, it); return }
         nativeGen?.let { checkNativeGeneration(it); return }
         var tts: TextToSpeech? = null
         var resultCode = Activity.RESULT_CANCELED
