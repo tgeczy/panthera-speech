@@ -403,16 +403,7 @@ static void *uc_missing_tramp(const char *nm)
 }
 
 /* ---- the dispatch hook ------------------------------------------------- */
-typedef unsigned (__cdecl *fn_i)(unsigned,unsigned,unsigned,unsigned,unsigned,
-    unsigned,unsigned,unsigned,unsigned,unsigned,unsigned,unsigned);
-typedef void     (__cdecl *fn_v)(unsigned,unsigned,unsigned,unsigned,unsigned,
-    unsigned,unsigned,unsigned,unsigned,unsigned,unsigned,unsigned);
-typedef unsigned long long (__cdecl *fn_q)(unsigned,unsigned,unsigned,unsigned,
-    unsigned,unsigned,unsigned,unsigned,unsigned,unsigned,unsigned,unsigned);
-typedef double   (__cdecl *fn_d)(unsigned,unsigned,unsigned,unsigned,unsigned,
-    unsigned,unsigned,unsigned,unsigned,unsigned,unsigned,unsigned);
-typedef float    (__cdecl *fn_f)(unsigned,unsigned,unsigned,unsigned,unsigned,
-    unsigned,unsigned,unsigned,unsigned,unsigned,unsigned,unsigned);
+#include "tiger_host_uc_abi.h"
 
 #define UC_ARGS a[0],a[1],a[2],a[3],a[4],a[5],a[6],a[7],a[8],a[9],a[10],a[11]
 
