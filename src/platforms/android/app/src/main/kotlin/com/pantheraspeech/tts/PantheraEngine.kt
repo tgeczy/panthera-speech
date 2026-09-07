@@ -20,6 +20,17 @@ object PantheraEngine {
     const val PREF_DEFAULT_VOICE = "default_voice"   // voice name, e.g. "Fred"
     const val PREF_RATE = "rate_wpm"                 // 0 = engine default
 
+    /**
+     * How numbers are read: "off", "fix" (the default) or "words".
+     *
+     * "fix" changes only what the engine gets wrong -- seven digits and up,
+     * which it otherwise spells one at a time, and versions and decimals
+     * whose leading zero it drops. "words" reads every number out in full.
+     * The rules themselves are in the host, shared with every other platform.
+     */
+    const val PREF_NUMBER_STYLE = "number_style"
+    const val NUMBER_STYLE_DEFAULT = "fix"
+
     const val DATA_DIR = "panthera-data"
 
     // One folder per Mac OS X speech generation. All four ship the same engine
@@ -200,6 +211,7 @@ object PantheraEngine {
         synchronized(lock) {
             if (!open(ctx)) return null
             return try {
+                applyNumberStyle(ctx)
                 PantheraNative.nativeRender(voice.dir, voice.creator, voice.voiceId,
                     PantheraText.forEngine(text), wpm)
             } catch (e: Throwable) { null }
@@ -209,10 +221,18 @@ object PantheraEngine {
     /** Begin an utterance for the streaming path. Serialised (does the one-time
      * open + selects the voice); the pull that follows is lock-free. Returns 0
      * or an error. */
+    /** Push the number preference down before an utterance uses it. */
+    private fun applyNumberStyle(ctx: Context) {
+        PantheraNative.nativeSetNumberStyle(
+            prefs(ctx).getString(PREF_NUMBER_STYLE, NUMBER_STYLE_DEFAULT)
+                ?: NUMBER_STYLE_DEFAULT)
+    }
+
     fun speakStart(ctx: Context, voice: VoiceInfo, text: ByteArray, wpm: Int): Int {
         synchronized(lock) {
             if (!open(ctx)) return -1
             return try {
+                applyNumberStyle(ctx)
                 PantheraNative.nativeSpeakStart(voice.dir, voice.creator, voice.voiceId, text, wpm)
             } catch (e: Throwable) { -1 }
         }

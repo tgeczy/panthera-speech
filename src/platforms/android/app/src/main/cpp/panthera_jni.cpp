@@ -63,6 +63,19 @@ Java_com_pantheraspeech_tts_PantheraNative_nativeRender(
     return arr;
 }
 
+// How to read numbers the engine gets wrong: "off", "fix" or "words".
+// A setting rather than a per-utterance argument, because it is a preference;
+// it takes effect from the next utterance.
+JNIEXPORT void JNICALL
+Java_com_pantheraspeech_tts_PantheraNative_nativeSetNumberStyle(
+        JNIEnv *env, jclass, jstring jstyle) {
+    const char *style = env->GetStringUTFChars(jstyle, nullptr);
+    if (style) {
+        panthera_set_number_style(style);
+        env->ReleaseStringUTFChars(jstyle, style);
+    }
+}
+
 JNIEXPORT jint JNICALL
 Java_com_pantheraspeech_tts_PantheraNative_nativeSpeakStart(
         JNIEnv *env, jclass, jstring jvoice, jint creator, jint voiceId,

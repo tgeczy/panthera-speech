@@ -44,6 +44,16 @@ object PantheraNative {
     /** PCM sample rate nativeRender produces, in Hz. */
     external fun nativeSampleRate(): Int
 
+    /**
+     * How to read numbers the engine gets wrong: "off", "fix" or "words".
+     *
+     * The rules live in the host (tiger_host_numbers.c) rather than here, so
+     * that this app, the NVDA driver and the SAPI voices all read a number
+     * the same way. Android had no number handling at all before this: from
+     * seven digits up the engine spells them out one at a time.
+     */
+    external fun nativeSetNumberStyle(style: String)
+
     /** Read a .SpeechVoice bundle's VoiceSpec: returns [creator, id], or null if
      * the bundle has no VoiceDescription.  A plain file read -- safe before
      * nativeOpen, which is how the voice list is built. */

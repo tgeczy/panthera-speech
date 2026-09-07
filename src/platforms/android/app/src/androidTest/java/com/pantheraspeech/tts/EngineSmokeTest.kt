@@ -158,6 +158,23 @@ class EngineSmokeTest : Instrumentation() {
             }
             Log.i("PantheraTest", "curly apostrophe folds to straight")
 
+            // Numbers, checked the same way and for the same reason.
+            //
+            // From seven digits up the engine spells a number out one digit at
+            // a time, and the repair it suggests is already in its own
+            // behaviour: it reads "1,234,567" correctly. So the rule groups
+            // the digits -- and the oracle is exact, because if the rule works
+            // the two spellings must render to the same bytes.
+            //
+            // Android had no number handling at all until the rules moved into
+            // the host, so this is the check that the move reached the phone.
+            val plain = pcmOf("longnum", "1234567")
+            val grouped = pcmOf("groupednum", "1,234,567")
+            check(plain.contentEquals(grouped)) {
+                "1234567 did not group: ${plain.size} vs ${grouped.size} bytes"
+            }
+            Log.i("PantheraTest", "seven digits group: ${plain.size} bytes")
+
             // The AAC voices, whichever of them this device has.
             //
             // Vicki and Alex share the `meow` engine, whose sample bank is AAC

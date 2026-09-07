@@ -361,7 +361,14 @@ int panthera_render(const char *voiceDir, unsigned creator, int voiceId,
      * because embedded commands in the text can change the channel for good. */
     if (wpm > 0) set_param(&api, g_chan, PARAM_RATE, (unsigned)wpm << 16);
 
-    err = speak_text(&api, g_chan, text, (unsigned)strlen(text));
+    {
+        /* The same rewriting speak_start does -- both entry points, or the
+         * two drift and a preview stops matching what is spoken. */
+        char *rewritten = pt_numbers(text);
+        err = speak_text(&api, g_chan, rewritten ? rewritten : text,
+                         (unsigned)strlen(rewritten ? rewritten : text));
+        free(rewritten);
+    }
     if (err) { fprintf(stderr, "panthera: SESpeakBuffer -> OSErr %d\n", err); return err; }
 
     /* SESpeakBuffer returns as soon as the utterance is accepted; the slices
