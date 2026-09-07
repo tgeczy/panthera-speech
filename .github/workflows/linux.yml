@@ -1,0 +1,85 @@
+# Build the host on a real Linux box, and run the checks that carry their own
+# inputs.
+#
+# Two reasons this exists.  The first is Devin's port, which runs the Windows
+# host under Wine today: a native ELF is the fix, and "it compiles on my
+# cross-compiler" is not the same claim as "it builds and links on Linux".
+# The second is that a syntax check cannot run a test, and three of this
+# project's suites need no engine data at all.
+#
+# **No Apple or Berkeley data goes near this, and none ever can.**  The rule
+# across both repositories is ship the extractor, never the bits; a build
+# server is exactly where that rule would be easiest to break by accident.  So
+# the tests here are the ones that carry their own inputs -- the number rules,
+# the regex engine, the AAC framing -- and the render oracles, which need a
+# MacinTalk tree, stay on the machines that legitimately have one.
+name: linux
+
+on:
+  push:
+    branches: [main, "tgeczy/**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The one that matters: i386 guest on an x86 host is a native call,
+          # so there is no emulator in the path at all.
+          - arch: i686
+            packages: gcc-multilib libfaad-dev
+          # Correct, and slower than the Wine setup it would replace, because
+          # the guest has to be emulated.  Built so it cannot rot.
+          - arch: x86_64
+            packages: libfaad-dev
+    name: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.packages }}
+          # The 32-bit FAAD2 is a separate package from the 64-bit one, and
+          # only the i686 build wants it.  Not fatal if the archive does not
+          # carry it: the build then says so and leaves the AAC voices out
+          # rather than failing.
+          if [ "${{ matrix.arch }}" = "i686" ]; then
+            sudo apt-get install -y libfaad-dev:i386 || true
+          fi
+
+      - name: Fetch and build Unicorn
+        if: matrix.arch != 'i686'
+        run: |
+          git clone --depth 1 --branch 2.0.1.post1 \
+            https://github.com/unicorn-engine/unicorn.git unicorn-src
+          cmake -S unicorn-src -B unicorn-src/build \
+            -DCMAKE_BUILD_TYPE=Release -DUNICORN_ARCH=x86 \
+            -DBUILD_SHARED_LIBS=OFF
+          cmake --build unicorn-src/build -j"$(nproc)"
+          echo "UNICORN_DIR=$PWD/unicorn-src" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          chmod +x build_linux.sh
+          ./build_linux.sh ${{ matrix.arch }}
+
+      # The number rules are a port of pantheranumbers.py, and the port is only
+      # worth having if it is exact.  This is the differential test: a thousand
+      # generated inputs through both, diffed byte for byte.  It needs Python
+      # and the driver source, both of which are in the repository, and no
+      # engine data whatsoever.
+      - name: The number rules still agree with the Python they came from
+        run: |
+          python3 tools/numbers_oracle.py build/linux-${{ matrix.arch }}/tiger_host
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tiger_host-linux-${{ matrix.arch }}
+          path: build/linux-${{ matrix.arch }}/tiger_host
+          if-no-files-found: error
