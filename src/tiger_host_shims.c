@@ -617,8 +617,7 @@ static int call_aligned4(void *fn, void *a, void *b, void *c, void *d)
 static int call_aligned5(void *fn, void *a, void *b, void *c, void *d, void *e)
 { return uc_call5(fn, a, b, c, d, e); }
 #elif !defined(_MSC_VER)
-/* Native i386, but not MSVC -- which is every Unix build of this host, and the
- * one Devin's Linux port needs.
+/* Native i386 with a compiler that supplies the required stack alignment.
  *
  * These are plain calls, and that is not a shortcut.  The naked thunks below
  * exist because **MSVC aligns the stack to four bytes** and the Mach-O i386

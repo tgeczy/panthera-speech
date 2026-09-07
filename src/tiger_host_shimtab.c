@@ -296,6 +296,8 @@ static const shim g_shims[] = {
     { "_cblas_scopy",  (void *)sh_scopy  }, { "_cblas_saxpy", (void *)sh_saxpy },
     { "_cblas_sdot",   (void *)sh_sdot   }, { "_cblas_snrm2", (void *)sh_snrm2 },
     { "_cblas_sgemv",  (void *)sh_sgemv  },
+    { "_cblas_sgemm",  (void *)sh_sgemm  },
+    { "_ssyevr_",      (void *)sh_ssyevr },
     { "__DefaultRuneLocale", (void *)g_rune_locale },
     /* 10.7's `kSpeech*` property constants are not here on purpose: they are
      * one family resolved one way, and `lookup_shim` consults

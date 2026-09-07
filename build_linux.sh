@@ -2,12 +2,8 @@
 # Build the host as a native Linux binary, so Linux users stop running it
 # under Wine.
 #
-# **Why this is worth having.**  Devin's Linux port runs the Windows host under
-# Wine today and the lag is the headline complaint.  Wine is not the emulator
-# here -- the guest is i386 and the CPU is x86, so the instructions run on the
-# processor either way -- but the streaming path does not survive the trip, and
-# a screen reader that waits for a whole utterance feels broken even when it is
-# correct.  A native ELF removes the layer rather than tuning it.
+# The native ELF provides file rendering and streaming through the same pipe
+# protocol as the Windows host.
 #
 # **i686 is the fast target and the default.**  Apple's MacinTalk is i386 code,
 # so on 32-bit x86 this process can simply call it: no Unicorn, no emulation,

@@ -1,9 +1,10 @@
-# Native Linux host for existing Speech Dispatcher integrations
+# Native Linux command-line host
 
 Panthera builds an ELF host that runs Apple's i386 engine directly on x86
 Linux. It accepts the same TGR3/TGR4 pipe requests as the Windows host.
-No Wine and no new Speech Dispatcher module are needed. Supply your own
-extracted engine and voice data; none is included in the build.
+The host can render files or serve a client over pipes. It does not install a
+Speech Dispatcher module or a settings application. Supply your own extracted
+engine and voice data; none is included in the build.
 
 ## Build and check AAC
 
@@ -33,24 +34,15 @@ installed only for x86-64 cannot satisfy a 32-bit host. A build made without
 AAC support must be rebuilt after installing the development package.
 SQLite is loaded separately at runtime for Leopard phrasing dictionaries.
 
-## Devin's retro-tts-pack
+## Client protocol
 
-Its existing Panthera client already accepts ELF hosts. Override the Wine
-backend and host path in the environment of the retro-tts server/module:
-
-```sh
-export RETRO_TTS_TIGER_BACKEND=native
-export RETRO_TTS_TIGER_HOST=/absolute/path/to/panthera-speech/build/linux-i686/tiger_host
-export RETRO_TTS_TIGER_TREE=/absolute/path/to/speech-tiger/x86
-export RETRO_TTS_LEOPARD_BACKEND=native
-export RETRO_TTS_LEOPARD_HOST="$RETRO_TTS_TIGER_HOST"
-export RETRO_TTS_LEOPARD_TREE=/absolute/path/to/speech-leopard
-```
-
-Each tree must contain `Speech/Voices` and `SpeechDictionary.framework`.
-The same host supports Lion with `RETRO_TTS_LION_*`; validate that generation
-with its own engine data before using it. Do not leave the installer's
-`BACKEND=wine` setting active while selecting an ELF executable.
+Start `tiger_host --serve ENGINE DICTIONARY VOICES`, passing paths to the
+extracted MacinTalk executable, SpeechDictionary framework executable, and
+voice directory. Clients use the existing TGR3/TGR4 protocol documented in
+`src/tiger_host_serve.c`; `tools/native_stream_check.py` provides a runnable
+streaming example with user-supplied data. An integration owns its settings
+and chooses the host executable; installing this host does not register or
+replace a system speech module.
 
 The client opts into a four-byte little-endian `TRDY` startup handshake with
 `TIGER_READY_HANDSHAKE=1`. The host sends it after setup and before reading
@@ -59,12 +51,12 @@ On POSIX, `SIGUSR1` requests cancellation; the host drains/terminates the
 current streamed response so the next request stays aligned. The signal
 handler only sets a flag; the synthesis thread stops the engine.
 
-The inspected retro-tts client restarts and preloads its native host after
-*every* streamed utterance as an old AAC workaround. This is compatible but
-costs startup time. Removing that workaround is a separate downstream change
-after persistent AAC and cancellation testing against the released host.
-The client already sends voice-normalized volume commands; no volume
-protocol extension is required.
+Native i686 streaming has been checked with Tiger and Leopard, including
+volume commands, repeated utterances, cancellation and recovery. The x86_64
+Unicorn build passes the generated ABI tests, but embedded volume commands
+still fail the streaming mute check; use i686 for Linux integrations while
+that discrepancy is investigated. Android applies volume through the engine's
+parameter API and passes its separate mute/recovery checks on both ABIs.
 
 ## Android volume
 

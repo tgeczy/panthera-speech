@@ -388,7 +388,7 @@ static int serve(image *mt, void *chan, const char *voicesdir)
         }
     }
 #endif
-    /* Devin's native client waits for TRDY before writing the first request.
+    /* A client can wait for TRDY before writing the first request.
      * Opt-in preserves the byte stream expected by existing NVDA clients. */
     { const char *ready = getenv("TIGER_READY_HANDSHAKE");
       if (ready && !strcmp(ready, "1")) {
@@ -430,7 +430,7 @@ static int serve(image *mt, void *chan, const char *voicesdir)
             _snprintf(dir, sizeof(dir), "%s/%s.SpeechVoice", voicesdir, name);
             dir[sizeof(dir) - 1] = 0;
             if (voice_spec(dir, &spec.creator, &spec.id)) {
-                err = call_aligned3((void *)use, chan, &spec,
+                err = call_aligned3((void *)use, chan, UC_IN(&spec, sizeof spec),
                                     cf_pinned(dir));
                 if (!err) {
                     strcpy(curvoice, name);

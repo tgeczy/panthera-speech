@@ -1,8 +1,7 @@
 # panthera-speech
 
-The Android port branch also builds a **native Linux host** for existing
-Speech Dispatcher clients. See [Linux setup, AAC checks, and retro-tts-pack
-integration](docs/linux-native.md).
+The Android port branch also builds a **native Linux command-line host**.
+See [Linux setup, AAC checks, and the client protocol](docs/linux-native.md).
 
 **Apple's Mac OS X speech engines, running as native code on Windows.** No
 virtual machine, no emulator, no CPU translation — a small 32-bit host process

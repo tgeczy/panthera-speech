@@ -74,12 +74,14 @@ static unsigned g_uc_tramp, g_uc_arena, g_uc_arena_end;
  * is common host memory. */
 static __declspec(thread) uc_engine *t_uc;
 static __declspec(thread) unsigned   t_stack_top;
+static __declspec(thread) void      *t_stack_base;
 static __declspec(thread) int        t_running;   /* guards non-nested re-entry */
 
 /* Most shims forward i386 stack words and classify the return location.
  * Mixed-width clock calls also need an argument signature: ARM aligns their
  * 64-bit argument differently from the packed i386 stack. */
-enum { RC_INT = 0, RC_VOID, RC_I64, RC_I64_I_I64, RC_DBL, RC_FLT };
+enum { RC_INT = 0, RC_VOID, RC_I64, RC_I64_I_I64, RC_DBL, RC_FLT,
+       RC_TIME, RC_WALLTIME, RC_TIMER, RC_ATOF, RC_FLT_WORDS, RC_DBL_WORDS, RC_GEMM, RC_SYEVR };
 
 typedef struct { void *fn; const char *name; unsigned char rc;
                  unsigned char argc;            /* maths arity; see RC_DBL */
@@ -308,8 +310,16 @@ static unsigned char uc_rc_for(const char *nm)
         "_logf","_powf","_exp2f","_log2f", NULL };
     /* uint64 f(...) -- result in EDX:EAX */
     static const char *i64[] = { "_UpTime","___divdi3","___udivdi3","___moddi3",
-        "___umoddi3", NULL };
+        "___umoddi3", "_sqlite3_column_int64", NULL };
     int i;
+    if (!strcmp(nm, "_cblas_sdot") || !strcmp(nm, "_cblas_snrm2")) return RC_FLT_WORDS;
+    if (!strcmp(nm, "_CFAbsoluteTimeGetCurrent")) return RC_DBL_WORDS;
+    if (!strcmp(nm, "_atof")) return RC_ATOF;
+    if (!strcmp(nm, "_cblas_sgemm")) return RC_GEMM;
+    if (!strcmp(nm, "_ssyevr_")) return RC_SYEVR;
+    if (!strcmp(nm, "_dispatch_time")) return RC_TIME;
+    if (!strcmp(nm, "_dispatch_walltime")) return RC_WALLTIME;
+    if (!strcmp(nm, "_dispatch_source_set_timer")) return RC_TIMER;
     /* These return EDX:EAX and their i386 arguments are packed as i32,i64.
      * ARM AAPCS aligns the i64 to an even register pair, so forwarding three
      * untyped words corrupts the timestamp as well as losing its high return. */
@@ -362,7 +372,7 @@ static void *uc_tramp_make(void *fn, const char *nm, unsigned char rc, int missi
     g_slots[idx].rc      = rc;
     g_slots[idx].argc    = (rc == RC_DBL || rc == RC_FLT) ? uc_argc_for(nm) : 1u;
     g_slots[idx].missing = (unsigned char)missing;
-    uc_write_slot(idx, rc == RC_DBL || rc == RC_FLT);
+    uc_write_slot(idx, rc == RC_DBL || rc == RC_FLT || rc == RC_ATOF || rc == RC_FLT_WORDS || rc == RC_DBL_WORDS);
     return (void *)(uintptr_t)(g_uc_tramp + (unsigned)idx * UC_TRAMP_STRIDE);
 }
 
@@ -371,6 +381,8 @@ static void *uc_tramp_make(void *fn, const char *nm, unsigned char rc, int missi
 static void *uc_bind_target(const char *nm, void *fn)
 {
     unsigned dsz = uc_data_size(nm);
+    /* Speech constants already occupy guest-addressable pointer slots. */
+    if (!strncmp(nm, "_kSpeech", 8)) return fn;
     if (dsz) {
         void *g = uc_data_copy(nm, fn, dsz);
         return g ? g : fn;
@@ -438,14 +450,14 @@ static void uc_dispatch(uc_engine *u, uint64_t address, uint32_t size,
                         void *user)
 {
     unsigned off = (unsigned)address - g_uc_tramp;
-    unsigned esp, a[12];
+    unsigned esp, a[21];
     uc_slot *s;
     (void)size; (void)user;
     if (off % UC_TRAMP_STRIDE) return;         /* mid-slot fld/ret; let it run */
     s = &g_slots[off / UC_TRAMP_STRIDE];
 
     uc_reg_read(u, UC_X86_REG_ESP, &esp);
-    uc_mem_read(u, esp + 4, a, sizeof a);      /* args: cdecl, above the retaddr */
+    uc_mem_read(u, esp + 4, a, (s->rc == RC_SYEVR ? 21 : s->rc == RC_GEMM ? 14 : 12) * 4);      /* args: cdecl, above the retaddr */
 
     g_uc_last_shim = s->name;
     g_uc_shim_ring[g_uc_shim_i++ & 7] = s->name;
@@ -458,6 +470,42 @@ static void uc_dispatch(uc_engine *u, uint64_t address, uint32_t size,
         return;
     }
     switch (s->rc) {
+    case RC_GEMM:
+        ((void (__cdecl *)(int,int,int,int,int,int,unsigned,const float*,int,
+                          const float*,int,unsigned,float*,int))s->fn)(
+            a[0],a[1],a[2],a[3],a[4],a[5],a[6],GHOST(a[7]),a[8],
+            GHOST(a[9]),a[10],a[11],GHOST(a[12]),a[13]);
+        break;
+    case RC_SYEVR:
+        ((void (__cdecl *)(const char*,const char*,const char*,const int*,float*,
+            const int*,const float*,const float*,const int*,const int*,const float*,
+            int*,float*,float*,const int*,int*,float*,const int*,int*,const int*,int*))s->fn)(
+            GHOST(a[0]),GHOST(a[1]),GHOST(a[2]),GHOST(a[3]),GHOST(a[4]),
+            GHOST(a[5]),GHOST(a[6]),GHOST(a[7]),GHOST(a[8]),GHOST(a[9]),
+            GHOST(a[10]),GHOST(a[11]),GHOST(a[12]),GHOST(a[13]),GHOST(a[14]),
+            GHOST(a[15]),GHOST(a[16]),GHOST(a[17]),GHOST(a[18]),GHOST(a[19]),GHOST(a[20]));
+        break;
+    case RC_TIME:
+    case RC_WALLTIME: {
+        unsigned long long q;
+        if (s->rc == RC_TIME)
+            q = ((unsigned long long (__cdecl *)(unsigned long long, long long))s->fn)(
+                (unsigned long long)a[0] | ((unsigned long long)a[1] << 32),
+                (long long)((unsigned long long)a[2] | ((unsigned long long)a[3] << 32)));
+        else
+            q = ((unsigned long long (__cdecl *)(void *, long long))s->fn)(
+                GHOST(a[0]), (long long)((unsigned long long)a[1] | ((unsigned long long)a[2] << 32)));
+        { unsigned lo = (unsigned)q, hi = (unsigned)(q >> 32);
+          uc_reg_write(u, UC_X86_REG_EAX, &lo);
+          uc_reg_write(u, UC_X86_REG_EDX, &hi); }
+        break;
+    }
+    case RC_TIMER:
+        ((void (__cdecl *)(void *, unsigned long long, unsigned long long, unsigned long long))s->fn)(
+            GHOST(a[0]), (unsigned long long)a[1] | ((unsigned long long)a[2] << 32),
+            (unsigned long long)a[3] | ((unsigned long long)a[4] << 32),
+            (unsigned long long)a[5] | ((unsigned long long)a[6] << 32));
+        break;
     case RC_VOID: ((fn_v)s->fn)(UC_ARGS); break;
     case RC_INT: {
         unsigned r = ((fn_i)s->fn)(UC_ARGS);
@@ -491,6 +539,15 @@ static void uc_dispatch(uc_engine *u, uint64_t address, uint32_t size,
      * Assembling the value from the guest's own words and calling through a
      * typed pointer is correct on every host, which is why it is not
      * conditional. */
+    case RC_FLT_WORDS:
+    case RC_DBL_WORDS: {
+        double d = s->rc == RC_FLT_WORDS ? (double)((fn_f)s->fn)(UC_ARGS) : ((fn_d)s->fn)(UC_ARGS);
+        uc_mem_write(u, esp - 8, &d, 8);
+        break; }
+    case RC_ATOF: {
+        double d = ((double (__cdecl *)(const char *))s->fn)((const char *)GHOST(a[0]));
+        uc_mem_write(u, esp - 8, &d, 8);
+        break; }
     case RC_DBL: {
         double d = (s->argc == 2) ? ((fn_dd)s->fn)(uc_argd(a, 0), uc_argd(a, 2))
                                   : ((fn_d1)s->fn)(uc_argd(a, 0));
@@ -668,7 +725,28 @@ static void uc_ensure_engine(void)
     t_uc = uc_new_engine();
     stk = arena_alloc(UC_STACK_SZ);
     if (!stk) die("no arena for a guest stack");
+    t_stack_base = stk;
     t_stack_top = ((unsigned)(uintptr_t)stk + UC_STACK_SZ) & ~15u;
+}
+
+/* Short-lived dispatch workers must return their emulator and guest stack.
+ * Snow Leopard creates these throughout an utterance. */
+static void uc_release_thread(void)
+{
+    int i;
+    if (!t_uc) return;
+    EnterCriticalSection(&g_map_cs);
+    for (i = 0; i < g_nengines; i++)
+        if (g_engines[i] == t_uc) {
+            g_engines[i] = g_engines[--g_nengines];
+            break;
+        }
+    uc_close(t_uc);
+    t_uc = NULL;
+    LeaveCriticalSection(&g_map_cs);
+    sh_uc_free(t_stack_base);
+    t_stack_base = NULL;
+    t_stack_top = 0;
 }
 
 /* Call a guest function as if from a `call` that pushed UC_RETMAGIC, and stop

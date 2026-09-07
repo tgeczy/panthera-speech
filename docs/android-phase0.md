@@ -122,8 +122,7 @@ for `adb push` sources.
 
 The microbench is the last proxy. Tier-2 renders the **real engine** on-device
 for a true per-voice number. The base is the **native i386 ELF host** — the same
-deliverable as native Linux support ([Devin's pack](https://github.com/devinprater/retro-tts-pack)
-consumes it): serve mode is nearly OS-clean, so the port surface is
+deliverable as native Linux support: serve mode is nearly OS-clean, so the port surface is
 `VirtualAlloc→mmap`, Win threads→pthreads, Media Foundation AAC→libavcodec/
 AMediaCodec. On x86 Linux the engine runs native; on Android ARM the same host
 runs it under Unicorn with native shim traps. First increment: the Unicorn loader

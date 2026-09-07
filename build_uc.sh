@@ -3,11 +3,9 @@
 # i386 engine runs inside Unicorn (QEMU TCG) instead of being called natively,
 # so it can run on ARM.  See src/tiger_host_uc.c and docs/android-phase0.md.
 #
-# 32-bit, always, and for one more reason than the native build: the shims share
-# structs with the guest at fixed pointer-width offsets (cfobj, the fake FILEs,
-# the rune locale), so a 64-bit host would silently mislay every one of them.
-# The 32-bit host also makes guest==host identity mapping trivial (<4 GB) and
-# matches every watch measured in Phase 0 (all armeabi-v7a).
+# This desktop harness builds a 32-bit Windows host for fast native/UC
+# comparisons. The shared source also builds for AArch64 Android: guest
+# pointer slots stay four bytes, and guest-visible storage uses the arena.
 #
 # The 32-bit Unicorn 2.1.4 comes from the pip wheel in a 32-bit Python; it ships
 # unicorn.dll and the headers.  We link the *DLL* through an import library we

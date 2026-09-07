@@ -6,6 +6,11 @@
         android:allowBackup="true"
         android:theme="@android:style/Theme.DeviceDefault">
 
+        <service android:name=".TigerWorkerService" android:process=":tiger" android:exported="false" />
+        <service android:name=".LeopardWorkerService" android:process=":leopard" android:exported="false" />
+        <service android:name=".SnowLeopardWorkerService" android:process=":snowleopard" android:exported="false" />
+        <service android:name=".LionWorkerService" android:process=":lion" android:exported="false" />
+
         <service
             android:name=".PantheraTtsService"
             android:exported="true"

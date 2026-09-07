@@ -1,12 +1,8 @@
 # -*- coding: utf-8 -*-
 """Time to first sound, through the streaming path, on whatever host is here.
 
-**This measures the reason the Linux build exists.**  Devin's port runs the
-Windows host under Wine and the complaint is not that it is wrong, it is that
-it lags -- so a native ELF that renders byte-identical audio has proved
-nothing until it has been timed.  Byte-identity is a claim about the samples;
-this is a claim about when they arrive, and no oracle in this repository
-covers it.
+Byte-identical audio does not establish responsive streaming. This check
+measures both first sound and completion so pacing regressions are visible.
 
 What a screen-reader user feels is the first number below: the gap between
 pressing a key and hearing anything.  The last frame matters far less --

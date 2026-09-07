@@ -28,6 +28,8 @@ static sndconv g_sc;
 /* Counters the end-of-run summary (tiger_host.c) and serve loop read; all zero
  * because no AAC ever ran. */
 static unsigned g_pkts_fed, g_frames_out, g_ac_silent_streams;
+static double g_aac_ms;
+static unsigned g_aac_units;
 static double   g_pcmstat_abs, g_pcmstat_d;
 static unsigned g_pcmstat_n;
 

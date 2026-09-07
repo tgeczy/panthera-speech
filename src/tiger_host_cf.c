@@ -437,13 +437,13 @@ static cfobj *cf_data(const char *path)
 }
 
 static int __cdecl sh_CFURLCreateDataAndPropertiesFromResource(
-        void *alloc, const void *url, void **outData, void **outProps,
+        void *alloc, const void *url, gptr *outData, gptr *outProps,
         const void *desired, int *errorCode)
 {
     const char *path = cf_cstr(url);
     cfobj *d;
     (void)alloc; (void)desired;
-    if (outProps) *outProps = NULL;
+    if (outProps) *outProps = 0;
     if (!path || !outData) {
         if (errorCode) *errorCode = -10;            /* unknown scheme */
         return 0;
@@ -456,7 +456,7 @@ static int __cdecl sh_CFURLCreateDataAndPropertiesFromResource(
     }
     if (g_verbose)
         printf("  [cf] read %u bytes of %s\n", d->nbytes, path);
-    *outData = d;
+    *outData = GP(d);
     if (errorCode) *errorCode = 0;
     return 1;
 }
@@ -577,8 +577,8 @@ static cfobj *cf_container(int kind, unsigned count)
     return o;
 }
 
-static void * __cdecl sh_CFDictionaryCreate(void *alloc, const void **keys,
-                                            const void **values, int count,
+static void * __cdecl sh_CFDictionaryCreate(void *alloc, const gptr *keys,
+                                            const gptr *values, int count,
                                             const void *kcb, const void *vcb)
 {
     cfobj *o;
@@ -589,8 +589,8 @@ static void * __cdecl sh_CFDictionaryCreate(void *alloc, const void **keys,
     if (!o) return NULL;
     for (i = 0; i < count; i++) {
         void **slots = (void **)o->bytes;
-        slots[i * 2]     = sh_CFRetain((void *)keys[i]);
-        slots[i * 2 + 1] = sh_CFRetain((void *)values[i]);
+        slots[i * 2]     = sh_CFRetain(GHOST(keys[i]));
+        slots[i * 2 + 1] = sh_CFRetain(GHOST(values[i]));
         o->nbytes++;
     }
     return o;
@@ -611,7 +611,7 @@ static void * __cdecl sh_CFDictionaryCreateCopy(void *alloc, const void *dict)
     return o;
 }
 
-static void * __cdecl sh_CFArrayCreate(void *alloc, const void **values,
+static void * __cdecl sh_CFArrayCreate(void *alloc, const gptr *values,
                                        int count, const void *cb)
 {
     cfobj *o;
@@ -621,7 +621,7 @@ static void * __cdecl sh_CFArrayCreate(void *alloc, const void **values,
     o = cf_container(CF_ARRAY, (unsigned)count);
     if (!o) return NULL;
     for (i = 0; i < count; i++) {
-        ((void **)o->bytes)[i] = sh_CFRetain((void *)values[i]);
+        ((void **)o->bytes)[i] = sh_CFRetain(GHOST(values[i]));
         o->nbytes++;
     }
     return o;
@@ -684,10 +684,10 @@ static const void *cf_dict_lookup(const void *dict, const void *key)
 
 static int __cdecl sh_CFDictionaryGetValueIfPresent(const void *dict,
                                                     const void *key,
-                                                    const void **value)
+                                                    gptr *value)
 {
     const void *v = cf_dict_lookup(dict, key);
-    if (value) *value = v;
+    if (value) *value = GP(v);
     return v != NULL;
 }
 
@@ -1187,7 +1187,7 @@ static speech_const g_speech_consts[] = {
 
 /* One slot per constant, declared here so the table's own count is the only
  * count -- a second literal would be one more thing to keep in step. */
-GUEST_STATIC(void *, g_speech_obj, SPEECH_CONST_N);
+GUEST_STATIC(gptr, g_speech_obj, SPEECH_CONST_N);
 
 /* The named ones, by index into the table above. */
 #define SPK_RATE       0
@@ -1206,9 +1206,9 @@ static void speech_keys_init(void)
     int i;
     for (i = 0; i < SPEECH_CONST_N; i++)
         if (!g_speech_obj[i])
-            g_speech_obj[i] = cf_pinned(g_speech_consts[i].text);
+            g_speech_obj[i] = GP(cf_pinned(g_speech_consts[i].text));
     for (i = 0; i < 6; i++)
-        g_speech_key[i] = g_speech_obj[i];
+        g_speech_key[i] = GHOST(g_speech_obj[i]);
 }
 
 /* -> the address of the slot holding the constant, which is what an imported
@@ -1263,7 +1263,7 @@ static void * __cdecl sh_CFNumberCreate(void *alloc, int type,
     case 2:  case 8:  v = *(const short *)value;     break;
     case 3:  case 9:  case 14: case 15:
                       v = *(const int *)value;       break;
-    case 10:          v = (double)*(const long *)value;    break;
+    case 10:          v = (double)*(const glong *)value;    break;
     case 4:  case 11: v = (double)*(const __int64 *)value; break;
     case 5:  case 12: case 16:
                       v = *(const float *)value;     break;
@@ -1288,7 +1288,7 @@ static int __cdecl sh_CFNumberGetValue(const void *o, int type, void *out)
     case 2:  case 8:  *(short *)out          = (short)v;     break;
     case 3:  case 9:  case 14: case 15:
                       *(int *)out            = (int)v;       break;
-    case 10:          *(long *)out           = (long)v;      break;
+    case 10:          *(glong *)out          = (glong)v;      break;
     case 4:  case 11: *(__int64 *)out        = (__int64)v;   break;
     case 5:  case 12: case 16:
                       *(float *)out          = (float)v;     break;

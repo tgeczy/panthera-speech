@@ -1,34 +1,3 @@
-// The app's window, in two pages: Setup and Engine settings.
-//
-// Shaped after TG Speechbox, which solved this already: a TTS engine has no UI
-// of its own -- the system's screen offers a rate slider and a flat list of
-// every voice on the device -- so the engine's own app has to be both the
-// settings window and a place to hear what the settings did. That is why
-// "Speak" lives here beside the controls rather than on a page of its own: a
-// rate you can hear is a rate you can choose.
-//
-// **Two pages rather than one long scroll**, because they answer different
-// questions. Setup is a first-run errand, done once: where does the data go,
-// is it there, does it make a sound. Engine settings is where somebody
-// returns, months later, to change how numbers are read.
-//
-// **The voice picker is the engine picker.** Somebody who has extracted Tiger
-// and Leopard has forty-odd voices between them, and several names occur in
-// both -- a bare "Alex" is Leopard's MacinTalk 3.6 or Lion's 4.0, and a list
-// with two of them is a list with none. So every voice is named for the engine
-// that speaks it, "Alex (Leopard)", and choosing one chooses both. That is the
-// model the SAPI side arrived at first, token by token, and matching it means
-// the two platforms describe the same voice the same way.
-//
-// The alternative -- an engine selector above a voice list -- was written
-// first and thrown away. It makes the engine a control you have to find before
-// the one you wanted, and it strands the voice you had: switch to Tiger and
-// back, and "Alex" no longer means anything. Preferences are per generation
-// for the same reason.
-//
-// Nothing on either page is a control over something the host cannot do. This
-// project has shipped a settings panel whose every tunable was inert, and it
-// took a night to notice.
 package com.pantheraspeech.tts
 
 import android.app.Activity
@@ -68,6 +37,18 @@ class SettingsActivity : Activity() {
     private var voiceHolder: LinearLayout? = null
     private var pageHolders: List<View> = emptyList()
     private var pad = 0
+    private var rateSlider: SeekBar? = null
+    private var volumeSlider: SeekBar? = null
+    private var numberSpinner: Spinner? = null
+    private var overrideVoice: android.widget.CheckBox? = null
+    private var voiceSignature = ""
+    private var voiceSpinner: Spinner? = null
+    private var listedVoices: List<PantheraEngine.VoiceInfo> = emptyList()
+    private var currentPage = 0
+    private val preferenceListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key != "sample_text" && key != "settings_page")
+            refreshSettings(key == PantheraEngine.PREF_GEN || key?.startsWith("default_voice") == true)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -105,7 +86,8 @@ class SettingsActivity : Activity() {
             addView(tabs)
             addView(pages)
         })
-        show(0)
+        show(savedInstanceState?.getInt("page") ?: PantheraEngine.prefs(this).getInt("settings_page", 0))
+        PantheraEngine.prefs(this).registerOnSharedPreferenceChangeListener(preferenceListener)
         refresh()
 
         // Test hook: `am start ... --ez autospeak true` checks the engine and
@@ -119,7 +101,29 @@ class SettingsActivity : Activity() {
         }
     }
 
+    override fun onResume() { super.onResume(); refresh(); refreshSettings(true) }
+    override fun onDestroy() {
+        PantheraEngine.prefs(this).unregisterOnSharedPreferenceChangeListener(preferenceListener)
+        super.onDestroy()
+    }
+    override fun onSaveInstanceState(out: Bundle) {
+        out.putInt("page", currentPage)
+        super.onSaveInstanceState(out)
+    }
+    private fun refreshSettings(voiceSelection: Boolean = false) {
+        overrideVoice?.isChecked = PantheraEngine.prefs(this).getBoolean("override_voice", false)
+        val settings = PantheraEngine.settings(this)
+        rateSlider?.progress = wpmToProgress(settings.rate)
+        volumeSlider?.progress = settings.volume
+        numberSpinner?.setSelection(listOf("fix", "words", "off").indexOf(settings.numbers), false)
+        if (voiceSelection && listedVoices.isNotEmpty())
+            voiceSpinner?.setSelection(preferredVoiceIndex(listedVoices), false)
+
+    }
+
     private fun show(page: Int) {
+        currentPage = page.coerceIn(0, 1)
+        PantheraEngine.prefs(this).edit().putInt("settings_page", currentPage).apply()
         pageHolders.forEachIndexed { i, v ->
             v.visibility = if (i == page) View.VISIBLE else View.GONE
         }
@@ -187,7 +191,15 @@ class SettingsActivity : Activity() {
         // for hours, and that sentence is never the one that shipped.
         sampleText = EditText(this).apply {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
-            setText("Hello there. This is Panthera Speech.")
+            setText(PantheraEngine.prefs(this@SettingsActivity).getString("sample_text",
+                "Hello there. This is Panthera Speech."))
+            addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                    PantheraEngine.prefs(this@SettingsActivity).edit().putString("sample_text", s.toString()).apply()
+                }
+                override fun afterTextChanged(s: android.text.Editable?) {}
+            })
             contentDescription = "Text to speak"
             textSize = 15f
         }
@@ -214,30 +226,19 @@ class SettingsActivity : Activity() {
         val p = PantheraEngine.prefs(this)
 
         root.addView(heading("Voice"))
-        val gens = PantheraEngine.availableGens(this)
-        if (gens.isEmpty()) {
-            root.addView(body(
-                "No engine data found yet. Finish Setup first — these settings " +
-                "describe an engine that has to be present to be configured."))
-        } else {
-            // One list, every generation, each voice named for the engine that
-            // speaks it. Choosing "Alex (Leopard)" chooses Leopard: the engine
-            // is not a separate control to find first, and a saved voice cannot
-            // dangle, because the generation travels with the name.
-            root.addView(body(
-                if (gens.size > 1)
-                    "Every voice you have, from every generation of Apple's " +
-                    "engine. The generation is part of the name — choosing a " +
-                    "voice chooses the engine that speaks it."
-                else
-                    "Used when an app does not name a voice itself. The sample " +
-                    "on the Setup page speaks with this one."))
-            voiceHolder = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
+        root.addView(body("Choosing a voice also chooses its engine generation."))
+        voiceHolder = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        root.addView(voiceHolder!!)
+        rebuildVoices()
+        root.addView(android.widget.CheckBox(this).apply {
+            text = "Use selected voice in all apps"
+            isChecked = p.getBoolean("override_voice", false)
+            overrideVoice = this
+            setOnCheckedChangeListener { _, checked ->
+                if (checked != p.getBoolean("override_voice", false))
+                    p.edit().putBoolean("override_voice", checked).apply()
             }
-            root.addView(voiceHolder!!)
-            rebuildVoices()
-        }
+        })
 
         // Data that is present and cannot run. Saying so is the point: someone
         // who has copied Lion's folder across and then sees nothing would
@@ -251,17 +252,17 @@ class SettingsActivity : Activity() {
             "By default this engine follows the rate in the system's own " +
             "text-to-speech screen. Setting a rate here overrides it — worth " +
             "doing when an app asks for a speed you did not choose."))
-        val savedRate = p.getInt(PantheraEngine.PREF_RATE, 0)
-        addSlider(root, "Speech rate", RATE_MAX - RATE_MIN + 1,
+        val savedRate = PantheraEngine.settings(this).rate
+        rateSlider = addSlider(root, "Speech rate", RATE_MAX - RATE_MIN + 1,
             wpmToProgress(savedRate), { rateText(progressToWpm(it)) }) {
-            p.edit().putInt(PantheraEngine.PREF_RATE, progressToWpm(it)).apply()
+            p.edit().putInt(PantheraEngine.settingKey(PantheraEngine.PREF_RATE, PantheraEngine.activeGen(this)), progressToWpm(it)).apply()
         }
 
         root.addView(heading("Volume"))
         root.addView(body("Engine volume: 0 mutes speech. Leopard and later balance " +
             "voice loudness; above 90 may distort. Device volume still applies."))
-        addSlider(root, "Engine volume", 100, PantheraEngine.volume(this),
-            { "$it percent" }) { p.edit().putInt(PantheraEngine.PREF_VOLUME, it).apply() }
+        volumeSlider = addSlider(root, "Engine volume", 100, PantheraEngine.volume(this),
+            { "$it percent" }) { p.edit().putInt(PantheraEngine.settingKey(PantheraEngine.PREF_VOLUME, PantheraEngine.activeGen(this)), it).apply() }
 
         root.addView(heading("Numbers"))
         root.addView(body(
@@ -274,18 +275,28 @@ class SettingsActivity : Activity() {
             "Fix what is wrong (recommended)",
             "Read out in full",
             "Leave numbers alone")
-        val current = p.getString(PantheraEngine.PREF_NUMBER_STYLE,
-            PantheraEngine.NUMBER_STYLE_DEFAULT)
-        root.addView(spinner(numberNames,
-            numberValues.indexOf(current).coerceAtLeast(0)) { i ->
-            p.edit().putString(PantheraEngine.PREF_NUMBER_STYLE, numberValues[i]).apply()
-        })
+        val current = PantheraEngine.settings(this).numbers
+        numberSpinner = spinner(numberNames, numberValues.indexOf(current).coerceAtLeast(0)) { i ->
+            if (PantheraEngine.settings(this).numbers != numberValues[i])
+                p.edit().putString(PantheraEngine.settingKey(PantheraEngine.PREF_NUMBER_STYLE,
+                PantheraEngine.activeGen(this)), numberValues[i]).apply()
+        }.also { it.contentDescription = "How to read numbers"; root.addView(it) }
+
+    }
+
+    private fun preferredVoiceIndex(voices: List<PantheraEngine.VoiceInfo>): Int {
+        val gen = PantheraEngine.activeGen(this)
+        val saved = PantheraEngine.defaultVoiceName(this, gen)
+        return voices.indexOfFirst { it.gen == gen && it.name.equals(saved, true) }.takeIf { it >= 0 }
+            ?: voices.indexOfFirst { it.gen == gen && it.name.equals("Fred", true) }.takeIf { it >= 0 }
+            ?: voices.indexOfFirst { it.gen == gen }.coerceAtLeast(0)
     }
 
     private fun rebuildVoices() {
         val holder = voiceHolder ?: return
         holder.removeAllViews()
         val voices = PantheraEngine.allVoices(this)
+        listedVoices = voices
         if (voices.isEmpty()) {
             holder.addView(body("No voices in the engine data folder."))
             return
@@ -296,25 +307,12 @@ class SettingsActivity : Activity() {
         // "Fred (Tiger)" twenty-three times is noise to read and worse to hear.
         val single = PantheraEngine.availableGens(this).size < 2
         val names = voices.map { if (single) it.name else it.label }
-        val at = voices.indexOfFirst { it.gen == gen && it.name.equals(saved, true) }
-            .let { if (it >= 0) it else voices.indexOfFirst { v -> v.gen == gen } }
-            .coerceAtLeast(0)
-        holder.addView(spinner(names, at) { i ->
+        val at = preferredVoiceIndex(voices)
+        voiceSpinner = spinner(names, at) { i ->
             val v = voices[i]
-            val was = PantheraEngine.loadedGen()
-            PantheraEngine.chooseVoice(this, v)
-            // Choosing across generations is choosing a different engine, and
-            // this process can only hold the one it already mapped. Say so
-            // plainly rather than previewing the wrong voice: the announcement
-            // is what a screen-reader user gets instead of a surprise.
-            if (was != null && was != v.gen) {
-                val msg = "${v.label} needs the ${PantheraEngine.genLabel(v.gen)} " +
-                    "engine. Close and reopen Panthera Speech to hear it here; " +
-                    "other apps will use it from their next request."
-                holder.announceForAccessibility(msg)
-                toast(msg)
-            }
-        })
+            if (v.gen != PantheraEngine.activeGen(this) ||
+                v.name != PantheraEngine.defaultVoiceName(this, v.gen)) PantheraEngine.chooseVoice(this, v)
+        }.also { it.contentDescription = "Voice"; holder.addView(it) }
         holder.addView(body(
             "Used when an app does not name a voice itself. The sample on the " +
             "Setup page speaks with this one."))
@@ -341,12 +339,13 @@ class SettingsActivity : Activity() {
                 android.R.layout.simple_spinner_dropdown_item, items)
             setSelection(selected, false)
             onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                private var first = true
+                private var previous = selected
                 override fun onItemSelected(a: AdapterView<*>?, v: View?, pos: Int, id: Long) {
                     // setSelection fires this once as the view attaches, and a
                     // preference should change because somebody chose it, not
                     // because a screen was built.
-                    if (first) { first = false; return }
+                    if (pos == previous) return
+                    previous = pos
                     onPick(pos)
                 }
                 override fun onNothingSelected(a: AdapterView<*>?) {}
@@ -356,10 +355,10 @@ class SettingsActivity : Activity() {
     // View-based equivalent of TG Speechbox's AccessibleSlider: named value,
     // one-step arrows, Home/End, and the stock accessibility range actions.
     private fun addSlider(root: LinearLayout, name: String, limit: Int, value: Int,
-            describe: (Int) -> String, save: (Int) -> Unit) {
+            describe: (Int) -> String, save: (Int) -> Unit): SeekBar {
         val label = body(describe(value)).apply { importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO }
         root.addView(label)
-        root.addView(SeekBar(this).apply {
+        val slider = SeekBar(this).apply {
             max = limit
             progress = value
             keyProgressIncrement = 1
@@ -393,7 +392,9 @@ class SettingsActivity : Activity() {
                 }
                 true
             }
-        })
+        }
+        root.addView(slider)
+        return slider
     }
 
     private fun rateText(wpm: Int) =
@@ -406,11 +407,13 @@ class SettingsActivity : Activity() {
     // ---- behaviour ---------------------------------------------------------
 
     private fun refresh() {
+        val signature = PantheraEngine.allVoices(this).joinToString { it.id }
+        if (voiceSignature != signature) { voiceSignature = signature; rebuildVoices() }
         val verified = PantheraEngine.verified(this)
         testButton.isEnabled = verified
         val voices = PantheraEngine.allVoices(this)
         voicesView.text = if (voices.isEmpty()) "—"
-            else voices.joinToString("\n") { "•  ${it.name}" }
+            else voices.joinToString("\n") { "•  ${it.label}" }
         if (verified) status.text = "Engine verified: ${voices.size} voice(s) ready."
     }
 
@@ -432,10 +435,7 @@ class SettingsActivity : Activity() {
     }
 
     private fun testSpeak() {
-        // The preview speaks the generation this process can actually load --
-        // never another one, because there is no second engine to load it with.
-        // rebuildVoices has already said so if the user picked across.
-        val gen = PantheraEngine.loadedGen() ?: PantheraEngine.activeGen(this)
+        val gen = PantheraEngine.activeGen(this)
         val voices = PantheraEngine.scanVoices(this, gen)
         val saved = PantheraEngine.defaultVoiceName(this, gen)
         // The voice the settings chose, so the preview previews the settings
@@ -445,7 +445,8 @@ class SettingsActivity : Activity() {
             ?: voices.firstOrNull()
         if (voice == null) { toast("No voice to speak."); return }
         val text = sampleText.text.toString().ifBlank { "Hello there." }
-        val wpm = PantheraEngine.prefs(this).getInt(PantheraEngine.PREF_RATE, 0)
+        val systemRate = Settings.Secure.getInt(contentResolver, "tts_default_rate", 100)
+        val wpm = PantheraEngine.settings(this, gen).wpm(systemRate)
         testButton.isEnabled = false
         status.text = "Rendering ${voice.label}…"
         Thread {
@@ -459,9 +460,9 @@ class SettingsActivity : Activity() {
             runOnUiThread {
                 testButton.isEnabled = true
                 status.text = when {
-                    n == 0 -> "Render produced no audio."
-                    peak == 0 -> "Rendered $n samples but they are silent."
-                    else -> "Playing $n samples from ${voice.name} (peak $peak)."
+                    n == 0 -> "The sample could not be spoken."
+                    peak == 0 -> "The sample is silent. Check the volume setting."
+                    else -> "Playing the sample with ${voice.label}."
                 }
             }
             if (n > 0 && peak > 0) playPcm(pcm!!, PantheraEngine.sampleRate())
@@ -544,6 +545,6 @@ class SettingsActivity : Activity() {
     private companion object {
         // The engine's own range; PantheraEngine clamps to it as well.
         const val RATE_MIN = 80
-        const val RATE_MAX = 420
+        const val RATE_MAX = 500
     }
 }

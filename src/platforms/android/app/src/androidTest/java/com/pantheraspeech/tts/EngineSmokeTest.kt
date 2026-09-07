@@ -19,18 +19,131 @@ import java.util.concurrent.TimeUnit
  * com.pantheraspeech.tts.test/com.pantheraspeech.tts.EngineSmokeTest.
  */
 class EngineSmokeTest : Instrumentation() {
-    override fun onCreate(arguments: Bundle?) { super.onCreate(arguments); start() }
+    private var nativeGen: String? = null
+    private var nativeVoice: String? = null
+    override fun onCreate(arguments: Bundle?) {
+        nativeGen = arguments?.getString("nativeGeneration")
+        nativeVoice = arguments?.getString("nativeVoice")
+        super.onCreate(arguments); start()
+    }
+
+    private fun checkNativeGeneration(gen: String) {
+        val result = Bundle()
+        try {
+            val root = File(targetContext.filesDir, "panthera-data/$gen")
+            check(PantheraNative.nativeOpen(File(root, "MacinTalk").path,
+                File(root, "SpeechDictionary.framework/Versions/A/SpeechDictionary").path) == 0)
+            PantheraNative.nativeSetVolume(-1, gen)
+            val voice = PantheraEngine.scanVoices(targetContext, gen)
+                .first { it.name == (nativeVoice ?: if (gen == "lion") "Alex" else "Fred") }
+            var reference: ShortArray? = null
+            repeat(5) { i ->
+                val pcm = PantheraNative.nativeRender(voice.dir, voice.creator, voice.voiceId,
+                    PantheraText.bytes("Hello there."), 180) ?: error("No PCM")
+                check(pcm.size > 12000) { "Short render: ${pcm.size}" }
+                if (reference != null) check(pcm.contentEquals(reference)) { "Render $i differs" }
+                reference = pcm
+                val bytes = ByteArray(pcm.size * 2)
+                pcm.forEachIndexed { j, v -> bytes[j*2] = v.toByte(); bytes[j*2+1] = (v.toInt() shr 8).toByte() }
+                File(targetContext.filesDir, "native-$gen.pcm").writeBytes(bytes)
+                result.putString("render$i", "${pcm.size} frames " + MessageDigest.getInstance("SHA-256")
+                    .digest(bytes).joinToString("") { "%02x".format(it) })
+            }
+            finish(Activity.RESULT_OK, result)
+        } catch (e: Throwable) {
+            result.putString("failure", Log.getStackTraceString(e))
+            finish(Activity.RESULT_CANCELED, result)
+        }
+    }
+
+    private fun descendants(v: android.view.View): List<android.view.View> =
+        listOf(v) + if (v is android.view.ViewGroup)
+            (0 until v.childCount).flatMap { descendants(v.getChildAt(it)) } else emptyList()
+
+    private fun checkSettingsPersistence(activity: Activity) {
+        val prefs = PantheraEngine.prefs(targetContext)
+        val voices = PantheraEngine.allVoices(targetContext)
+        val choices = PantheraEngine.availableGens(targetContext).take(2).map { gen ->
+            voices.first { it.gen == gen && it.name == "Fred" }
+        }
+        fun select(voice: PantheraEngine.VoiceInfo) {
+            val chosen = CountDownLatch(1)
+            val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
+                if (PantheraEngine.activeGen(targetContext) == voice.gen &&
+                    (PantheraEngine.defaultVoiceName(targetContext, voice.gen) ?: voice.name) == voice.name) chosen.countDown()
+            }
+            prefs.registerOnSharedPreferenceChangeListener(listener)
+            runOnMainSync {
+                val spinner = descendants(activity.window.decorView).filterIsInstance<android.widget.Spinner>()
+                    .first { it.contentDescription == "Voice" }
+                spinner.setSelection(voices.indexOfFirst { it.id == voice.id })
+                if (PantheraEngine.activeGen(targetContext) == voice.gen &&
+                    (PantheraEngine.defaultVoiceName(targetContext, voice.gen) ?: voice.name) == voice.name) chosen.countDown()
+            }
+            try { check(chosen.await(5, TimeUnit.SECONDS)) {
+                "Picker did not choose ${voice.id}; active=${PantheraEngine.activeGen(targetContext)}"
+            } } finally { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
+            waitForIdleSync()
+            check(PantheraEngine.activeGen(targetContext) == voice.gen)
+        }
+        for ((i, voice) in choices.withIndex()) {
+            prefs.edit().putInt(PantheraEngine.settingKey("rate_wpm", voice.gen), 221 + i*100)
+                .putInt(PantheraEngine.settingKey("volume", voice.gen), 37 + i*25)
+                .putString(PantheraEngine.settingKey("number_style", voice.gen), if (i == 0) "off" else "words")
+                .commit()
+            select(voice)
+        }
+        for (i in choices.indices.reversed()) {
+            select(choices[i])
+            runOnMainSync {
+                val views = descendants(activity.window.decorView)
+                val sliders = views.filterIsInstance<android.widget.SeekBar>()
+                check(sliders[0].progress == 221 + i*100 - 80 + 1)
+                check(sliders[1].progress == 37 + i*25)
+                check(views.filterIsInstance<android.widget.Spinner>()
+                    .first { it.contentDescription == "How to read numbers" }.selectedItemPosition == if (i == 0) 2 else 1)
+                val spinner = views.filterIsInstance<android.widget.Spinner>().first { it.contentDescription == "Voice" }
+                prefs.edit().putInt(PantheraEngine.settingKey("volume", choices[i].gen), 38 + i*25).commit()
+                check(descendants(activity.window.decorView).any { it === spinner })
+                check(sliders[1].progress == 38 + i*25)
+            }
+        }
+        runOnMainSync {
+            val views = descendants(activity.window.decorView)
+            views.filterIsInstance<android.widget.EditText>().single().setText("Saved sample text.")
+            val box = views.filterIsInstance<android.widget.CheckBox>().single()
+            if (!box.isChecked) box.performClick()
+        }
+        val monitor = addMonitor(SettingsActivity::class.java.name, null, false)
+        runOnMainSync { activity.recreate() }
+        val recreated = waitForMonitorWithTimeout(monitor, 10000) ?: error("Settings recreation timed out")
+        removeMonitor(monitor)
+        waitForIdleSync()
+        runOnMainSync {
+            val views = descendants(recreated.window.decorView)
+            check(views.filterIsInstance<android.widget.EditText>().single().text.toString() == "Saved sample text.")
+            check(views.filterIsInstance<android.widget.CheckBox>().single().isChecked)
+            check(views.filterIsInstance<android.widget.Button>().first { it.text == "Engine settings" }.isSelected)
+            check(views.filterIsInstance<android.widget.SeekBar>()[0].progress == 221 - 80 + 1)
+            prefs.edit().putBoolean("override_voice", false).commit()
+            check(!views.filterIsInstance<android.widget.CheckBox>().single().isChecked)
+            recreated.finish()
+        }
+    }
 
     override fun onStart() {
+        nativeGen?.let { checkNativeGeneration(it); return }
         var tts: TextToSpeech? = null
         var resultCode = Activity.RESULT_CANCELED
         val results = Bundle()
         val prefs = PantheraEngine.prefs(targetContext)
-        val savedVolume = if (prefs.contains(PantheraEngine.PREF_VOLUME)) prefs.getInt(PantheraEngine.PREF_VOLUME, 100) else null
-        val savedRate = if (prefs.contains(PantheraEngine.PREF_RATE)) prefs.getInt(PantheraEngine.PREF_RATE, 0) else null
+        val originalPreferences = prefs.all.toMap()
+        val generation = PantheraEngine.activeGen(targetContext)
+        val volumeKey = PantheraEngine.settingKey("volume", generation)
+        val rateKey = PantheraEngine.settingKey("rate_wpm", generation)
         val baselineVolume = if (PantheraEngine.activeGen(targetContext) == "tiger") 100 else 50
-        prefs.edit().putInt(PantheraEngine.PREF_VOLUME, baselineVolume)
-            .putInt(PantheraEngine.PREF_RATE, 0).commit()
+        prefs.edit().putBoolean("override_voice", false).putInt(volumeKey, baselineVolume)
+            .putInt(rateKey, 0).commit()
         try {
             val activity = startActivitySync(android.content.Intent(targetContext,
                 SettingsActivity::class.java).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
@@ -55,13 +168,18 @@ class EngineSmokeTest : Instrumentation() {
                     key(android.view.KeyEvent.KEYCODE_DPAD_LEFT); check(slider.progress == 0)
                     if (android.os.Build.VERSION.SDK_INT >= 30) check(!slider.stateDescription.isNullOrBlank())
                 }
-                check(prefs.getInt(PantheraEngine.PREF_VOLUME, -1) == 0)
-                check(prefs.getInt(PantheraEngine.PREF_RATE, -1) == 0)
-                activity.finish()
+                check(prefs.getInt(volumeKey, -1) == 0)
+                check(prefs.getInt(rateKey, -1) == 0)
             }
-            prefs.edit().putInt(PantheraEngine.PREF_VOLUME, baselineVolume)
-                .putInt(PantheraEngine.PREF_RATE, 0).commit()
-            results.putString("sliders", "PASS: arrows, Home/End, labels, persisted settings")
+            checkSettingsPersistence(activity)
+            for (gen in PantheraEngine.availableGens(targetContext)) {
+                prefs.edit().putInt(PantheraEngine.settingKey("rate_wpm", gen), 0)
+                    .putString(PantheraEngine.settingKey("number_style", gen), "fix").commit()
+            }
+            prefs.edit().putString("engine_generation", generation).commit()
+            prefs.edit().putInt(volumeKey, baselineVolume)
+                .putInt(rateKey, 0).commit()
+            results.putString("sliders", "PASS: arrows, Home/End, labels, per-generation settings, recreation, sample text, live refresh")
             val ready = CountDownLatch(1)
             var init = TextToSpeech.ERROR
             runOnMainSync {
@@ -74,16 +192,7 @@ class EngineSmokeTest : Instrumentation() {
             val client = tts!!
             check(client.isLanguageAvailable(Locale.US) == TextToSpeech.LANG_COUNTRY_AVAILABLE)
             check(client.setLanguage(Locale.US) >= 0)
-            // The platform list now spans every generation that runs here, and
-            // one process holds exactly one of them: a voice from another is
-            // answered by restarting the service, which from inside an
-            // instrumentation run reads as the app dying mid-test. So the suite
-            // pins itself to the generation this process actually loaded and
-            // takes every voice from there.
-            //
-            // Testing the switch itself belongs in a run of its own, for the
-            // same reason: a test that kills its own process cannot report on
-            // what happened next.
+            // The public client survives generation changes; each worker owns one engine.
             val activeGen = PantheraEngine.activeGen(targetContext)
             val genVoices = client.voices.filter {
                 it.name.startsWith("panthera-$activeGen-")
@@ -130,9 +239,12 @@ class EngineSmokeTest : Instrumentation() {
                 val expectedFrames = when (voiceName) {
                     "panthera-tiger-fred" -> 15792
                     "panthera-tiger-vicki" -> 15713
-                    "panthera-leopard-fred" -> 17360
+                    "panthera-leopard-fred", "panthera-snowleopard-fred", "panthera-lion-fred" -> 17360
                     "panthera-leopard-vicki" -> 17887
                     "panthera-leopard-alex" -> 17973
+                    "panthera-lion-alex" -> 19387
+                    "panthera-lion-vicki" -> 19517
+                    "panthera-snowleopard-vicki" -> 19610
                     else -> return
                 }
                 check(wav.size == 44 + expectedFrames * 2) {
@@ -140,7 +252,8 @@ class EngineSmokeTest : Instrumentation() {
                 }
                 val expectedHash = when (voiceName) {
                     "panthera-tiger-fred" -> "cef98214a9eb7c7052053619f027c73badfbf251c016313be31d6091278d8b91"
-                    "panthera-leopard-fred" -> "ec4be821f742fcd8facd6d215ce4443d01c55ac0dc983d482574c31cfb63c761"
+                    "panthera-lion-fred" -> "0e29a652fe28b36857c525714cc53407f8f9eb04b266d29309831ebaf03c3fa7"
+                    "panthera-leopard-fred", "panthera-snowleopard-fred" -> "ec4be821f742fcd8facd6d215ce4443d01c55ac0dc983d482574c31cfb63c761"
                     else -> return // AAC backends can differ by a PCM rounding unit.
                 }
                 val digest = MessageDigest.getInstance("SHA-256")
@@ -200,11 +313,11 @@ class EngineSmokeTest : Instrumentation() {
                 }
                 return sum
             }
-            prefs.edit().putInt(PantheraEngine.PREF_VOLUME, baselineVolume / 2).commit()
+            prefs.edit().putInt(volumeKey, baselineVolume / 2).commit()
             val quiet = pcmOf("volume-half", "Hello there.")
-            prefs.edit().putInt(PantheraEngine.PREF_VOLUME, 0).commit()
+            prefs.edit().putInt(volumeKey, 0).commit()
             val mute = pcmOf("volume-mute", "Hello there.")
-            prefs.edit().putInt(PantheraEngine.PREF_VOLUME, baselineVolume).commit()
+            prefs.edit().putInt(volumeKey, baselineVolume).commit()
             val restored = pcmOf("volume-restored", "Hello there.")
             check(restored.contentEquals(firstWav!!)) { "Volume did not recover after mute" }
             check(quiet.size == restored.size && mute.size == restored.size)
@@ -318,6 +431,65 @@ class EngineSmokeTest : Instrumentation() {
                 check(client.setVoice(fred) == TextToSpeech.SUCCESS)
             }
 
+            // Keep the same TextToSpeech client and public service alive across engines.
+            for (gen in PantheraEngine.availableGens(targetContext)) {
+                val voice = client.voices.firstOrNull { it.name == "panthera-$gen-fred" } ?: continue
+                prefs.edit().putInt(PantheraEngine.settingKey("volume", gen), if (gen == "tiger") 100 else 50)
+                    .putInt(PantheraEngine.settingKey("rate_wpm", gen), 0).commit()
+                check(client.setVoice(voice) == TextToSpeech.SUCCESS)
+                val wav = pcmOf("switch-$gen", "Hello there.")
+                checkReference(voice.name, wav)
+                val genRate = PantheraEngine.settingKey("rate_wpm", gen)
+                val genVolume = PantheraEngine.settingKey("volume", gen)
+                prefs.edit().putInt(genRate, 300).commit()
+                val fast = pcmOf("$gen-rate-300", "Hello there.")
+                check(fast.size > 2048 && fast.size < wav.size * 0.85) { "$gen ignored changed speech rate" }
+                check(client.setSpeechRate(0.75f) == TextToSpeech.SUCCESS)
+                check(pcmOf("$gen-rate-locked", "Hello there.").contentEquals(fast))
+                check(client.setSpeechRate(1.0f) == TextToSpeech.SUCCESS)
+                prefs.edit().putInt(genRate, 0).putInt(genVolume, 0).commit()
+                check(energy(pcmOf("$gen-mute", "Hello there.")) == 0.0)
+                prefs.edit().putInt(genVolume, if (gen == "tiger") 100 else 50).commit()
+                check(pcmOf("$gen-settings-restored", "Hello there.").contentEquals(wav))
+                // AAC plus repeated worker retirement, on the same bound client.
+                val aac = client.voices.firstOrNull { it.name == "panthera-$gen-alex" }
+                    ?: client.voices.firstOrNull { it.name == "panthera-$gen-vicki" }
+                if (aac != null) {
+                    check(client.setVoice(aac) == TextToSpeech.SUCCESS)
+                    val reference = pcmOf("switch-$gen-aac", "Hello there.")
+                    checkReference(aac.name, reference)
+                    for (i in 1..24) {
+                        check(pcmOf("$gen-aac-$i", "Hello there.").contentEquals(reference)) {
+                            "$gen AAC render $i changed during the session"
+                        }
+                    }
+                    // Do not wait for the paragraph to finish before recovering.
+                    client.speak("This sentence will be interrupted. ".repeat(20),
+                        TextToSpeech.QUEUE_FLUSH, Bundle(), "$gen-interrupt")
+                    Thread.sleep(200)
+                    val stopAt = android.os.SystemClock.elapsedRealtime()
+                    client.stop()
+                    check(pcmOf("$gen-after-stop", "Hello there.").contentEquals(reference))
+                    val elapsed = android.os.SystemClock.elapsedRealtime() - stopAt
+                    check(elapsed < 10000) { "$gen cancellation recovery took ${elapsed}ms" }
+                    Log.i("PantheraTest", "$gen AAC: 24 exact repeats and cancellation recovery ${elapsed}ms")
+                }
+                check(client.setVoice(fred) == TextToSpeech.SUCCESS)
+                check(pcmOf("return-$gen", "Hello there.").contentEquals(firstWav!!))
+            }
+            // The saved-voice override is optional and changes the very next request.
+            val other = client.voices.firstOrNull { it.name.endsWith("-fred") && it.name != fred.name }
+            if (other != null) {
+                PantheraEngine.chooseVoice(targetContext, PantheraEngine.voiceById(targetContext, fred.name)!!)
+                prefs.edit().putBoolean("override_voice", true).commit()
+                check(client.setVoice(other) == TextToSpeech.SUCCESS)
+                check(pcmOf("override-selected", "Hello there.").contentEquals(firstWav!!))
+                prefs.edit().putBoolean("override_voice", false).commit()
+                checkReference(other.name, pcmOf("override-disabled", "Hello there."))
+                check(client.setVoice(fred) == TextToSpeech.SUCCESS)
+            }
+            results.putString("switching", "PASS: every installed generation and back, live rate/volume and voice override")
+
             client.setAudioAttributes(AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
@@ -345,11 +517,14 @@ class EngineSmokeTest : Instrumentation() {
 
         } finally {
             tts?.shutdown()
-            val restore = prefs.edit()
-            if (savedVolume == null) restore.remove(PantheraEngine.PREF_VOLUME)
-            else restore.putInt(PantheraEngine.PREF_VOLUME, savedVolume)
-            if (savedRate == null) restore.remove(PantheraEngine.PREF_RATE)
-            else restore.putInt(PantheraEngine.PREF_RATE, savedRate)
+            val restore = prefs.edit().clear()
+            for ((key, value) in originalPreferences) when (value) {
+                is String -> restore.putString(key, value)
+                is Int -> restore.putInt(key, value)
+                is Boolean -> restore.putBoolean(key, value)
+                is Float -> restore.putFloat(key, value)
+                is Long -> restore.putLong(key, value)
+            }
             restore.commit()
         }
         finish(resultCode, results)

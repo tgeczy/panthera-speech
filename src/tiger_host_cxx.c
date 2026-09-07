@@ -239,16 +239,38 @@ static void __cdecl sh_memory_barrier(void) { MemoryBarrier(); }
 static void *g_stderrp = g_fake_sF + 2 * 88;
 static void *g_stdoutp = g_fake_sF + 1 * 88;
 
-static char * __cdecl sh_strtok_r(char *s, const char *sep, char **save)
+static char * __cdecl sh_strtok_r(char *s, const char *sep, gptr *save)
 {
     char *p;
-    if (!s) s = *save;
+    /* The tokenizer's continuation slot belongs to the 32-bit guest. */
+    if (!s) s = (char *)GHOST(*save);
     if (!s) return NULL;
     s += strspn(s, sep);
-    if (!*s) { *save = NULL; return NULL; }
+    if (!*s) { *save = 0; return NULL; }
     p = s + strcspn(s, sep);
-    if (*p) { *p = 0; *save = p + 1; } else *save = NULL;
+    if (*p) { *p = 0; *save = GP(p + 1); } else *save = 0;
     return s;
+}
+
+static int libc_check(void)
+{
+    struct { gptr save; unsigned guard; char text[32]; } *p;
+    char *token;
+    int ok;
+    p = GMEM_ALLOC(sizeof *p);
+    if (!p) return 2;
+    memset(p, 0, sizeof *p);
+    p->guard = 0x12345678;
+    strcpy(p->text, "  alpha,,beta ");
+    token = sh_strtok_r(p->text, " ,", &p->save);
+    ok = token && !strcmp(token, "alpha") && p->guard == 0x12345678;
+    token = sh_strtok_r(NULL, " ,", &p->save);
+    ok = ok && token && !strcmp(token, "beta") && p->guard == 0x12345678;
+    token = sh_strtok_r(NULL, " ,", &p->save);
+    ok = ok && !token && !p->save && p->guard == 0x12345678;
+    GMEM_FREE(p);
+    fprintf(stdout, "[libc] guest tokenizer %s\n", ok ? "PASS" : "FAIL");
+    return ok ? 0 : 1;
 }
 
 static void __cdecl sh_throw_bad_alloc(void)

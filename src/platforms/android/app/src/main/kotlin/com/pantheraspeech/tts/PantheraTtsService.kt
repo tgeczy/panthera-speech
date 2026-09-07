@@ -84,23 +84,6 @@ class PantheraTtsService : TextToSpeechService() {
         PantheraEngine.stop()
     }
 
-    // Android speechRate is a percent of normal (100 = normal); the Mac voices'
-    // own default is about 180 wpm, so 100% maps there.
-    private fun wpmFor(speechRate: Int): Int {
-        // A rate chosen in Engine settings wins over the one the caller asks
-        // for, which is the whole point of setting it: the system's own
-        // text-to-speech screen is a single slider shared by every app, and a
-        // percentage there means whatever each engine decides it means.
-        //
-        // It is also the setting that would have saved an afternoon. A phone
-        // left at 215% renders "Hello there." in 4032 frames where the desktop
-        // renders 18144, and that looked exactly like a broken port until the
-        // rate was pinned and the difference vanished.
-        val locked = PantheraEngine.prefs(this).getInt(PantheraEngine.PREF_RATE, 0)
-        if (locked > 0) return locked.coerceIn(80, 500)
-        return (180 * (if (speechRate <= 0) 100 else speechRate) / 100).coerceIn(80, 500)
-    }
-
     override fun onSynthesizeText(request: SynthesisRequest, callback: SynthesisCallback) {
         stopRequested = false
         PantheraEngine.withSynthesis {
@@ -127,34 +110,13 @@ class PantheraTtsService : TextToSpeechService() {
             Log.w("PantheraTts", "not verified -> error"); callback.error(TextToSpeech.ERROR_SERVICE); return
         }
 
-        val voice = PantheraEngine.voiceById(this, request.voiceName)
+        val voice = PantheraEngine.voiceById(this, if (PantheraEngine.prefs(this).getBoolean("override_voice", false))
+            onGetDefaultVoiceNameFor(null, null, null) else request.voiceName)
             ?: PantheraEngine.voiceById(this, onGetDefaultVoiceNameFor(null, null, null))
             ?: run { Log.w("PantheraTts", "no voice for '${request.voiceName}' -> error")
                      callback.error(TextToSpeech.ERROR_SERVICE); return }
 
-        // The voice list spans every generation that runs here, but one process
-        // can hold only one of them: panthera_init maps its images into a
-        // reserved guest block and offers no unmap. A voice from another
-        // generation is therefore served by starting again -- which is exactly
-        // what the SAPI host does when its tree changes, for the same reason.
-        //
-        // Record the choice, refuse *this* utterance, and exit; the framework
-        // restarts a speech service on demand, and the next request arrives
-        // with the right engine loaded. One utterance is lost, and only when
-        // the voice is changed across generations mid-session. Speaking it in
-        // the wrong voice instead would be worse and far harder to notice --
-        // and a user who chooses a voice before speaking never reaches this,
-        // because the engine opens lazily.
-        val loaded = PantheraEngine.loadedGen()
-        if (loaded != null && loaded != voice.gen) {
-            Log.i("PantheraTts", "voice ${voice.id} needs ${voice.gen}, " +
-                "this process holds $loaded -- restarting the service")
-            PantheraEngine.chooseVoice(this, voice)
-            callback.error(TextToSpeech.ERROR_SERVICE)
-            PantheraEngine.exitForGenerationChange()
-            return
-        }
-
+        val snapshot = PantheraEngine.settings(this, voice.gen)
         val rate = PantheraEngine.sampleRate()
         if (callback.start(rate, AudioFormat.ENCODING_PCM_16BIT, 1) != TextToSpeech.SUCCESS) {
             Log.w("PantheraTts", "callback.start refused"); return
@@ -184,7 +146,7 @@ class PantheraTtsService : TextToSpeechService() {
         for (piece in pieces) {
             if (stopRequested) break
             val started = PantheraEngine.speakStart(
-                this, voice, PantheraText.bytes(piece), wpmFor(request.speechRate))
+                this, voice, PantheraText.bytes(piece), snapshot.wpm(request.speechRate), snapshot)
             if (started != 0) {
                 Log.w("PantheraTts", "speakStart -> $started")
                 // Anything already spoken is real audio the user heard; only a

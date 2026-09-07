@@ -1,4 +1,11 @@
-# AArch64 validation, 2026-09-06
+# AArch64 validation, updated 2026-09-07
+
+Tiger, Leopard, Snow Leopard and Lion now pass the Galaxy S22 framework
+suite on both ARMv7 and arm64. Release builds include both ABIs. See
+[engine workers and saved settings](android-engine-workers.md) for the
+newer-generation fixes, numerical oracles and additional measured voices.
+
+The September 6 results below remain useful background.
 
 Tiger and Leopard pass the Android framework integration suite on the
 Nothing A024 (arm64-only), including Fred, Vicki and Leopard Alex, 24 long
@@ -81,20 +88,21 @@ adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
 adb shell am instrument -w com.pantheraspeech.tts.test/com.pantheraspeech.tts.EngineSmokeTest
 ```
 
-Run separately with each generation selected and verified. The APK contains
-both ABIs in debug builds. Do not use connectedDebugAndroidTest: its uninstall
+Select and verify an installed generation before running. The suite also
+switches through the other installed generations. Both build types contain
+both ABIs; use `adb install -r --abi armeabi-v7a` or `--abi arm64-v8a` to
+exercise each on a dual-ABI device. Do not use connectedDebugAndroidTest: its uninstall
 can remove the user's engine data. No Apple engine data or generated audio is
 included in this repository.
 
 ## Limits and follow-up
 
-Release remains ARMv7-only until Snow Leopard/Lion's remaining ABI surface is
-covered. Known remaining audit targets include block/GCD layouts, SQLite
-handles if SQLite becomes available on Android, CF container input arrays,
-CFNumber long widths, and additional typed floating/64-bit shim returns.
-Android currently reports SQLite unavailable, as on the earlier ARMv7 build.
-Only the A024 was connected for this session; ARMv7 builds and desktop
-references were checked, but the watch suite needs another device run.
+The September 6 audit targets (blocks/GCD, SQLite handles and outputs, CF
+container inputs, CFNumber widths and typed return values) are addressed in
+the [September 7 continuation](android-engine-workers.md). Android still
+reports SQLite unavailable when the system library is outside its linker
+namespace. The recent device runs used the S22; a fresh watch run remains
+separate validation, and not every supplied voice bundle has been sampled.
 
 FEX was not needed for these correctness fixes. Its documented use is x86
 programs on ARM64 Linux (https://github.com/FEX-Emu/FEX); embedding its core in

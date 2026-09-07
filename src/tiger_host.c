@@ -69,7 +69,7 @@
 /* The in-process synthesis API the Android JNI layer calls -- declared up here
  * so main()'s --jni-check sees the prototypes; defined at the end of the TU
  * (tiger_host_jni.c), after host_open and the engine internals it uses. */
-#ifdef TIGER_UC
+#if defined(TIGER_UC) || defined(TIGER_LIB)
 #include "tiger_host_jni.h"
 #endif
 
@@ -222,17 +222,17 @@ typedef struct {
 #define GUEST_SYNC_SIDE 0
 #endif
 
-/* Declare and define one.  On 32-bit it is the static it always was, with a
- * pointer aimed at it; on 64-bit the pointer is filled in at start-up. */
-#if GUEST_LOW
+/* Native builds use static storage. Under emulation, allocate in the mapped
+ * guest arena even on 32-bit hosts: low host addresses alone are not mapped. */
+#ifdef TIGER_UC
 #define GUEST_STATIC(type, name, count)     static type *name;     static const unsigned name##_guest_count = (count)
 #else
 #define GUEST_STATIC(type, name, count)     static type name##_storage[(count)];     static type *name = name##_storage;     static const unsigned name##_guest_count = (count)
 #endif
 
-/* Fill in one on a 64-bit host; a no-op on 32-bit.  Called before any image
+/* Fill in one under emulation; a no-op natively. Called before any image
  * loads, so the engine can never see an unset pointer. */
-#if GUEST_LOW
+#ifdef TIGER_UC
 #define GUEST_STATIC_INIT(name)     do { if (!name) { name = (void *)arena_alloc(sizeof *name * name##_guest_count);                       if (name) memset(name, 0, sizeof *name * name##_guest_count); } } while (0)
 #else
 #define GUEST_STATIC_INIT(name) ((void)0)
@@ -342,7 +342,7 @@ static float GFLOAT(unsigned bits)
  * the library's heap is nowhere near it, so they come out of the same low
  * arena the guest's own malloc uses.  Zeroed either way -- the call sites
  * were written against `calloc` and one of them counts on it. */
-#if GUEST_LOW
+#ifdef TIGER_UC
 #define GMEM_ALLOC(n)       sh_uc_calloc(1, (n))
 #define GMEM_REALLOC(p, n)  sh_uc_realloc((p), (n))
 #define GMEM_FREE(p)        sh_uc_free((void *)(p))
@@ -577,6 +577,7 @@ static unsigned bswap(unsigned v)
 #include "tiger_host_gcd.c"
 #include "tiger_host_cxx.c"
 #include "tiger_host_accel.c"
+#include "tiger_host_linalg.c"
 #include "tiger_host_sqlite.c"
 #include "tiger_host_regex.c"
 #include "tiger_host_numbers.c"
@@ -649,6 +650,7 @@ static void guest_statics_init(void)
     GUEST_STATIC_INIT(g_cfstring_class);
     GUEST_STATIC_INIT(g_errno_storage);
     GUEST_STATIC_INIT(g_dispatch_handles);
+    GUEST_STATIC_INIT(g_sources);
     GUEST_STATIC_INIT(g_the_locale);
     GUEST_STATIC_INIT(g_speech_obj);
 }
@@ -915,7 +917,7 @@ int main(int argc, char **argv)
         free(out);
         return 0;
     }
-#ifdef TIGER_UC
+#if defined(TIGER_UC) || defined(TIGER_LIB)
     /* Render through the Android synthesis API (tiger_host_jni.c) rather than
      * inline, and write the same wav -- so the on-device APK path is exercised
      * on the desktop and its output can be byte-diffed against the oracle.
@@ -946,9 +948,20 @@ int main(int argc, char **argv)
         return 0;
     }
 #endif
+    if (argc > 1 && !strcmp(argv[1], "--libc-check")) {
+#ifdef TIGER_UC
+        uc_host_init();
+        guest_statics_init();
+#endif
+        return libc_check();
+    }
     /* The CFString formatter, on the four table names Lion's dictionary is
      * built out of; see panthera/tests/test_cf_format.py. */
     if (argc > 1 && !strcmp(argv[1], "--cf-check")) {
+#ifdef TIGER_UC
+        uc_host_init();
+        guest_statics_init();
+#endif
         setvbuf(stderr, NULL, _IONBF, 0);
         return cf_check();
     }
@@ -961,7 +974,17 @@ int main(int argc, char **argv)
     /* Lion's Accelerate surface -- the FFT its WSOLA correlates with, and the
      * vector helpers around it -- printed for numpy to check; see
      * panthera/tests/test_vdsp.py. */
+    if (argc > 1 && (!strcmp(argv[1], "--linalg-check") || !strcmp(argv[1], "--sqlite-check"))) {
+#ifdef TIGER_UC
+        uc_host_init();
+#endif
+        return !strcmp(argv[1], "--sqlite-check") ? sqlite_check() : linalg_check();
+    }
     if (argc > 1 && !strcmp(argv[1], "--vdsp-check")) {
+#ifdef TIGER_UC
+        uc_host_init();
+        guest_statics_init();
+#endif
         setvbuf(stderr, NULL, _IONBF, 0);
         return vdsp_check();
     }

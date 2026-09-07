@@ -333,6 +333,9 @@ static void apply_ext_relocs(image *im, image *dep)
         if (symnum >= im->nsyms) { missed++; continue; }
         nm = im->strs + im->syms[symnum].n_strx;
         target = lookup_shim(nm);
+#ifdef TIGER_UC
+        if (target) target = uc_bind_target(nm, target);
+#endif
         if (!target) target = lookup_in(im, nm);      /* self first */
         if (!target) target = lookup_loaded(im, nm);
         if (!target) { missed++; continue; }
@@ -516,7 +519,10 @@ static void load(image *im, const char *path)
 {
     size_t len;
     memset(im, 0, sizeof(*im));
-    im->path  = path;
+    /* JNI releases its input strings when nativeOpen returns. */
+    { char *owned = (char *)malloc(strlen(path) + 1);
+      if (!owned) die("no memory for image path");
+      strcpy(owned, path); im->path = owned; }
     im->file  = read_file(path, &len);
     im->slice = find_i386(im->file, len);
     if (g_verbose) printf("%s\n", path);

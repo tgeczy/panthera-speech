@@ -188,82 +188,170 @@ static int sqlite_ready(void)
     return g_sql.ok;
 }
 
-static int __cdecl sh_sqlite3_open(const char *path, void **db)
+/* SQLite handles are host-owned. On a 64-bit host, give the guest a low
+ * wrapper; output pointer slots and the prepare tail are always four bytes. */
+static void *sql_host(void *handle)
 {
+#if GUEST_LOW
+    return handle ? *(void **)handle : NULL;
+#else
+    return handle;
+#endif
+}
+static void *sql_guest(void *handle)
+{
+#if GUEST_LOW
+    void **box;
+    if (!handle) return NULL;
+    box = (void **)GMEM_ALLOC(sizeof *box);
+    if (box) *box = handle;
+    return box;
+#else
+    return handle;
+#endif
+}
+static void sql_free_handle(void *handle)
+{
+#if GUEST_LOW
+    GMEM_FREE(handle);
+#else
+    (void)handle;
+#endif
+}
+static int __cdecl sh_sqlite3_open(const char *path, gptr *db)
+{
+    void *native = NULL, *guest;
     int rc;
-    if (db) *db = NULL;
+    if (!db) return SQLITE_ERROR;
+    *db = 0;
     if (!sqlite_ready()) return SQLITE_ERROR;
-    rc = g_sql.open(path, db);
+    rc = g_sql.open(path, &native);
+    guest = sql_guest(native);
+    if (native && !guest) { g_sql.close(native); return 7; } /* SQLITE_NOMEM */
+    *db = GP(guest);
     g_sql_opens++;
-    if (g_verbose)
-        printf("  [sql] open %s -> %d\n", path ? path : "(null)", rc);
+    if (g_verbose) printf("  [sql] open %s -> %d\n", path ? path : "(null)", rc);
     return rc;
 }
-
-static int __cdecl sh_sqlite3_prepare(void *db, const char *sql, int nbytes,
-                                      void **stmt, const char **tail)
+static int sql_prepare(void *db, const char *sql, int nbytes,
+                       gptr *stmt, gptr *tail, p_prepare prepare)
 {
-    if (stmt) *stmt = NULL;
-    if (!sqlite_ready() || !db) return SQLITE_ERROR;
-    if (g_verbose) printf("  [sql] prepare %s\n", sql ? sql : "(null)");
-    return g_sql.prepare(db, sql, nbytes, stmt, tail);
+    void *native = NULL, *guest;
+    const char *native_tail = NULL;
+    int rc;
+    if (stmt) *stmt = 0;
+    if (tail) *tail = 0;
+    if (!stmt || !sqlite_ready() || !db || !prepare) return SQLITE_ERROR;
+    rc = prepare(sql_host(db), sql, nbytes, &native, tail ? &native_tail : NULL);
+    guest = sql_guest(native);
+    if (native && !guest) { g_sql.finalize(native); return 7; }
+    *stmt = GP(guest);
+    if (tail) *tail = GP(native_tail); /* points into the guest's SQL string */
+    return rc;
 }
-
+static int __cdecl sh_sqlite3_prepare(void *db, const char *sql, int nbytes,
+                                      gptr *stmt, gptr *tail)
+{
+    sqlite_ready();
+    return sql_prepare(db, sql, nbytes, stmt, tail, g_sql.prepare);
+}
 static int __cdecl sh_sqlite3_bind_text(void *stmt, int idx, const char *val,
                                         int n, void *destructor)
 {
+    int rc;
+    uintptr_t d = (uintptr_t)destructor;
     if (!sqlite_ready() || !stmt) return SQLITE_ERROR;
-    return g_sql.bind_text(stmt, idx, val, n, destructor);
+    /* SQLITE_TRANSIENT is guest -1, not a zero-extended function pointer.
+     * For a real guest destructor, copy now and call it through the bridge. */
+    rc = g_sql.bind_text(sql_host(stmt), idx, val, n, d ? (void *)(intptr_t)-1 : NULL);
+    if (d && (gptr)d != 0xffffffffu && val && n >= 0)
+        enter_engine((void (__cdecl *)(void *))destructor, (void *)val);
+    return rc;
 }
-
 static int __cdecl sh_sqlite3_step(void *stmt)
 {
     int rc;
-    /* SQLITE_DONE, not SQLITE_OK: "the query finished and there were no rows"
-     * is the honest answer when there is no database, and it is the one the
-     * caller actually tests for. */
     if (!sqlite_ready() || !stmt) return SQLITE_DONE;
-    rc = g_sql.step(stmt);
+    rc = g_sql.step(sql_host(stmt));
     if (rc == SQLITE_ROW) g_sql_rows++;
     return rc;
 }
-
 static int __cdecl sh_sqlite3_column_int(void *stmt, int col)
 {
     if (!sqlite_ready() || !stmt) return 0;
-    return g_sql.column_int(stmt, col);
+    return g_sql.column_int(sql_host(stmt), col);
 }
-
 static int __cdecl sh_sqlite3_prepare_v2(void *db, const char *sql, int nbytes,
-                                         void **stmt, const char **tail)
+                                         gptr *stmt, gptr *tail)
 {
-    if (stmt) *stmt = NULL;
-    if (!sqlite_ready() || !db || !g_sql.prepare_v2) return SQLITE_ERROR;
-    if (g_verbose) printf("  [sql] prepare_v2 %s\n", sql ? sql : "(null)");
-    return g_sql.prepare_v2(db, sql, nbytes, stmt, tail);
+    sqlite_ready();
+    return sql_prepare(db, sql, nbytes, stmt, tail, g_sql.prepare_v2);
 }
-
-/* Returns 64 bits, in edx:eax, and must be declared to. */
 static __int64 __cdecl sh_sqlite3_column_int64(void *stmt, int col)
 {
     if (!sqlite_ready() || !stmt || !g_sql.column_int64) return 0;
-    return g_sql.column_int64(stmt, col);
+    return g_sql.column_int64(sql_host(stmt), col);
 }
-
 static int __cdecl sh_sqlite3_reset(void *stmt)
 {
     if (!sqlite_ready() || !stmt) return SQLITE_OK;
-    return g_sql.reset(stmt);
+    return g_sql.reset(sql_host(stmt));
 }
-
 static int __cdecl sh_sqlite3_finalize(void *stmt)
 {
+    int rc;
     if (!sqlite_ready() || !stmt) return SQLITE_OK;
-    return g_sql.finalize(stmt);
+    rc = g_sql.finalize(sql_host(stmt));
+    sql_free_handle(stmt);
+    return rc;
 }
-
 static int __cdecl sh_sqlite3_close(void *db)
 {
+    int rc;
     if (!sqlite_ready() || !db) return SQLITE_OK;
-    return g_sql.close(db);
+    rc = g_sql.close(sql_host(db));
+    if (rc == SQLITE_OK) sql_free_handle(db); /* SQLITE_BUSY keeps the handle live */
+    return rc;
+}
+
+static int sqlite_check(void)
+{
+    struct sql_probe {
+        gptr db, db_guard, stmt, stmt_guard, tail, tail_guard;
+        char path[16], query[96], value[8];
+    } *p = (struct sql_probe *)GMEM_ALLOC(sizeof *p);
+    int rc, ok = 0;
+    if (!p) return 2;
+    memset(p, 0, sizeof *p);
+    p->db_guard = p->stmt_guard = p->tail_guard = 0x5a17beefu;
+    strcpy(p->path, ":memory:");
+    strcpy(p->query, "SELECT 4294967297, length(?); tail");
+    strcpy(p->value, "abc");
+    rc = sh_sqlite3_open(p->path, &p->db);
+    if (p->db_guard != 0x5a17beefu) goto done;
+    if (rc != SQLITE_OK) {
+        if (p->db) sh_sqlite3_close(GHOST(p->db));
+        p->db = 0;
+        rc = sh_sqlite3_prepare(NULL, p->query, -1, &p->stmt, &p->tail);
+        ok = rc != SQLITE_OK && !p->stmt && !p->tail &&
+             p->stmt_guard == 0x5a17beefu && p->tail_guard == 0x5a17beefu;
+        fprintf(stdout, "[sqlite] unavailable outputs %s\n", ok ? "PASS" : "FAIL");
+        goto done;
+    }
+    rc = sh_sqlite3_prepare_v2(GHOST(p->db), p->query, -1, &p->stmt, &p->tail);
+    if (rc || p->stmt_guard != 0x5a17beefu || p->tail_guard != 0x5a17beefu ||
+        strcmp((const char *)GHOST(p->tail), " tail")) goto done;
+    if (sh_sqlite3_bind_text(GHOST(p->stmt), 1, p->value, 3, GHOST(0xffffffffu))) goto done;
+    p->value[0] = 0; /* SQLITE_TRANSIENT must have copied it. */
+    if (sh_sqlite3_step(GHOST(p->stmt)) != SQLITE_ROW ||
+        sh_sqlite3_column_int(GHOST(p->stmt), 1) != 3 ||
+        sh_sqlite3_column_int64(GHOST(p->stmt), 0) != 4294967297LL) goto done;
+    if (sh_sqlite3_reset(GHOST(p->stmt)) || sh_sqlite3_step(GHOST(p->stmt)) != SQLITE_ROW) goto done;
+    ok = 1;
+    fprintf(stdout, "[sqlite] handles, outputs, transient text, int64, reset PASS\n");
+done:
+    if (p->stmt) sh_sqlite3_finalize(GHOST(p->stmt));
+    if (p->db) sh_sqlite3_close(GHOST(p->db));
+    GMEM_FREE(p);
+    return ok ? 0 : 1;
 }

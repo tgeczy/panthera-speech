@@ -1,11 +1,8 @@
 # Build the host on a real Linux box, and run the checks that carry their own
 # inputs.
 #
-# Two reasons this exists.  The first is Devin's port, which runs the Windows
-# host under Wine today: a native ELF is the fix, and "it compiles on my
-# cross-compiler" is not the same claim as "it builds and links on Linux".
-# The second is that a syntax check cannot run a test, and three of this
-# project's suites need no engine data at all.
+# A native ELF needs a real Linux build and link check. The generated tests
+# exercise the host without any engine data.
 #
 # **No Apple or Berkeley data goes near this, and none ever can.**  The rule
 # across both repositories is ship the extractor, never the bits; a build
@@ -44,7 +41,7 @@ jobs:
         run: |
           sudo dpkg --add-architecture i386
           sudo apt-get update
-          sudo apt-get install -y ${{ matrix.packages }}
+          sudo apt-get install -y python3-venv ${{ matrix.packages }}
           # The 32-bit FAAD2 is a separate package from the 64-bit one, and
           # only the i686 build wants it.  Not fatal if the archive does not
           # carry it: the build then says so and leaves the AAC voices out
@@ -56,7 +53,7 @@ jobs:
       - name: Fetch and build Unicorn
         if: matrix.arch != 'i686'
         run: |
-          git clone --depth 1 --branch 2.0.1.post1 \
+          git clone --depth 1 --branch 2.1.4 \
             https://github.com/unicorn-engine/unicorn.git unicorn-src
           cmake -S unicorn-src -B unicorn-src/build \
             -DCMAKE_BUILD_TYPE=Release -DUNICORN_ARCH=x86 \
@@ -82,6 +79,16 @@ jobs:
         run: |
           python3 tools/volume_oracle.py build/linux-${{ matrix.arch }}/tiger_host
           build/linux-${{ matrix.arch }}/tiger_host --capabilities | python3 -m json.tool
+          build/linux-${{ matrix.arch }}/tiger_host --libc-check
+
+      - name: Generated linear algebra and SQLite ABI oracles
+        run: |
+          python3 -m venv /tmp/panthera-tests
+          /tmp/panthera-tests/bin/pip install numpy pytest
+          export PANTHERA_TEST_HOST="$PWD/build/linux-${{ matrix.arch }}/tiger_host"
+          export PANTHERA_TEST_UC_HOST="$PANTHERA_TEST_HOST"
+          /tmp/panthera-tests/bin/python -m pytest -q \
+            panthera/tests/test_linalg.py panthera/tests/test_sqlite_abi.py
 
       - uses: actions/upload-artifact@v4
         with:

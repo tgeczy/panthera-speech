@@ -88,6 +88,7 @@ static short pt_clip(double v)
 static void pt_utterance_reset(void)
 {
     g_pcm_n = 0; g_slices = 0; g_stopped = 0; g_empty_run = 0;
+    g_defer_arm = 0;  /* Lion signals completion by arming its deferred stop. */
     g_dup_slices = 0; g_have_last = 0; g_p_drops = 0;
     g_epoch_base = 0; g_last_stime = 0.0; g_have_origin = 0;
     g_utt++; g_stale_slices = 0; g_pull_pos = 0;
@@ -296,7 +297,7 @@ int panthera_pull(short *out, int maxSamples)
      * on this thread. */
     if (!g_pt_ready || maxSamples <= 0) return 0;
     for (;;) {
-        int finished = g_stopped && pacer_idle();
+        int finished = (g_stopped || (g_defer_arm && g_pcm_n)) && pacer_idle();
         unsigned end = g_pcm_n;
         /* Match serve mode: the newest probe slice may still be overwritten. */
         if (!finished) end = end > STREAM_LOOKBEHIND ? end - STREAM_LOOKBEHIND : 0;
@@ -309,7 +310,7 @@ int panthera_pull(short *out, int maxSamples)
             g_pull_pos += n;
             return (int)n;
         }
-        if (g_stopped && pacer_idle()) {                      /* utterance finished, all drained */
+        if (finished) {                      /* utterance finished, all drained */
             /* Slices per utterance, so a cancelled one can be told from a
              * completed one: the question is whether a stop truncates the
              * render or merely watches it run to the end. */
@@ -382,7 +383,7 @@ int panthera_render(const char *voiceDir, unsigned creator, int voiceId,
     {
         unsigned last = 0, quiet = 0, ticks = 0;
         int started = 0;
-        while (!g_pt_stop && !g_stopped && ticks < 4000) {   /* <= ~100 s cap */
+        while (!g_pt_stop && !g_stopped && !(g_defer_arm && g_pcm_n) && ticks < 4000) {
             Sleep(25); ticks++;
             if (g_slices != last) { last = g_slices; quiet = 0; started = 1; }
             else if (started && ++quiet >= 120) break;       /* 3 s of quiet */

@@ -1,13 +1,3 @@
-// Process-wide singleton owning the one emulated engine. The native handle is
-// process-global (host_open maps the images once per process), so every render
-// is serialised on [lock]; stop is deliberately NOT under the lock, so it can
-// interrupt a render that is holding it.
-//
-// Voice data lives under the app's own external files dir -- no storage
-// permission, works on every Android version and on Play. The user extracts an
-// engine generation's files into panthera-data/<generation>/, mirroring the
-// layout the NVDA add-on uses; the "Check Engine" step verifies it is there
-// before the engine reports any voices.
 package com.pantheraspeech.tts
 
 import android.content.Context
@@ -19,10 +9,7 @@ object PantheraEngine {
     const val PREF_VERIFIED = "engine_verified"      // set by "Check Engine"
     const val PREF_DEFAULT_VOICE = "default_voice"   // voice name, e.g. "Fred"
     const val PREF_VOLUME = "volume"
-    fun volume(ctx: Context): Int = prefs(ctx).getInt(PREF_VOLUME,
-        if (activeGen(ctx) == GEN_TIGER) 100 else 90).coerceIn(0, 100)
-
-    const val PREF_RATE = "rate_wpm"                 // 0 = engine default
+    const val PREF_RATE = "rate_wpm"                 // 0 = follow the requesting app
 
     /**
      * How numbers are read: "off", "fix" (the default) or "words".
@@ -55,40 +42,11 @@ object PantheraEngine {
         else -> gen
     }
 
-    /**
-     * The generations that actually run here, as opposed to the ones whose data
-     * this app can find.
-     *
-     * **Presence is not support, and offering an engine that faults is worse
-     * than not offering it.** Snow Leopard and Lion are both measured failures
-     * under emulation, on a Galaxy S22, on *both* ABIs -- so this is not the
-     * 64-bit gap it was assumed to be:
-     *
-     *     lion         guest fault, UC_ERR_FETCH_UNMAPPED, in the static
-     *                  initializer __GLOBAL__I__ZN12_GLOBAL__N_114freelist_mutexE
-     *                  -- libstdc++.6.0.9 calling through a pointer nothing bound
-     *     snowleopard  guest fault, UC_ERR_READ_UNMAPPED, earlier still
-     *
-     * Both die before a voice is ever asked for, so nothing about them can be
-     * salvaged by hiding voices. They stay in [GENERATIONS] because the push
-     * harness, the data layout and this diagnosis all need names for them, and
-     * because the desktop host runs all four -- it is only the emulated path
-     * that stops here.
-     */
-    val SUPPORTED_GENERATIONS = listOf(GEN_TIGER, GEN_LEOPARD)
-
-    /** Why a present generation is not on offer, for the settings page to say
-     * out loud rather than silently omitting it. */
+    // Offered only after the native and framework device suites pass.
+    val SUPPORTED_GENERATIONS = GENERATIONS
     fun unsupportedReason(gen: String): String? =
-        if (gen in SUPPORTED_GENERATIONS) null
-        else "${genLabel(gen)} is installed but does not run on Android yet — " +
-             "its C++ runtime faults before the first voice loads. It works on " +
-             "desktop Panthera."
+        if (gen in SUPPORTED_GENERATIONS) null else "${genLabel(gen)} is not supported yet."
 
-    /** Which generation the engine loads from. One per process, because
-     * panthera_init maps its images into a reserved guest block once and there
-     * is no unmap: changing it takes effect when the speech service next
-     * starts. See [restartNeeded]. */
     const val PREF_GEN = "engine_generation"
 
     data class VoiceInfo(
@@ -204,7 +162,7 @@ object PantheraEngine {
      * they changed it -- "Alex" means nothing in Tiger. SAPI settled the
      * question first: it registers one token per voice per generation, named
      * "Alex (Leopard)", and respawns its host when the tree changes. This is
-     * the same model, and [restartNeeded] is the same respawn.
+     * the same model, each private worker owns one generation.
      *
      * Sorted by voice name so the list reads alphabetically the way a person
      * expects, with each name's generations together. */
@@ -212,8 +170,7 @@ object PantheraEngine {
         availableGens(ctx).flatMap { scanVoices(ctx, it) }
             .sortedWith(compareBy({ it.name.lowercase() }, { it.gen }))
 
-    /** The voices of the generation currently loaded (or about to be), which is
-     * the subset that can be spoken without restarting first. */
+    /** Voices of the generation selected in settings. */
     fun activeVoices(ctx: Context): List<VoiceInfo> = scanVoices(ctx, activeGen(ctx))
 
     fun voiceById(ctx: Context, id: String?): VoiceInfo? =
@@ -245,6 +202,7 @@ object PantheraEngine {
     /** Record a voice choice, and with it the generation that voice belongs to.
      * These are one action: choosing "Alex (Leopard)" *is* choosing Leopard. */
     fun chooseVoice(ctx: Context, voice: VoiceInfo) {
+        defaultVoiceName(ctx, activeGen(ctx)) // migrate the old choice before switching
         prefs(ctx).edit()
             .putString(voicePrefKey(voice.gen), voice.name)
             .putString(PREF_GEN, voice.gen)
@@ -269,134 +227,89 @@ object PantheraEngine {
         return ok
     }
 
-    // ---- native lifecycle --------------------------------------------------
-
-    private val lock = Any()
-    private var opened = false
-    /** The generation [open] actually loaded, which after a preference change
-     * is not necessarily [activeGen]. */
-    private var openedGen: String? = null
-
-    /**
-     * True when the chosen generation is not the one this process loaded.
-     *
-     * `panthera_init` maps its images into a reserved guest block once and
-     * offers no unmap, so a second generation cannot be brought up beside the
-     * first: the process has to start again. That is not a workaround, it is
-     * what the SAPI host already does -- it remembers the tree it was spawned
-     * with and respawns on a difference, because "a generation is a different
-     * engine".
-     *
-     * The saving grace is that this is almost never true. The engine opens
-     * lazily, on the first utterance, so a user who picks a voice before
-     * speaking simply gets the right engine. It only becomes true if they
-     * speak, switch, and speak again.
-     */
-    fun restartNeeded(ctx: Context): Boolean = synchronized(lock) {
-        opened && openedGen != null && openedGen != activeGen(ctx)
+    // Settings are read together once per utterance, after resolving its voice.
+    // Legacy global values remain the fallback until a generation is customized.
+    fun settingKey(key: String, gen: String) = "${key}_$gen"
+    data class Settings(val volume: Int, val rate: Int, val numbers: String) {
+        fun wpm(requestRate: Int): Int = if (rate > 0) rate.coerceIn(80, 500)
+            else (180 * (if (requestRate <= 0) 100 else requestRate) / 100).coerceIn(80, 500)
     }
-
-    /** Which generation is loaded right now, or null before the first open. */
-    fun loadedGen(): String? = synchronized(lock) { openedGen }
-
-    /**
-     * End this process so the next one loads the generation now chosen.
-     *
-     * Deliberately abrupt. There is nothing to tidy: the engine's state is the
-     * mapped images and the guest arena, both of which die with the process,
-     * and any half-finished utterance has already been refused. Android
-     * restarts a bound speech service on demand -- the same path it uses after
-     * a crash, and one this project has watched work in logcat.
-     *
-     * Called only after the choice has been written to preferences, so the
-     * replacement process comes up with the generation the user asked for.
-     */
-    fun exitForGenerationChange() {
-        android.util.Log.i("PantheraEngine", "exiting so the next process loads a new generation")
-        Thread {
-            // A beat, so the refusal reaches the client before the binder dies
-            // and it sees a service death instead of an error it can report.
-            try { Thread.sleep(150) } catch (e: InterruptedException) { }
-            android.os.Process.killProcess(android.os.Process.myPid())
-        }.start()
-    }
-
-    // Hold ownership for the entire stream; the preview uses this same lock.
-    // stop() stays outside it so cancellation can interrupt the owner.
-    fun <T> withSynthesis(block: () -> T): T = synchronized(lock) {
-        try { block() } finally { if (opened) PantheraNative.nativeFinish() }
-    }
-
-    private fun open(ctx: Context): Boolean {
-        synchronized(lock) {
-            if (opened) return true
-            val gen = activeGen(ctx)
-            val root = genRoot(ctx, gen) ?: return false
-            val rc = try {
-                PantheraNative.nativeOpen(
-                    mtIn(root, gen).absolutePath, sdIn(root, gen).absolutePath)
-            } catch (e: Throwable) { return false }
-            opened = (rc == 0)
-            if (opened) openedGen = gen
-            return opened
-        }
-    }
-
-    fun isOpen(): Boolean = synchronized(lock) { opened }
-
-    /** Load the engine ahead of the first utterance (the images take a few
-     * seconds to map), so a screen reader's first request is not gated on it. */
-    fun warmUp(ctx: Context) { synchronized(lock) { open(ctx) } }
-
-    /** Render one utterance to PCM, or null on failure. Serialised.
-     *
-     * Takes the text as the app has it and puts it through the same emoji and
-     * MacRoman pass the speech path uses, so a preview here sounds like the
-     * real thing rather than like a second implementation of it. */
-    fun render(ctx: Context, voice: VoiceInfo, text: String, wpm: Int): ShortArray? {
-        synchronized(lock) {
-            if (!open(ctx)) return null
-            return try {
-                applyNumberStyle(ctx)
-                PantheraNative.nativeSetVolume(volume(ctx), activeGen(ctx))
-                PantheraNative.nativeRender(voice.dir, voice.creator, voice.voiceId,
-                    PantheraText.forEngine(text), wpm)
-            } catch (e: Throwable) { null }
-        }
-    }
-
-    /** Begin an utterance for the streaming path. Serialised (does the one-time
-     * open + selects the voice); the pull that follows is lock-free. Returns 0
-     * or an error. */
-    /** Push the number preference down before an utterance uses it. */
-    private fun applyNumberStyle(ctx: Context) {
-        PantheraNative.nativeSetNumberStyle(
-            prefs(ctx).getString(PREF_NUMBER_STYLE, NUMBER_STYLE_DEFAULT)
+    fun settings(ctx: Context, gen: String = activeGen(ctx)): Settings {
+        val values = prefs(ctx).all
+        fun value(key: String): Any? = values[settingKey(key, gen)] ?: values[key]
+        return Settings(
+            ((value(PREF_VOLUME) as? Int) ?: if (gen == GEN_TIGER) 100 else 90).coerceIn(0, 100),
+            (value(PREF_RATE) as? Int) ?: 0,
+            (value(PREF_NUMBER_STYLE) as? String)?.takeIf { it in listOf("fix", "words", "off") }
                 ?: NUMBER_STYLE_DEFAULT)
     }
+    fun volume(ctx: Context): Int = settings(ctx).volume
 
-    fun speakStart(ctx: Context, voice: VoiceInfo, text: ByteArray, wpm: Int): Int {
-        synchronized(lock) {
-            if (!open(ctx)) return -1
-            return try {
-                applyNumberStyle(ctx)
-                PantheraNative.nativeSetVolume(volume(ctx), activeGen(ctx))
-                PantheraNative.nativeSpeakStart(voice.dir, voice.creator, voice.voiceId, text, wpm)
-            } catch (e: Throwable) { -1 }
+    private val lock = Any()
+    @Volatile private var worker: IPantheraWorker? = null
+    @Volatile private var openedGen: String? = null
+    @Volatile private var rate = 22050
+    fun loadedGen(): String? = openedGen
+    fun isOpen(): Boolean = worker != null
+
+    fun <T> withSynthesis(block: () -> T): T = synchronized(lock) {
+        try { block() } finally { try { worker?.finish() } catch (e: Exception) {
+            android.util.Log.w("PantheraEngine", "Engine finish failed", e)
+        } }
+    }
+
+    private fun open(ctx: Context, gen: String): IPantheraWorker {
+        val root = genRoot(ctx, gen) ?: error("Engine data missing for $gen")
+        val next = PantheraWorkers.get(ctx, gen)
+        val hz = next.open(mtIn(root, gen).absolutePath, sdIn(root, gen).absolutePath)
+        check(hz > 0) { "Engine could not open: $gen" }
+        worker = next
+        openedGen = gen
+        rate = hz
+        return next
+    }
+    fun warmUp(ctx: Context) { synchronized(lock) { open(ctx, activeGen(ctx)) } }
+
+    /** Preview uses the same streaming API and settings as platform speech. */
+    fun render(ctx: Context, voice: VoiceInfo, text: String, wpm: Int): ShortArray? = withSynthesis {
+        try {
+            val snapshot = settings(ctx, voice.gen)
+            val chunks = ArrayList<ShortArray>()
+            var total = 0
+            val buffer = ShortArray(4096)
+            for (piece in PantheraText.pieces(text)) {
+                check(speakStart(ctx, voice, PantheraText.bytes(piece), wpm, snapshot) == 0)
+                while (true) {
+                    val count = pull(buffer)
+                    check(count >= 0)
+                    if (count == 0) break
+                    chunks.add(buffer.copyOf(count)); total += count
+                }
+            }
+            ShortArray(total).also { result ->
+                var offset = 0
+                for (chunk in chunks) { chunk.copyInto(result, offset); offset += chunk.size }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("PantheraEngine", "Preview failed", e); null
         }
     }
 
-    /** Drain the utterance: fills [out], returns sample count (0 = finished).
-     * Not under [lock] -- it only reads the worker's output buffer, and a
-     * concurrent stop must be able to interrupt it. */
-    fun pull(out: ShortArray): Int =
-        try { PantheraNative.nativePull(out) } catch (e: Throwable) { -1 }
-
-    /** Interrupt the utterance in progress. NOT under [lock]. */
-    fun stop() {
-        try { PantheraNative.nativeStop() } catch (e: Throwable) { /* nothing to stop */ }
+    fun speakStart(ctx: Context, voice: VoiceInfo, text: ByteArray, wpm: Int,
+                   snapshot: Settings = settings(ctx, voice.gen)): Int = synchronized(lock) {
+        try {
+            open(ctx, voice.gen).start(voice.dir, voice.creator, voice.voiceId, text, wpm,
+                snapshot.volume, voice.gen, snapshot.numbers)
+        } catch (e: Exception) {
+            android.util.Log.e("PantheraEngine", "Speech failed", e); -1
+        }
     }
-
-    fun sampleRate(): Int =
-        try { PantheraNative.nativeSampleRate() } catch (e: Throwable) { 22050 }
+    fun pull(out: ShortArray): Int { return try {
+        val bytes = worker?.pull(out.size) ?: return -1
+        for (i in 0 until bytes.size / 2)
+            out[i] = ((bytes[i*2].toInt() and 255) or (bytes[i*2+1].toInt() shl 8)).toShort()
+        bytes.size / 2
+    } catch (e: Exception) { -1 } }
+    fun stop() { try { worker?.stop() } catch (e: Exception) { } }
+    fun sampleRate(): Int = rate
 }
