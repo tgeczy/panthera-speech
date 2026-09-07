@@ -1,0 +1,27 @@
+Panthera Speech distribution licenses
+
+Copyright (c) 2026 Tamas Geczy
+
+Android and Linux binaries are distributed under the GNU General Public
+License version 2 (GPLv2). Android links Unicorn 2.1.4 and FAAD2 2.11.2;
+the amd64 Linux build links Unicorn, and Linux AAC builds use FAAD2.
+These dependencies retain their own copyright notices and license terms.
+
+The original Panthera source, including the Windows NVDA and SAPI ports,
+remains MIT-licensed. The Windows builds do not link Unicorn or FAAD2 and
+are distributed under MIT. See Panthera-MIT.txt and GPL-2.0.txt.
+FAAD2's additional notice is included in FAAD2-COPYING.txt.
+
+Source and build instructions:
+https://github.com/tgeczy/panthera-speech
+
+Android distributions must be accompanied by the corresponding source
+archive produced by tools/package_android_sources.py. Linux CI archives
+include source and build scripts under sources/. Retain these source
+archives when distributing the corresponding binaries.
+
+Unicorn: https://github.com/unicorn-engine/unicorn
+FAAD2: https://github.com/knik0/faad2
+
+No Apple engine, voice or dictionary data is distributed with Panthera.
+The licenses above cover Panthera and its open-source dependencies only.

@@ -824,7 +824,7 @@ static int host_open(const char *mtpath, const char *sdpath)
  * tiger_host_api.c, and a DLL with a `main` in it links but confuses every
  * tool that looks at one.  The JNI shared library likewise carries no `main`;
  * it is entered through the panthera_* API in tiger_host_jni.c. */
-#if !defined(PT_DLL) && !defined(TIGER_JNI)
+#if !defined(PT_DLL) && !defined(TIGER_JNI) && !defined(TIGER_SHARED)
 
 #include "tiger_host_cli.c"
 

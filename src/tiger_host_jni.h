@@ -1,4 +1,4 @@
-/* tiger_host_jni.h -- the in-process synthesis API the Android JNI layer calls.
+/* The in-process synthesis API used by Android and Linux libpanthera.
  *
  * The engine host is one translation unit built around process-global state
  * (one set of images, one channel), and host_open maps the images once per
@@ -8,6 +8,11 @@
  * bytes can be checked against the WAV oracle before any device is involved.
  *
  * Declared with C linkage so the C++ JNI unit can call into the C host.
+ * Linux installs this header as panthera.h. Keep the library loaded for the
+ * process lifetime: guest worker threads retain references to it. One engine
+ * generation per process; serialize synthesis and settings calls. Only stop
+ * is safe from a second thread while synthesis is in progress. Text arguments
+ * are NUL-terminated MacRoman, while paths use the host's filesystem encoding.
  */
 #ifndef TIGER_HOST_JNI_H
 #define TIGER_HOST_JNI_H

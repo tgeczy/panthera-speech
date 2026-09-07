@@ -573,6 +573,25 @@ static int reset_scheduled_audio(void)
     return 0;
 }
 
+/* A cancelled channel may still schedule audio after SEStopSpeechAt returns.
+ * Native Leopard settles quickly; amd64 emulation needs over 350 ms for the
+ * same request. Never reset the next timeline merely because 200 ms elapsed.
+ * Keep completing and discarding slices until the queue and producer settle.
+ * The deadline is a failure bound, not a delay added to successful cancels. */
+static int settle_cancelled_audio(void)
+{
+    unsigned last = g_slices, quiet = 0;
+    double deadline = wall_ms() + 10000.0;
+    while (quiet < 15 && wall_ms() < deadline) {
+        Sleep(2);
+        if (g_slices != last || !pacer_idle()) { last = g_slices; quiet = 0; }
+        else quiet++;
+    }
+    if (quiet >= 15) return 1;
+    fprintf(stderr, "panthera: cancelled audio did not settle; channel cannot be reused\n");
+    return 0;
+}
+
 static void take_slice(unsigned char *slice)
 {
     unsigned frames = *(unsigned *)(slice + SLICE_FRAMES_OFF);

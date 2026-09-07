@@ -55,7 +55,7 @@ case "$ARCH" in
     UC="${UNICORN_DIR:-$ROOT/android/harness/unicorn}"
     [ -d "$UC/include" ] || { echo "no Unicorn at $UC (set UNICORN_DIR)"; exit 1; }
     CFLAGS="$CFLAGS -I$UC/include"
-    LDFLAGS="$UC/build/libunicorn.a $LDFLAGS"
+    LDFLAGS="${UNICORN_LIBRARY:-$UC/build/libunicorn.a} $LDFLAGS"
     ;;
   *) echo "unknown arch '$ARCH' (i686, x86_64 or aarch64)"; exit 1 ;;
 esac
@@ -87,6 +87,16 @@ echo "   cflags:  $CFLAGS"
 # rest.  A second object would mean a second copy of every static in it.
 $CC $CFLAGS -o "$OUT/tiger_host" "$ROOT/src/tiger_host.c" $LDFLAGS
 echo "   -> $OUT/tiger_host ($(du -h "$OUT/tiger_host" | cut -f1))"
+
+# The same synthesis API Android uses, with an explicit export list. Clients
+# load one engine generation per process and own playback themselves.
+$CC $CFLAGS -fPIC -shared -DTIGER_LIB -DTIGER_SHARED \
+    -Wl,-soname,libpanthera.so.0 -Wl,--version-script="$ROOT/src/panthera.exports" \
+    -o "$OUT/libpanthera.so.0" "$ROOT/src/tiger_host.c" $LDFLAGS
+ln -sf libpanthera.so.0 "$OUT/libpanthera.so"
+mkdir -p "$OUT/include"
+cp "$ROOT/src/tiger_host_jni.h" "$OUT/include/panthera.h"
+echo "   -> $OUT/libpanthera.so.0 (+ include/panthera.h)"
 
 # The self-tests that need no engine data, which is all of them.  This matters
 # for CI in particular: no Apple or Berkeley data may ever go near a build

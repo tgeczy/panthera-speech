@@ -721,58 +721,10 @@ static int serve(image *mt, void *chan, const char *voicesdir)
                         call_aligned3((void *)setinfo, chan, (void *)SEL_RESET,
                                       &zero);
                     }
-                    /* Then let the channel settle -- and this one is honest
-                     * about what it is.
-                     *
-                     * It asks GetSpeechInfo 'stat', whose first long is
-                     * outputBusy, and gives up after a hundred milliseconds.
-                     * Measured on this engine, outputBusy *never* clears: the
-                     * loop runs its full count every time.  So this is a
-                     * bounded wait wearing a poll's clothing, kept because
-                     * removing it brings the fragment back (0 of 8 with it,
-                     * 1 of 8 without) and because the poll costs nothing if a
-                     * future engine does report itself idle.
-                     *
-                     * A hundred milliseconds against 2255 ms of the original
-                     * fault is a trade worth making, but it is a delay, and
-                     * calling it a status check would be a lie. */
-                    {
-                        /* Wait for the stragglers to stop, rather than for a
-                         * fixed time.
-                         *
-                         * The engine keeps handing over slices for a little
-                         * while after being stopped -- the host counts them,
-                         * and it is four or five -- and any that arrive once
-                         * the next request has begun are stamped as *its*
-                         * audio and are heard at the head of it.  A fixed
-                         * hundred milliseconds caught most and missed some:
-                         * the residue was two words, "after that.", still
-                         * riding in front of the next post.
-                         *
-                         * So watch the slice counter instead and leave when it
-                         * has been still for a moment.  Usually quicker than
-                         * the fixed wait, and it does not guess. */
-                        unsigned last = g_slices, quiet = 0;
-                        int spin;
-                        for (spin = 0; spin < 100 && quiet < 15; spin++) {
-                            Sleep(2);
-                            if (g_slices != last) { last = g_slices; quiet = 0; }
-                            else quiet++;
-                            /* 10.7 moved `stat` to kSpeechStatusProperty as
-                             * well, so this asks and is refused there. The
-                             * loop is a bounded settle either way -- it only
-                             * costs the full 200 ms instead of stopping as
-                             * soon as the engine says it is idle. */
-                            if (api.getinfo) {
-                                int idle = 0;
-                                if (speech_status_idle(&api, chan, &idle) == 0 && idle)
-                                    break;      /* it says it is idle */
-                            }
-                        }
-                        if (g_float_stats)
-                            fprintf(stderr, "  [se] settled after %d ms\n",
-                                    spin * 2);
-                    }
+                    /* Do not hand the next request a timeline that still has
+                     * callbacks from this one. On failure close the protocol;
+                     * the client must replace this process before speaking. */
+                    if (!settle_cancelled_audio()) return 1;
                     cancelled = 1;
                     break;
                 }

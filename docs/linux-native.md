@@ -1,4 +1,4 @@
-# Native Linux command-line host
+# Linux command-line host and synthesis library
 
 Panthera builds an ELF host that runs Apple's i386 engine directly on x86
 Linux. It accepts the same TGR3/TGR4 pipe requests as the Windows host.
@@ -69,6 +69,82 @@ Text may include embedded engine speech commands.
 
 The legacy positional paths and `TIGER_TEXT` interface remain available.
 Playback belongs to the audio application or integration of your choice.
+
+## amd64 build
+
+The i686 executable is recommended on x86-64 distributions with 32-bit runtime
+support. It executes the i386 guest directly. The amd64 (`x86_64`) host uses
+Unicorn and needs substantially more time, particularly when cancelling a long
+request. On the test VM, a cancelled Tiger paragraph took about 3.5 seconds
+under emulation; native i686 took about 51 ms. Leopard Vicki took about 536 ms
+and 108 ms respectively. These are synthesis/protocol measurements, not audio
+device latency guarantees.
+
+To build amd64, install the 64-bit FAAD2 development package and build Unicorn
+2.1.4 with its x86 target and position-independent code:
+
+```sh
+cmake -S /path/to/unicorn -B /path/to/unicorn/build \
+  -DCMAKE_BUILD_TYPE=Release -DUNICORN_ARCH=x86 \
+  -DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+cmake --build /path/to/unicorn/build -j
+UNICORN_DIR=/path/to/unicorn ./build_linux.sh x86_64
+```
+
+`UNICORN_LIBRARY` can override the static library path. Dependencies must match
+the chosen architecture; this also applies to a locally built static FAAD2,
+which needs PIC for the shared library. Both Linux targets have been checked
+with Tiger Fred and Leopard Vicki: CLI file/pipes, native number handling,
+volume, repeated synthesis and cancellation recovery. AAC output can differ
+slightly between decoder/architecture builds. Snow Leopard and Lion Linux
+rendering are not part of this validation claim.
+
+The amd64 build remains experimental: one Leopard CLI startup failed during
+validation, followed by 45 successful repetitions and a successful complete
+CLI check. Its cause is not established. Prefer i686 for a screen reader that
+needs the most thoroughly exercised path.
+
+## Link to libpanthera
+
+The same build produces `libpanthera.so.0`, its `libpanthera.so` link, and
+`include/panthera.h`. CI archives contain these alongside the executable,
+this document, and an example C client. No engine or voice data is packaged.
+Linux binaries are distributed under GPLv2. Archives include the distribution
+notice, GPLv2, Panthera's original MIT license and source; amd64 archives also
+include the statically linked Unicorn 2.1.4 source. Windows NVDA/SAPI retain
+their MIT distribution license.
+
+```sh
+out="$PWD/build/linux-i686"
+cc -m32 -I"$out/include" tools/native_library_check.c \
+  -L"$out" -Wl,-rpath,"$out" -lpanthera -o library_check
+./library_check --check                         # no engine data needed
+./library_check /path/to/speech-leopard Vicki    # render/stream/cancel checks
+```
+
+For amd64, use `build/linux-x86_64` and omit `-m32`. An installed application
+should arrange its library search path for the intended installation directory.
+The public header has C linkage and can be included from C++.
+
+Set phrase breaks before `panthera_init`, read the bundle identity with
+`panthera_voice_spec`, then configure volume, numbers and abbreviations between
+utterances. `panthera_speak_start` plus `panthera_pull` provides streaming mono
+PCM16 at `panthera_sample_rate()`. `panthera_render` returns a complete allocated
+buffer that the caller frees with `free`. Library text uses MacRoman; the CLI
+handles UTF-8 conversion for clients that prefer a subprocess.
+
+One engine generation and one synthesis owner are supported per process.
+Serialize settings and synthesis calls. `panthera_stop` alone can be called
+from another thread; follow it with `panthera_finish` on the synthesis thread
+before starting again. Cancellation drains outstanding callbacks; if that
+does not settle within ten seconds, further synthesis is rejected until a
+successful finish. Clients needing a firm cancellation deadline should use the
+subprocess protocol, where they can replace an unresponsive child.
+
+Keep the library loaded for the process lifetime: guest workers retain code
+references, and there is no unload/shutdown API. Use separate processes for
+different generations or to change phrase breaks after initialization. The
+library owns synthesis; clients own playback and their settings interface.
 
 ## Client protocol
 

@@ -10,6 +10,7 @@
 /* host_open maps every image and is a once-per-process step; guard it. */
 static int          g_pt_ready;
 static volatile LONG g_pt_stop;      /* set by panthera_stop, read by the poll */
+static int g_pt_settle_failed;       /* refuse reuse while old callbacks remain */
 
 /* In an app, the engine's stderr diagnostics (its "[au] slice" commentary and
  * every error) go nowhere.  Pump them into logcat so a silent render can be
@@ -184,10 +185,9 @@ void panthera_stop(void)
 void panthera_finish(void)
 {
     if (g_pt_ready && g_pt_stop) {
-        unsigned last = g_slices, quiet = 0;
         unsigned slices_in = g_slices;
         double t0 = wall_ms(), t_ready, t_stop;
-        int spin, err_stop = -1;
+        int err_stop = -1;
         SEStop_t stop;
         /* Belt and braces: panthera_stop normally sets this, but render mode
          * calls finish directly and a stop posted before the engine was ready
@@ -214,11 +214,7 @@ void panthera_finish(void)
 
         /* Then a bounded settle so outstanding slices land before the next
          * request resets the shared timeline (same rule as serve mode). */
-        for (spin = 0; spin < 100 && quiet < 15; spin++) {
-            Sleep(2);
-            if (g_slices != last || !pacer_idle()) { last = g_slices; quiet = 0; }
-            else quiet++;
-        }
+        g_pt_settle_failed = !settle_cancelled_audio();
         /* One line, because this path is measured rather than reasoned about:
          * every previous guess at where the twenty seconds went was wrong. */
         fprintf(stderr, "panthera: finish ready=%.0fms stop=%.0fms(err %d) "
@@ -226,7 +222,7 @@ void panthera_finish(void)
                 t_ready - t0, t_stop - t_ready, err_stop,
                 wall_ms() - t_stop, slices_in, g_slices,
                 g_p_drops, g_stale_slices);
-        InterlockedExchange(&g_au_cancel, 0);
+        if (!g_pt_settle_failed) InterlockedExchange(&g_au_cancel, 0);
     }
 }
 
@@ -295,8 +291,8 @@ int panthera_speak_start(const char *voiceDir, unsigned creator, int voiceId,
      * fast core too.  Asked per utterance rather than once: this thread belongs
      * to the framework, which may hand a different one over. */
     tiger_thread_wants_fast_core("synthesis");
+    if (!g_pt_ready || g_pt_settle_failed) return -1;
     PT_ENSURE_ENGINE();
-    if (!g_pt_ready) return -1;
     InterlockedExchange(&g_pt_stop, 0);
     InterlockedExchange(&g_au_cancel, 0);   /* this one's audio is wanted */
     pt_utterance_reset();
@@ -371,8 +367,8 @@ int panthera_render(const char *voiceDir, unsigned creator, int voiceId,
 
     if (outPcm)   *outPcm = 0;
     if (outFrames) *outFrames = 0;
+    if (!g_pt_ready || g_pt_settle_failed) return -1;
     PT_ENSURE_ENGINE();
-    if (!g_pt_ready) return -1;
     InterlockedExchange(&g_pt_stop, 0);
     InterlockedExchange(&g_au_cancel, 0);
 
