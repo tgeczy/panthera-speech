@@ -58,7 +58,6 @@ class SettingsActivity : Activity() {
     private lateinit var sampleText: EditText
     private lateinit var setupTab: Button
     private lateinit var engineTab: Button
-    private lateinit var rateLabel: TextView
     private var voiceHolder: LinearLayout? = null
     private var pageHolders: List<View> = emptyList()
     private var pad = 0
@@ -238,22 +237,16 @@ class SettingsActivity : Activity() {
             "text-to-speech screen. Setting a rate here overrides it — worth " +
             "doing when an app asks for a speed you did not choose."))
         val savedRate = p.getInt(PantheraEngine.PREF_RATE, 0)
-        rateLabel = body(rateText(savedRate))
-        root.addView(rateLabel)
-        root.addView(SeekBar(this).apply {
-            max = RATE_MAX - RATE_MIN + 1        // slot 0 is "follow the system"
-            progress = wpmToProgress(savedRate)
-            contentDescription = "Speech rate"
-            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(s: SeekBar, v: Int, user: Boolean) {
-                    val wpm = progressToWpm(v)
-                    rateLabel.text = rateText(wpm)
-                    if (user) p.edit().putInt(PantheraEngine.PREF_RATE, wpm).apply()
-                }
-                override fun onStartTrackingTouch(s: SeekBar) {}
-                override fun onStopTrackingTouch(s: SeekBar) {}
-            })
-        })
+        addSlider(root, "Speech rate", RATE_MAX - RATE_MIN + 1,
+            wpmToProgress(savedRate), { rateText(progressToWpm(it)) }) {
+            p.edit().putInt(PantheraEngine.PREF_RATE, progressToWpm(it)).apply()
+        }
+
+        root.addView(heading("Volume"))
+        root.addView(body("Engine volume: 0 mutes speech. Leopard and later balance " +
+            "voice loudness; above 90 may distort. Device volume still applies."))
+        addSlider(root, "Engine volume", 100, PantheraEngine.volume(this),
+            { "$it percent" }) { p.edit().putInt(PantheraEngine.PREF_VOLUME, it).apply() }
 
         root.addView(heading("Numbers"))
         root.addView(body(
@@ -326,6 +319,49 @@ class SettingsActivity : Activity() {
                 override fun onNothingSelected(a: AdapterView<*>?) {}
             }
         }
+
+    // View-based equivalent of TG Speechbox's AccessibleSlider: named value,
+    // one-step arrows, Home/End, and the stock accessibility range actions.
+    private fun addSlider(root: LinearLayout, name: String, limit: Int, value: Int,
+            describe: (Int) -> String, save: (Int) -> Unit) {
+        val label = body(describe(value)).apply { importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO }
+        root.addView(label)
+        root.addView(SeekBar(this).apply {
+            max = limit
+            progress = value
+            keyProgressIncrement = 1
+            fun updateDescription(v: Int) {
+                label.text = describe(v)
+                if (android.os.Build.VERSION.SDK_INT >= 30) {
+                    contentDescription = name
+                    stateDescription = describe(v)
+                } else contentDescription = "$name, ${describe(v)}"
+            }
+            updateDescription(value)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(s: SeekBar, v: Int, user: Boolean) {
+                    updateDescription(v)
+                    if (user) save(v)
+                }
+                override fun onStartTrackingTouch(s: SeekBar) {}
+                override fun onStopTrackingTouch(s: SeekBar) {}
+            })
+            setOnKeyListener { _, key, event ->
+                val target = when (key) {
+                    android.view.KeyEvent.KEYCODE_DPAD_LEFT -> (progress - 1).coerceAtLeast(0)
+                    android.view.KeyEvent.KEYCODE_DPAD_RIGHT -> (progress + 1).coerceAtMost(max)
+                    android.view.KeyEvent.KEYCODE_MOVE_HOME -> 0
+                    android.view.KeyEvent.KEYCODE_MOVE_END -> max
+                    else -> return@setOnKeyListener false
+                }
+                if (event.action == android.view.KeyEvent.ACTION_DOWN) {
+                    progress = target
+                    save(target)
+                }
+                true
+            }
+        })
+    }
 
     private fun prettyGen(g: String) = when (g) {
         PantheraEngine.GEN_TIGER -> "Tiger (10.4)"

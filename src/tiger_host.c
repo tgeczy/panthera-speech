@@ -586,6 +586,7 @@ static unsigned bswap(unsigned v)
 #include "tiger_host_macho.c"
 #include "tiger_host_dyldinfo.c"
 #include "tiger_host_speech.c"
+#include "tiger_host_volume.c"
 #include "tiger_host_serve.c"
 #include "tiger_host_pmod.c"
 
@@ -840,6 +841,39 @@ int main(int argc, char **argv)
     /* --serve <MacinTalk> <SpeechDictionary> <VoicesDir> : stay resident and
      * answer requests on stdin/stdout.  Otherwise render one utterance and
      * write a wav, which is the shape that made every fix above findable. */
+    if (argc == 5 && !strcmp(argv[1], "--volume-value")) {
+        fprintf(stdout, "%d\n", volume_milli(atoi(argv[2]), argv[3], argv[4]));
+        return 0;
+    }
+    if (argc > 1 && !strcmp(argv[1], "--capabilities")) {
+        int available = aac_check() == 0;
+#if defined(TIGER_NO_AAC)
+        const char *backend = "none";
+#elif defined(TIGER_AAC_FAAD)
+        const char *backend = "faad2";
+#elif defined(__ANDROID__)
+        const char *backend = "mediacodec";
+#else
+        const char *backend = "media-foundation";
+#endif
+        fprintf(stdout, "{\"protocols\":[\"TGR3\",\"TGR4\"],"
+               "\"ready_handshake\":true,\"aac_backend\":\"%s\","
+               "\"aac_available\":%s,\"guest_execution\":\"%s\","
+               "\"cancel_signal\":%s}\n", backend,
+               available ? "true" : "false",
+#ifdef TIGER_UC
+               "unicorn",
+#else
+               "native",
+#endif
+#ifdef _WIN32
+               "null"
+#else
+               "\"SIGUSR1\""
+#endif
+        );
+        return 0;
+    }
     if (argc > 1 && !strcmp(argv[1], "--aac-check")) {
         setvbuf(stderr, NULL, _IONBF, 0);
         return aac_check();

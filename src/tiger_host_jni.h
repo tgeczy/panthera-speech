@@ -52,6 +52,11 @@ int  panthera_pull(short *out, int maxSamples);
  * of the utterance; it applies from the next utterance onwards. */
 void panthera_set_number_style(const char *style);
 
+/* NVDA scale, 0..100. Tiger defaults to 100, later generations to 90.
+ * Generation selects its measured voice table. Set under synthesis ownership.
+ * A negative level leaves volume to the caller's embedded commands. */
+void panthera_set_volume(int level, const char *generation);
+
 /* Ask the engine to stop the utterance in progress; makes a blocked
  * panthera_render / panthera_pull return with whatever it has.  Safe from
  * another thread. */

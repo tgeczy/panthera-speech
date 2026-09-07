@@ -18,6 +18,10 @@ object PantheraEngine {
     const val PREFS = "pantheraspeech"
     const val PREF_VERIFIED = "engine_verified"      // set by "Check Engine"
     const val PREF_DEFAULT_VOICE = "default_voice"   // voice name, e.g. "Fred"
+    const val PREF_VOLUME = "volume"
+    fun volume(ctx: Context): Int = prefs(ctx).getInt(PREF_VOLUME,
+        if (activeGen(ctx) == GEN_TIGER) 100 else 90).coerceIn(0, 100)
+
     const val PREF_RATE = "rate_wpm"                 // 0 = engine default
 
     /**
@@ -212,6 +216,7 @@ object PantheraEngine {
             if (!open(ctx)) return null
             return try {
                 applyNumberStyle(ctx)
+                PantheraNative.nativeSetVolume(volume(ctx), activeGen(ctx))
                 PantheraNative.nativeRender(voice.dir, voice.creator, voice.voiceId,
                     PantheraText.forEngine(text), wpm)
             } catch (e: Throwable) { null }
@@ -233,6 +238,7 @@ object PantheraEngine {
             if (!open(ctx)) return -1
             return try {
                 applyNumberStyle(ctx)
+                PantheraNative.nativeSetVolume(volume(ctx), activeGen(ctx))
                 PantheraNative.nativeSpeakStart(voice.dir, voice.creator, voice.voiceId, text, wpm)
             } catch (e: Throwable) { -1 }
         }

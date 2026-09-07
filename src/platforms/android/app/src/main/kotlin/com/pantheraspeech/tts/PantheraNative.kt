@@ -54,6 +54,8 @@ object PantheraNative {
      */
     external fun nativeSetNumberStyle(style: String)
 
+    external fun nativeSetVolume(level: Int, generation: String)
+
     /** Read a .SpeechVoice bundle's VoiceSpec: returns [creator, id], or null if
      * the bundle has no VoiceDescription.  A plain file read -- safe before
      * nativeOpen, which is how the voice list is built. */

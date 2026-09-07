@@ -23,8 +23,45 @@ class EngineSmokeTest : Instrumentation() {
 
     override fun onStart() {
         var tts: TextToSpeech? = null
+        var resultCode = Activity.RESULT_CANCELED
         val results = Bundle()
+        val prefs = PantheraEngine.prefs(targetContext)
+        val savedVolume = if (prefs.contains(PantheraEngine.PREF_VOLUME)) prefs.getInt(PantheraEngine.PREF_VOLUME, 100) else null
+        val savedRate = if (prefs.contains(PantheraEngine.PREF_RATE)) prefs.getInt(PantheraEngine.PREF_RATE, 0) else null
+        val baselineVolume = if (PantheraEngine.activeGen(targetContext) == "tiger") 100 else 50
+        prefs.edit().putInt(PantheraEngine.PREF_VOLUME, baselineVolume)
+            .putInt(PantheraEngine.PREF_RATE, 0).commit()
         try {
+            val activity = startActivitySync(android.content.Intent(targetContext,
+                SettingsActivity::class.java).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+            runOnMainSync {
+                fun descendants(v: android.view.View): List<android.view.View> =
+                    listOf(v) + if (v is android.view.ViewGroup)
+                        (0 until v.childCount).flatMap { descendants(v.getChildAt(it)) } else emptyList()
+                val views = descendants(activity.window.decorView)
+                views.filterIsInstance<android.widget.Button>().first { it.text == "Engine settings" }.performClick()
+                val sliders = views.filterIsInstance<android.widget.SeekBar>()
+                check(sliders.size == 2)
+                for (slider in sliders) {
+                    check(!slider.contentDescription.isNullOrBlank())
+                    slider.requestFocus()
+                    fun key(code: Int) {
+                        slider.dispatchKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, code))
+                        slider.dispatchKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, code))
+                    }
+                    key(android.view.KeyEvent.KEYCODE_MOVE_END); check(slider.progress == slider.max)
+                    key(android.view.KeyEvent.KEYCODE_MOVE_HOME); check(slider.progress == 0)
+                    key(android.view.KeyEvent.KEYCODE_DPAD_RIGHT); check(slider.progress == 1)
+                    key(android.view.KeyEvent.KEYCODE_DPAD_LEFT); check(slider.progress == 0)
+                    if (android.os.Build.VERSION.SDK_INT >= 30) check(!slider.stateDescription.isNullOrBlank())
+                }
+                check(prefs.getInt(PantheraEngine.PREF_VOLUME, -1) == 0)
+                check(prefs.getInt(PantheraEngine.PREF_RATE, -1) == 0)
+                activity.finish()
+            }
+            prefs.edit().putInt(PantheraEngine.PREF_VOLUME, baselineVolume)
+                .putInt(PantheraEngine.PREF_RATE, 0).commit()
+            results.putString("sliders", "PASS: arrows, Home/End, labels, persisted settings")
             val ready = CountDownLatch(1)
             var init = TextToSpeech.ERROR
             runOnMainSync {
@@ -140,6 +177,33 @@ class EngineSmokeTest : Instrumentation() {
                 utterance(name) { client.synthesizeToFile(text, Bundle(), file, name) }
                 return file.readBytes()
             }
+            fun energy(wav: ByteArray): Double {
+                var sum = 0.0
+                for (o in 44 until wav.size - 1 step 2) {
+                    val v = ((wav[o].toInt() and 255) or (wav[o+1].toInt() shl 8)).toShort().toInt()
+                    sum += v.toDouble() * v
+                }
+                return sum
+            }
+            prefs.edit().putInt(PantheraEngine.PREF_VOLUME, baselineVolume / 2).commit()
+            val quiet = pcmOf("volume-half", "Hello there.")
+            prefs.edit().putInt(PantheraEngine.PREF_VOLUME, 0).commit()
+            val mute = pcmOf("volume-mute", "Hello there.")
+            prefs.edit().putInt(PantheraEngine.PREF_VOLUME, baselineVolume).commit()
+            val restored = pcmOf("volume-restored", "Hello there.")
+            check(restored.contentEquals(firstWav!!)) { "Volume did not recover after mute" }
+            check(quiet.size == restored.size && mute.size == restored.size)
+            check(energy(mute) == 0.0) { "Mute produced audible samples" }
+            val ratio = energy(quiet) / energy(restored)
+            check(ratio in 0.15..0.35) { "Half-volume energy ratio: $ratio" }
+            val info = PantheraEngine.voiceById(targetContext, fred.name)!!
+            val preview = PantheraEngine.render(targetContext, info, "Hello there.", 180)!!
+            check(preview.size * 2 == restored.size - 44)
+            check(preview.indices.all { i ->
+                val o = 44 + i*2
+                preview[i] == ((restored[o].toInt() and 255) or (restored[o+1].toInt() shl 8)).toShort()
+            }) { "Preview and service disagree on volume" }
+            results.putString("volume", "PASS: half, mute, restore, preview/service identity")
             val emoji = pcmOf("emoji", "A 👋 here.")
             val spelled = pcmOf("spelled", "A waving hand here.")
             check(emoji.contentEquals(spelled)) {
@@ -258,12 +322,21 @@ class EngineSmokeTest : Instrumentation() {
             val stopMs = android.os.SystemClock.elapsedRealtime() - stopAt
             Log.i("PantheraTest", "stop through next playback completion: ${stopMs}ms")
             results.putLong("stopThroughPlaybackMs", stopMs)
-            results.putString("stream", "PASS: initialization, repeated WAV synthesis, playback callback, stop/restart")
-            finish(Activity.RESULT_OK, results)
+            results.putString("stream", "PASS: sliders, volume/mute/restore, preview/service identity, reference WAVs, playback, stop/restart")
+            resultCode = Activity.RESULT_OK
         } catch (e: Throwable) {
             Log.e("PantheraTest", "FAILED", e)
             results.putString("stream", "FAIL: $e")
-            finish(Activity.RESULT_CANCELED, results)
-        } finally { tts?.shutdown() }
+
+        } finally {
+            tts?.shutdown()
+            val restore = prefs.edit()
+            if (savedVolume == null) restore.remove(PantheraEngine.PREF_VOLUME)
+            else restore.putInt(PantheraEngine.PREF_VOLUME, savedVolume)
+            if (savedRate == null) restore.remove(PantheraEngine.PREF_RATE)
+            else restore.putInt(PantheraEngine.PREF_RATE, savedRate)
+            restore.commit()
+        }
+        finish(resultCode, results)
     }
 }

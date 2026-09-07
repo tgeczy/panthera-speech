@@ -239,8 +239,17 @@ static int aac_check(void)
                         "be decoded; every formant voice is unaffected.\n");
         return 2;
     }
-    NeAACDecClose(h);
-    fprintf(stderr, "RESULT: FAAD2 is built in and available, so the AAC\n"
-                    "voices do not depend on a system codec.\n");
+    {
+        unsigned char asc[] = {0x13, 0x88}; /* AAC-LC, 22050 Hz mono */
+        unsigned long rate = 0;
+        unsigned char channels = 0;
+        int rc = NeAACDecInit2(h, asc, sizeof(asc), &rate, &channels);
+        NeAACDecClose(h);
+        if (rc != 0) {
+            fprintf(stderr, "RESULT: FAAD2 cannot initialize AAC-LC.\n");
+            return 2;
+        }
+    }
+    fprintf(stderr, "RESULT: FAAD2 is linked and AAC-LC initializes successfully.\n");
     return 0;
 }

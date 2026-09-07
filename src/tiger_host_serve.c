@@ -122,6 +122,22 @@ static FILE *g_in, *g_out;
  * so it must never block, and SetEvent cannot.  The name comes in on the
  * environment when the host is started. */
 static HANDLE g_cancel_ev;
+#ifndef _WIN32
+#include <signal.h>
+static volatile sig_atomic_t g_cancel_signal;
+/* Only publish a flag from the signal handler. Engine calls belong to the
+ * synthesis thread. Lock-free exchange keeps a new signal from being lost
+ * while the reader consumes an earlier one. */
+#if __GCC_ATOMIC_INT_LOCK_FREE != 2
+#error Cancellation requires lock-free integer atomics
+#endif
+typedef char cancel_atomic_is_int[sizeof(sig_atomic_t) == sizeof(int) ? 1 : -1];
+static void cancel_signal(int sig)
+{
+    (void)sig;
+    __atomic_store_n(&g_cancel_signal, 1, __ATOMIC_RELAXED);
+}
+#endif
 /* Whether an interrupted channel is reset with soReset.
  *
  * It flushes what is left, but it resets the channel to its defaults --
@@ -133,6 +149,9 @@ static int g_use_reset;
 
 static int cancel_requested(void)
 {
+#ifndef _WIN32
+    if (__atomic_exchange_n(&g_cancel_signal, 0, __ATOMIC_RELAXED)) return 1;
+#endif
     return g_cancel_ev &&
            WaitForSingleObject(g_cancel_ev, 0) == WAIT_OBJECT_0;
 }
@@ -355,6 +374,27 @@ static int serve(image *mt, void *chan, const char *voicesdir)
             }
         }
     }
+
+#ifndef _WIN32
+    {
+        struct sigaction action;
+        memset(&action, 0, sizeof(action));
+        action.sa_handler = cancel_signal;
+        sigemptyset(&action.sa_mask);
+        action.sa_flags = SA_RESTART;
+        if (sigaction(SIGUSR1, &action, NULL) != 0) {
+            perror("tiger_host: installing cancellation signal");
+            return 1;
+        }
+    }
+#endif
+    /* Devin's native client waits for TRDY before writing the first request.
+     * Opt-in preserves the byte stream expected by existing NVDA clients. */
+    { const char *ready = getenv("TIGER_READY_HANDSHAKE");
+      if (ready && !strcmp(ready, "1")) {
+          unsigned magic = 0x59445254u;
+          if (fwrite(&magic, 4, 1, g_out) != 1 || fflush(g_out)) return 1;
+      } }
 
     for (;;) {
         unsigned magic, namelen, textlen, nframes, i;

@@ -63,6 +63,16 @@ Java_com_pantheraspeech_tts_PantheraNative_nativeRender(
     return arr;
 }
 
+JNIEXPORT void JNICALL
+Java_com_pantheraspeech_tts_PantheraNative_nativeSetVolume(
+        JNIEnv *env, jclass, jint level, jstring jgeneration) {
+    const char *generation = env->GetStringUTFChars(jgeneration, nullptr);
+    if (generation) {
+        panthera_set_volume((int)level, generation);
+        env->ReleaseStringUTFChars(jgeneration, generation);
+    }
+}
+
 // How to read numbers the engine gets wrong: "off", "fix" or "words".
 // A setting rather than a per-utterance argument, because it is a preference;
 // it takes effect from the next utterance.

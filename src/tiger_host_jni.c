@@ -282,7 +282,7 @@ int panthera_speak_start(const char *voiceDir, unsigned creator, int voiceId,
     if (wpm > 0) set_param(&api, g_chan, PARAM_RATE, (unsigned)wpm << 16);
     rewritten = pt_numbers(text);
     if (rewritten) text = rewritten;
-    err = speak_text(&api, g_chan, text, (unsigned)strlen(text));
+    err = speak_with_volume(&api, g_chan, text, strlen(text), voiceDir);
     free(rewritten);
     if (err) fprintf(stderr, "panthera: SESpeakBuffer -> OSErr %d\n", err);
     return err;   /* synthesis now runs on the engine's worker; drain with pull */
@@ -365,8 +365,8 @@ int panthera_render(const char *voiceDir, unsigned creator, int voiceId,
         /* The same rewriting speak_start does -- both entry points, or the
          * two drift and a preview stops matching what is spoken. */
         char *rewritten = pt_numbers(text);
-        err = speak_text(&api, g_chan, rewritten ? rewritten : text,
-                         (unsigned)strlen(rewritten ? rewritten : text));
+        err = speak_with_volume(&api, g_chan, rewritten ? rewritten : text,
+                         strlen(rewritten ? rewritten : text), voiceDir);
         free(rewritten);
     }
     if (err) { fprintf(stderr, "panthera: SESpeakBuffer -> OSErr %d\n", err); return err; }
