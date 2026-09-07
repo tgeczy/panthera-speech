@@ -234,10 +234,15 @@ object PantheraEngine {
     const val PREF_ABBREVIATIONS = "expand_abbreviations"
     const val PREF_PHRASING = "phrasing"
     val PHRASING_VALUES = listOf("fewest", "fewer", "more", "most", "leopard")
+    const val VOLUME_SYSTEM_DEFAULT = -1
+    fun defaultVolume(generation: String) = if (generation == GEN_TIGER) 100 else 90
+    fun volumeLevels(saved: Int): List<Int> =
+        (listOf(VOLUME_SYSTEM_DEFAULT) + (0..100 step 5) + listOf(saved.coerceIn(-1, 100))).distinct().sorted()
     fun supportsPhrasing(generation: String) = generation != GEN_TIGER
     data class Settings(val volume: Int, val rate: Int, val numbers: String,
                         val acceptCommands: Boolean = false, val expandAbbreviations: Boolean = true,
                         val phrasing: String = "fewest") {
+        fun engineVolume(generation: String) = if (volume < 0) defaultVolume(generation) else volume
         fun wpm(requestRate: Int): Int = if (rate > 0) rate.coerceIn(80, 500)
             else (180 * (if (requestRate <= 0) 100 else requestRate) / 100).coerceIn(80, 500)
     }
@@ -245,7 +250,7 @@ object PantheraEngine {
         val values = prefs(ctx).all
         fun value(key: String): Any? = values[settingKey(key, gen)] ?: values[key]
         return Settings(
-            ((value(PREF_VOLUME) as? Int) ?: if (gen == GEN_TIGER) 100 else 90).coerceIn(0, 100),
+            ((value(PREF_VOLUME) as? Int) ?: VOLUME_SYSTEM_DEFAULT).coerceIn(-1, 100),
             (value(PREF_RATE) as? Int) ?: 0,
             (value(PREF_NUMBER_STYLE) as? String)?.takeIf { it in listOf("fix", "words", "off") }
                 ?: NUMBER_STYLE_DEFAULT,
@@ -316,7 +321,7 @@ object PantheraEngine {
                    snapshot: Settings = settings(ctx, voice.gen)): Int = synchronized(lock) {
         try {
             open(ctx, voice.gen, snapshot.phrasing).start(voice.dir, voice.creator, voice.voiceId, text, wpm,
-                snapshot.volume, voice.gen, snapshot.numbers, snapshot.expandAbbreviations)
+                snapshot.engineVolume(voice.gen), voice.gen, snapshot.numbers, snapshot.expandAbbreviations)
         } catch (e: Exception) {
             android.util.Log.e("PantheraEngine", "Speech failed", e); -1
         }

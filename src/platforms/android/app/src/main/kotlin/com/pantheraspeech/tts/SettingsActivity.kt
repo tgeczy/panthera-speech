@@ -37,8 +37,9 @@ class SettingsActivity : Activity() {
     private var voiceHolder: LinearLayout? = null
     private var pageHolders: List<View> = emptyList()
     private var pad = 0
-    private var rateSlider: SeekBar? = null
-    private var volumeSlider: SeekBar? = null
+    private var rateSlider: ValueSlider? = null
+    private var volumeSlider: ValueSlider? = null
+    private var volumeLevels = PantheraEngine.volumeLevels(PantheraEngine.VOLUME_SYSTEM_DEFAULT)
     private var numberSpinner: Spinner? = null
     private var overrideVoice: android.widget.CheckBox? = null
     private var commandCheck: android.widget.CheckBox? = null
@@ -126,7 +127,10 @@ class SettingsActivity : Activity() {
         phrasingHelp?.text = if (phrasesSupported) "How often the engine inserts pauses within a sentence. Applies from the next request."
             else "Engine phrase breaks are available with Leopard and later. Tiger does not support this setting."
         rateSlider?.progress = wpmToProgress(settings.rate)
-        volumeSlider?.progress = settings.volume
+        volumeLevels = PantheraEngine.volumeLevels(settings.volume)
+        volumeSlider?.max = volumeLevels.lastIndex
+        volumeSlider?.progress = volumeLevels.indexOf(settings.volume)
+        volumeSlider?.refreshValue()
         numberSpinner?.setSelection(listOf("fix", "words", "off").indexOf(settings.numbers), false)
         if (voiceSelection && listedVoices.isNotEmpty())
             voiceSpinner?.setSelection(preferredVoiceIndex(listedVoices), false)
@@ -273,10 +277,16 @@ class SettingsActivity : Activity() {
         }
 
         root.addView(heading("Volume"))
-        root.addView(body("Engine volume: 0 mutes speech. Leopard and later balance " +
-            "voice loudness; above 90 may distort. Device volume still applies."))
-        volumeSlider = addSlider(root, "Engine volume", 100, PantheraEngine.volume(this),
-            { "$it percent" }) { p.edit().putInt(PantheraEngine.settingKey(PantheraEngine.PREF_VOLUME, PantheraEngine.activeGen(this)), it).apply() }
+        root.addView(body("System default uses the engine's normal volume while Android " +
+            "controls app and device volume. Choose 0 to mute, or adjust in 5 percent steps. " +
+            "Leopard and later balance voice loudness; above 90 may distort."))
+        val savedVolume = PantheraEngine.volume(this)
+        volumeLevels = PantheraEngine.volumeLevels(savedVolume)
+        volumeSlider = addSlider(root, "Engine volume", volumeLevels.lastIndex,
+            volumeLevels.indexOf(savedVolume), { volumeText(volumeLevels[it]) }) {
+            p.edit().putInt(PantheraEngine.settingKey(PantheraEngine.PREF_VOLUME,
+                PantheraEngine.activeGen(this)), volumeLevels[it]).apply()
+        }
 
         val phrasingLabel = heading("Engine phrase breaks").also { root.addView(it) }
         phrasingHelp = body("").also { root.addView(it) }
@@ -401,26 +411,32 @@ class SettingsActivity : Activity() {
 
     // View-based equivalent of TG Speechbox's AccessibleSlider: named value,
     // one-step arrows, Home/End, and the stock accessibility range actions.
+    private class ValueSlider(context: android.content.Context, private val label: TextView,
+                              private val name: String, private val describe: (Int) -> String) : SeekBar(context) {
+        fun refreshValue() {
+            label.text = describe(progress)
+            if (android.os.Build.VERSION.SDK_INT >= 30) {
+                contentDescription = name
+                stateDescription = describe(progress)
+            } else contentDescription = "$name, ${describe(progress)}"
+        }
+    }
+
+    private fun volumeText(value: Int) = if (value < 0) "System default" else "$value percent"
+
     private fun addSlider(root: LinearLayout, name: String, limit: Int, value: Int,
-            describe: (Int) -> String, save: (Int) -> Unit): SeekBar {
+            describe: (Int) -> String, save: (Int) -> Unit): ValueSlider {
         val label = body(describe(value)).apply { importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO }
         root.addView(label)
-        val slider = SeekBar(this).apply {
+        val slider = ValueSlider(this, label, name, describe).apply {
             id = View.generateViewId()
             max = limit
             progress = value
             keyProgressIncrement = 1
-            fun updateDescription(v: Int) {
-                label.text = describe(v)
-                if (android.os.Build.VERSION.SDK_INT >= 30) {
-                    contentDescription = name
-                    stateDescription = describe(v)
-                } else contentDescription = "$name, ${describe(v)}"
-            }
-            updateDescription(value)
+            refreshValue()
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(s: SeekBar, v: Int, user: Boolean) {
-                    updateDescription(v)
+                    refreshValue()
                     if (user) save(v)
                 }
                 override fun onStartTrackingTouch(s: SeekBar) {}

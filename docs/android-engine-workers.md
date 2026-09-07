@@ -15,6 +15,13 @@ global settings remain migration fallbacks. Rate zero follows the requesting
 app; a saved rate overrides it. The optional **Use selected voice in all apps**
 setting overrides explicit client voice requests. It is off by default.
 
+Volume starts with **System default**, followed by mute (0%) and 5% steps up
+to 100%. System default preserves the normal engine level (Tiger 100, later
+generations 90); Android still applies the requesting app's playback volume
+and device volume. Previously saved percentages remain available exactly,
+including values between the new steps. Changing generations refreshes both
+the displayed value and the slider's accessibility description.
+
 **Engine phrase breaks** is available on Leopard and later; Tiger's control is
 disabled with an explanation. Its choices use the NVDA/SAPI mapping: Fewest
 (-8), Fewer (-4), More (0), Most (5), or Engine default (no threshold override).

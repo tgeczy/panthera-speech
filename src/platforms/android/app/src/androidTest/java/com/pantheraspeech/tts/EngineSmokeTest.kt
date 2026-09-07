@@ -33,6 +33,10 @@ class EngineSmokeTest : Instrumentation() {
         super.onCreate(arguments); start()
     }
 
+    private fun sliderValue(slider: android.widget.SeekBar): String =
+        if (android.os.Build.VERSION.SDK_INT >= 30) slider.stateDescription.toString()
+        else slider.contentDescription.toString().substringAfter(", ")
+
     private fun checkNativeGeneration(gen: String) {
         val result = Bundle()
         try {
@@ -181,13 +185,14 @@ class EngineSmokeTest : Instrumentation() {
                     check(box.createAccessibilityNodeInfo().isCheckable)
                 }
                 check(sliders[0].progress == 221 + i*100 - 80 + 1)
-                check(sliders[1].progress == 37 + i*25)
+                check(sliderValue(sliders[1]) == "${37 + i*25} percent")
+                check(PantheraEngine.settings(targetContext).volume == 37 + i*25)
                 check(views.filterIsInstance<android.widget.Spinner>()
                     .first { it.contentDescription == "How to read numbers" }.selectedItemPosition == if (i == 0) 2 else 1)
                 val spinner = views.filterIsInstance<android.widget.Spinner>().first { it.contentDescription == "Voice" }
                 prefs.edit().putInt(PantheraEngine.settingKey("volume", choices[i].gen), 38 + i*25).commit()
                 check(descendants(activity.window.decorView).any { it === spinner })
-                check(sliders[1].progress == 38 + i*25)
+                check(sliderValue(sliders[1]) == "${38 + i*25} percent")
             }
             if (PantheraEngine.supportsPhrasing(choices[i].gen)) {
                 fun pickPhrase(position: Int) {
@@ -291,7 +296,14 @@ class EngineSmokeTest : Instrumentation() {
                         key(android.view.KeyEvent.KEYCODE_DPAD_LEFT); check(slider.progress == 0)
                         if (android.os.Build.VERSION.SDK_INT >= 30) check(!slider.stateDescription.isNullOrBlank())
                     }
-                    check(prefs.getInt(volumeKey, -1) == 0)
+                    check(prefs.getInt(volumeKey, -2) == -1)
+                    val volume = sliders[1]
+                    check(sliderValue(volume) == "System default")
+                    repeat(3) {
+                        volume.dispatchKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN,
+                            android.view.KeyEvent.KEYCODE_DPAD_RIGHT))
+                    }
+                    check(prefs.getInt(volumeKey, -2) == 10)
                     check(prefs.getInt(rateKey, -1) == 0)
                 }
                 checkSettingsPersistence(activity)
@@ -453,6 +465,13 @@ class EngineSmokeTest : Instrumentation() {
             check(energy(mute) == 0.0) { "Mute produced audible samples" }
             val ratio = energy(quiet) / energy(restored)
             check(ratio in 0.15..0.35) { "Half-volume energy ratio: $ratio" }
+            prefs.edit().putInt(volumeKey, PantheraEngine.defaultVolume(generation)).commit()
+            val normalVolume = pcmOf("volume-normal", "Hello there.")
+            prefs.edit().putInt(volumeKey, PantheraEngine.VOLUME_SYSTEM_DEFAULT).commit()
+            check(pcmOf("volume-system-default", "Hello there.").contentEquals(normalVolume)) {
+                "System default changed the engine's normal PCM"
+            }
+            prefs.edit().putInt(volumeKey, baselineVolume).commit()
             val info = PantheraEngine.voiceById(targetContext, fred.name)!!
             val preview = PantheraEngine.render(targetContext, info, "Hello there.", 180)!!
             check(preview.size * 2 == restored.size - 44)
