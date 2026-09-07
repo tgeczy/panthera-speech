@@ -94,7 +94,7 @@ static void __cdecl sh_list_swap(list_node *x, list_node *y)
  * linked one.
  */
 #define COND_MAGIC 0x54494743u          /* 'TIGC' */
-#if GUEST_LOW
+#if GUEST_SYNC_SIDE
 typedef struct { unsigned magic; } cnd;
 static CONDITION_VARIABLE *cnd_native(cnd *c)
 { return &guest_sync_get(c, 1)->native.cond; }
@@ -129,7 +129,7 @@ static int __cdecl sh_cond_signal(void *c)
 { cnd_ready((cnd *)c); WakeConditionVariable(cnd_native((cnd *)c)); return 0; }
 static int __cdecl sh_cond_destroy(void *c)
 {
-#if GUEST_LOW
+#if GUEST_SYNC_SIDE
     guest_sync_destroy(c, 1);
     ((cnd *)c)->magic = 0;
 #else
@@ -139,7 +139,7 @@ static int __cdecl sh_cond_destroy(void *c)
 }
 static int __cdecl sh_mutex_destroy(void *m)
 {
-#if GUEST_LOW
+#if GUEST_SYNC_SIDE
     guest_sync_destroy(m, 0);
     ((mtx *)m)->magic = 0;
 #else

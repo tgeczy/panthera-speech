@@ -36,7 +36,12 @@ OUT="$ROOT/build/linux-$ARCH"
 CC="${CC:-cc}"
 mkdir -p "$OUT"
 
-CFLAGS="-O2 -fno-strict-aliasing -Wno-deprecated-declarations"
+# _GNU_SOURCE for off64_t and mmap64, which glibc hides behind a feature macro
+# and bionic declares unconditionally -- so this is invisible until the first
+# build against glibc, where it is nine errors in tiger_plat_posix.c.  It has
+# to be a compiler flag rather than a #define in the source: the platform seam
+# is included well after the system headers.
+CFLAGS="-O2 -fno-strict-aliasing -Wno-deprecated-declarations -D_GNU_SOURCE"
 LDFLAGS="-lpthread -ldl -lm"
 
 case "$ARCH" in

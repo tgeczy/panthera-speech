@@ -193,6 +193,30 @@ typedef struct {
 #define GUEST_LOW 0
 #endif
 
+/* Where the native mutex and condition variable live.
+ *
+ * Darwin i386 gives a pthread_mutex_t 44 opaque bytes and a pthread_cond_t 28,
+ * and the engine allocates that storage itself -- so a host lock small enough
+ * to sit inside it can, which saves a lookup on every acquire.  Whether it is
+ * small enough is a property of the HOST'S C LIBRARY, not of its word size:
+ *
+ *     Windows      CONDITION_VARIABLE   4 bytes    fits
+ *     bionic 32    pthread_cond_t       4 bytes    fits
+ *     bionic 64    pthread_cond_t      48 bytes    does not
+ *     glibc i386   pthread_cond_t      48 bytes    does not
+ *
+ * The third line is why arm64 needed a side table.  The fourth is why the
+ * first native Linux build would not compile: 32-bit was assumed to imply
+ * "small", and on glibc it does not.  So the objects go beside the guest's
+ * storage, in a table keyed by guest address, on any host where they will not
+ * fit -- and the static asserts further down stay exactly where they are, as
+ * the tripwire that caught this. */
+#if GUEST_LOW || defined(__GLIBC__)
+#define GUEST_SYNC_SIDE 1
+#else
+#define GUEST_SYNC_SIDE 0
+#endif
+
 /* Declare and define one.  On 32-bit it is the static it always was, with a
  * pointer aimed at it; on 64-bit the pointer is filled in at start-up. */
 #if GUEST_LOW

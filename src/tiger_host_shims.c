@@ -110,11 +110,31 @@ static unsigned long long __cdecl sh_umoddi3(unsigned alo, unsigned ahi,
  * PTHREAD_MUTEX_INITIALIZER -- still works, because lock initialises it on
  * first use. */
 #define MTX_MAGIC 0x5449474d            /* 'TIGM' */
-#if GUEST_LOW
+#if GUEST_SYNC_SIDE
 /* Native synchronization objects do not fit the guest's opaque storage.
  * Key them by guest address rather than storing a native pointer in the
  * guest: its C++ objects can copy opaque bytes, which must not alias or
  * double-destroy a native lock belonging to another address. */
+/* Its own lock, not the arena's.
+ *
+ * Borrowing `g_arena_cs` worked while this table existed only under emulation,
+ * where the arena always exists -- but a native build has no arena at all, and
+ * on glibc this table is exactly what a native build needs.  It was also the
+ * wrong lock on merit: every mutex acquire in the engine would contend with
+ * every allocation. */
+#ifdef _WIN32
+static CRITICAL_SECTION g_guest_sync_cs;
+static LONG g_guest_sync_ready;
+#define GUEST_SYNC_LOCK()                                                      do { if (InterlockedCompareExchange(&g_guest_sync_ready, 1, 0) == 0)                InitializeCriticalSection(&g_guest_sync_cs);                           EnterCriticalSection(&g_guest_sync_cs); } while (0)
+#define GUEST_SYNC_UNLOCK() LeaveCriticalSection(&g_guest_sync_cs)
+#else
+/* Statically initialised, so there is no bring-up order to get wrong: a shim
+ * may be the first thing the engine calls. */
+static pthread_mutex_t g_guest_sync_lk = PTHREAD_MUTEX_INITIALIZER;
+#define GUEST_SYNC_LOCK()   pthread_mutex_lock(&g_guest_sync_lk)
+#define GUEST_SYNC_UNLOCK() pthread_mutex_unlock(&g_guest_sync_lk)
+#endif
+
 typedef struct guest_sync {
     struct guest_sync *next;
     const void *address;
@@ -126,7 +146,7 @@ static guest_sync *g_guest_sync;
 static guest_sync *guest_sync_get(const void *address, int condition)
 {
     guest_sync *entry;
-    EnterCriticalSection(&g_arena_cs);
+    GUEST_SYNC_LOCK();
     for (entry = g_guest_sync; entry; entry = entry->next)
         if (entry->address == address && entry->condition == condition) break;
     if (!entry) {
@@ -139,13 +159,13 @@ static guest_sync *guest_sync_get(const void *address, int condition)
         entry->next = g_guest_sync;
         g_guest_sync = entry;
     }
-    LeaveCriticalSection(&g_arena_cs);
+    GUEST_SYNC_UNLOCK();
     return entry;
 }
 static void guest_sync_destroy(const void *address, int condition)
 {
     guest_sync **link, *entry;
-    EnterCriticalSection(&g_arena_cs);
+    GUEST_SYNC_LOCK();
     for (link = &g_guest_sync; (entry = *link) != NULL; link = &entry->next) {
         if (entry->address != address || entry->condition != condition) continue;
         *link = entry->next;
@@ -156,7 +176,7 @@ static void guest_sync_destroy(const void *address, int condition)
         free(entry);
         break;
     }
-    LeaveCriticalSection(&g_arena_cs);
+    GUEST_SYNC_UNLOCK();
 }
 typedef struct { unsigned magic; } mtx;
 static CRITICAL_SECTION *mtx_native(mtx *m)
