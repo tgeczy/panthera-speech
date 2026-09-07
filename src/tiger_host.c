@@ -550,6 +550,7 @@ static unsigned bswap(unsigned v)
 #include "tiger_host_accel.c"
 #include "tiger_host_sqlite.c"
 #include "tiger_host_regex.c"
+#include "tiger_host_numbers.c"
 #include "tiger_host_shimtab.c"
 #include "tiger_host_fault.c"
 #include "tiger_host_sllog.c"
@@ -806,6 +807,39 @@ int main(int argc, char **argv)
     if (argc > 1 && !strcmp(argv[1], "--regex-check")) {
         setvbuf(stderr, NULL, _IONBF, 0);
         return re_check();
+    }
+    if (argc > 1 && !strcmp(argv[1], "--numbers-check")) {
+        setvbuf(stderr, NULL, _IONBF, 0);
+        return num_check();
+    }
+    /* `--numbers <style> <hex>`: one rewrite, printed.  The oracle harness
+     * drives this a thousand times and diffs it against the Python.
+     *
+     * The text arrives HEX-ENCODED, which is not ceremony: this host speaks
+     * MacRoman and a Windows command line does not, so an accented byte handed
+     * over as an argument arrives re-encoded and the harness ends up diffing
+     * its own transport.  It did, for 81 cases that printed identically. */
+    if (argc > 3 && !strcmp(argv[1], "--numbers")) {
+        const char *hex = argv[3];
+        size_t hn = strlen(hex) / 2, k;
+        char *in = (char *)malloc(hn + 1), *out;
+        if (!in) return 2;
+        for (k = 0; k < hn; k++) {
+            unsigned byte = 0;
+            sscanf(hex + k * 2, "%2x", &byte);
+            in[k] = (char)byte;
+        }
+        in[hn] = 0;
+        out = num_expand(in, num_style_of(argv[2]));
+        /* fprintf(stdout), not printf: this file redefines printf onto stderr
+         * so that no stray diagnostic can ever reach the serve protocol (see
+         * [[stdout-was-the-protocol]]).  Here the answer IS the output, so it
+         * has to name stdout out loud. */
+        if (out) for (k = 0; out[k]; k++)
+            fprintf(stdout, "%02x", (unsigned char)out[k]);
+        free(in);
+        free(out);
+        return 0;
     }
 #ifdef TIGER_UC
     /* Render through the Android synthesis API (tiger_host_jni.c) rather than
