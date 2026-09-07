@@ -22,6 +22,7 @@
 #include "emu/x64emu_private.h"
 #include "emu/x87emu_private.h"
 #include "tools/bridge_private.h"
+#include "box_signals.h"
 extern void thread_set_emu(x64emu_t *);
 struct uc_struct {
     x64emu_t *emu;
@@ -34,13 +35,14 @@ static box64context_t *ctx;
 static pthread_once_t once=PTHREAD_ONCE_INIT;
 static __thread uc_engine *active;
 static void init(void) {
-
+    box_capture_native_signals();
     ftrace=stderr;box64_pagesize=4096;LoadEnvVariables();DetectHostCpuFeatures();
     // Initialize native memory bookkeeping without reserving every address
     // above 4 GB. Only guest-visible allocations need the i386 address limit;
     // bionic and the Android runtime must retain their normal address space.
     box64_is32bits=0;init_custommem_helper(NULL);
     box64_is32bits=1;ctx=NewBox64Context(0);
+    box_share_signals();
 }
 uc_err uc_open(uc_arch arch, uc_mode mode, uc_engine **out) {
     if(arch!=UC_ARCH_X86 || mode!=UC_MODE_32) return UC_ERR_ARCH;
@@ -105,7 +107,9 @@ uc_err uc_emu_start(uc_engine *u,uint64_t begin,uint64_t end,uint64_t timeout,si
     *(uint32_t*)R_RSP=ctx->exit_bridge;
     R_RIP=begin;R_CS=0x23;emu->quit=0;emu->error=0;
     uc_engine *previous=active;active=u;thread_set_emu(emu);
+    ++box_guest_running;
     EmuRun(emu,1,0);
+    --box_guest_running;
     active=previous;
     int error=emu->error;emu->quit=0;
     return error?UC_ERR_EXCEPTION:UC_ERR_OK;

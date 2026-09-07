@@ -214,18 +214,18 @@ typedef struct { DWORD dwLowDateTime; DWORD dwHighDateTime; } FILETIME;
 #define _setmode(fd, mode)  (0)
 
 /* Yield the rest of this slice's turn -- and what that has to cost depends on
- * whether there is an emulator behind us, not on which OS this is.
+ * whether translation has a separate execution thread, not on the host OS.
  *
- * **Emulated (TIGER_UC).** A real 1 ms sleep.  Win32's SwitchToThread yielded
+ * **Unicorn.** A real 1 ms sleep.  Win32's SwitchToThread yielded
  * to a ready thread, which with the pacer's 1 ms timer behaved like a brief
  * sleep; bionic's sched_yield instead returns at once when nothing else is
  * runnable, so an idle-yield path spins a whole core -- and on a two-core
  * watch that starves the TCG worker actually rendering the guest, which comes
  * out as short slices and a wrong frame count.
  *
- * **Native.** A real yield, because there is no TCG worker to starve: the
- * guest is i386 and so is this process, so the thread being yielded to is the
- * engine itself.  Sleeping here instead cost the native Linux build 13x its
+ * **Native or inline translation.** A real yield, because there is no separate
+ * TCG worker to starve: the thread being yielded to runs the engine itself.
+ * Sleeping here instead cost the native Linux build 13x its
  * render time -- 452 ms against Windows' 35 ms for the same three seconds of
  * Fred, all of it in clock_nanosleep, one millisecond per slice across ~290
  * slices.  Time to first sound was never affected (10.7 ms against 10.6),
@@ -234,9 +234,9 @@ typedef struct { DWORD dwLowDateTime; DWORD dwHighDateTime; } FILETIME;
  * The rule this is the second instance of: **choose by the property that
  * actually differs, not by the platform that first exposed it.**  The first
  * was GUEST_SYNC_SIDE, which picks a side table by whether the lock fits
- * rather than by word size; this picks a yield by whether the guest is
- * emulated rather than by POSIX-vs-Windows.  (Sleep is declared below.) */
-#ifdef TIGER_UC
+ * rather than by word size. Inline translators can share the loader's TIGER_UC
+ * seam without sharing Unicorn's thread model. (Sleep is declared below.) */
+#if defined(TIGER_UC) && !defined(TIGER_INLINE_GUEST)
 #define SwitchToThread()    (Sleep(1), 1)
 #else
 #define SwitchToThread()    (sched_yield(), 1)

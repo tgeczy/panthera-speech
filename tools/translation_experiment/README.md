@@ -4,6 +4,49 @@ Research harnesses, **not a shipping emulator backend**. They use Panthera's
 existing public synthesis API and locally extracted engine paths. No engine,
 voice data, generated audio, or third-party source belongs in this directory.
 
+## Experimental Android app integration
+
+The builder also produces `OUT/build/libpanthera.so`, with a static C++ runtime,
+16 KB ELF alignment, and only the JNI entry points exported. This is an isolated
+output: it does not replace the normal Unicorn library or install an APK.
+
+For a debug comparison, create an ignored directory containing
+`jniLibs/arm64-v8a/libpanthera.so` from Box64 and
+`jniLibs/armeabi-v7a/libpanthera.so` from Box86. Put both translators' LICENSE
+files in its sibling `assets` directory as `box64-LICENSE.txt` and
+`box86-LICENSE.txt`. Pass the absolute `jniLibs` path to Gradle:
+
+```powershell
+.\gradlew.bat -PpantheraExperimentalJni=C:/path/to/experiment/jniLibs assembleDebug assembleDebugAndroidTest
+```
+
+The override rejects release tasks. Normal builds retain the normal JNI inputs.
+Use the device runner documented in `tools/fixtures/android-latency.md`, with
+an explicit serial. The installed debug app can differ from the default build;
+record which backend each measurement actually uses.
+
+Box runs guest execution inline. `TIGER_INLINE_GUEST` selects a real yield in
+the shared host instead of the 1 ms sleep intended for Unicorn's separate TCG
+thread. In one controlled phone comparison this reduced median first PCM for
+Leopard Alex's Seven from 26.7 to 7.6 ms and the phrase from 41.7 to 17.7 ms,
+with all samples unchanged. The corresponding watch change was small.
+
+`android_bench.py` repeats the standalone process, compares each render with
+eight existing local PCM references, and writes a JSON report. Its optional
+`--signal-check` verifies that a native thread's SIGILL handler survives Box
+initialization. The experimental signal dispatcher retains prior native
+handlers outside guest execution. This test does not establish full Android
+runtime compatibility: signal registration, fault handling, mapping lifetime,
+and code-cache invalidation still need review.
+
+The experimental APK passed the watch's complete audio suite. The phone suite
+exposed a Lion paragraph length variation (527289 frames instead of 527288).
+Repeated standalone controls retained the paragraph breath, but timing changes
+can alter the collected timeline; slowing callback pacing removes the measured
+length variation, whereas precise rounding alone does not. This is unresolved,
+and the short-reference matches must not be reported as full audio correctness.
+Generated PCM and detailed diagnostic logs stay outside Git.
+
 The release gate remains audible, reliable replacement speech during rapid
 navigation: the requested target is 100–200 ms on the watch and 50–100 ms on
 phones. First PCM from this standalone harness does not establish that gate.

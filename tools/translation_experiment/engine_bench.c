@@ -3,18 +3,35 @@
 #include <stdint.h>
 #include <time.h>
 #include <string.h>
+#include <signal.h>
+#include <pthread.h>
 #include "tiger_host_jni.h"
+static volatile sig_atomic_t native_signal_received;
+static void native_signal(int signal) { native_signal_received = signal; }
+static void *check_native_signal(void *unused) { (void)unused; raise(SIGILL); return NULL; }
 static double ms(void) {struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return t.tv_sec*1000.0+t.tv_nsec/1e6;}
 int main(int argc,char **argv) {
     if(argc<5 || argc>6 || (argc==6 && strcmp(argv[5],"cancel"))) {
         fprintf(stderr,"usage: bench engine dictionary voice output.pcm [cancel]\n");return 2;
     }
     unsigned creator;int voice;
+    int signal_check = getenv("PANTHERA_SIGNAL_CHECK") != NULL;
+    if(signal_check) {
+        struct sigaction action = {0}; action.sa_handler = native_signal;
+        sigaction(SIGILL, &action, NULL);
+    }
     if(!panthera_voice_spec(argv[3],&creator,&voice))return 3;
     panthera_set_phrasing("fewest");panthera_set_volume(90,"leopard");
     double t=ms();int rc=panthera_init(argv[1],argv[2]);
     fprintf(stdout,"INIT %d %.1fms voice=%08x/%d\n",rc,ms()-t,creator,voice);
     if(rc)return 4;
+    if(signal_check) {
+        pthread_t thread;
+        if(pthread_create(&thread,NULL,check_native_signal,NULL))return 9;
+        pthread_join(thread,NULL);
+        if(native_signal_received!=SIGILL)return 10;
+        puts("PASS native signal handler after translator initialization");fflush(stdout);
+    }
     short pcm[4096];
     for(int k=0;k<8;k++) {
         if(argc==6) {

@@ -963,7 +963,15 @@ static void uc_host_init(void)
     uc_ensure_engine();                       /* the main thread's engine */
 
     if (g_verbose)
-        fprintf(stderr, "tiger_host_uc: Unicorn x86-32 up; block at %08x, "
+        fprintf(stderr, "tiger_host_uc: "
+#if defined(TIGER_BOX86)
+                        "Box86"
+#elif defined(TIGER_BOX64)
+                        "Box64"
+#else
+                        "Unicorn"
+#endif
+                        " x86-32 up; block at %08x, "
                         "arena %u MB at %08x, trampolines at %08x\n",
                 base, UC_ARENA_SZ >> 20, g_uc_arena, g_uc_tramp);
 }

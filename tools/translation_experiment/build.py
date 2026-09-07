@@ -96,27 +96,38 @@ def main():
         options = ["-DARM64=ON", "-DBOX32=OFF", "-DNOBOX64=ON", "-DNOLOADADDR=ON"]
 
     replace(vendor / "CMakeLists.txt", "$(git rev-parse --short HEAD)", PINS[backend][:7])
-    for filename in (f"{backend}_adapter.c", f"memory_{backend}.c", "engine_bench.c", "memory_native.c"):
+    for filename in (f"{backend}_adapter.c", f"memory_{backend}.c", "engine_bench.c", "memory_native.c", "box_signals.h"):
         shutil.copy2(HERE / filename, vendor / filename)
     uc = ROOT / "android/harness/unicorn"
+    (vendor / "panthera_jni.map").write_text(
+        "{ global: Java_com_pantheraspeech_tts_PantheraNative_*; local: *; };\n", encoding="utf8")
     cmake = f'''
+remove_definitions(-std=gnu11)
+add_compile_options("$<$<COMPILE_LANGUAGE:C>:-std=gnu11>")
+enable_language(CXX)
+file(GLOB FAAD_OBJS "{faad.as_posix()}/*.o")
+function(panthera_host_target target mode)
+    target_include_directories(${{target}} PRIVATE "{host.as_posix()}" "{uc.as_posix()}/include" "{ROOT.as_posix()}/android/harness/faad2/include")
+    target_compile_definitions(${{target}} PRIVATE TIGER_UC TIGER_INLINE_GUEST TIGER_{backend.upper()} TIGER_AAC_FAAD ${{mode}})
+    target_compile_options(${{target}} PRIVATE -Wno-macro-redefined)
+    target_link_libraries(${{target}} {objects} ${{FAAD_OBJS}} m dl log mediandk)
+endfunction()
 add_executable(panthera_memory_bench memory_{backend}.c)
 target_include_directories(panthera_memory_bench PRIVATE "{ROOT.as_posix()}/android/harness/src")
 target_link_libraries(panthera_memory_bench {objects} m dl)
 add_executable(panthera_native_bench memory_native.c)
 add_executable(panthera_engine_bench engine_bench.c {backend}_adapter.c "{host.as_posix()}/tiger_host.c")
-target_include_directories(panthera_engine_bench PRIVATE "{host.as_posix()}" "{uc.as_posix()}/include" "{ROOT.as_posix()}/android/harness/faad2/include")
-target_compile_definitions(panthera_engine_bench PRIVATE TIGER_UC TIGER_AAC_FAAD TIGER_SHARED)
-target_compile_options(panthera_engine_bench PRIVATE -Wno-macro-redefined)
-file(GLOB FAAD_OBJS "{faad.as_posix()}/*.o")
-target_link_libraries(panthera_engine_bench {objects} ${{FAAD_OBJS}} m dl log mediandk)
+panthera_host_target(panthera_engine_bench TIGER_SHARED)
 # Exercise Android's stderr-pump thread before translator initialization too.
 # The shared-library benchmark alone does not reproduce app startup ordering.
 add_executable(panthera_engine_logcat_bench engine_bench.c {backend}_adapter.c "{host.as_posix()}/tiger_host.c")
-target_include_directories(panthera_engine_logcat_bench PRIVATE "{host.as_posix()}" "{uc.as_posix()}/include" "{ROOT.as_posix()}/android/harness/faad2/include")
-target_compile_definitions(panthera_engine_logcat_bench PRIVATE TIGER_UC TIGER_AAC_FAAD TIGER_JNI)
-target_compile_options(panthera_engine_logcat_bench PRIVATE -Wno-macro-redefined)
-target_link_libraries(panthera_engine_logcat_bench {objects} ${{FAAD_OBJS}} m dl log mediandk)
+panthera_host_target(panthera_engine_logcat_bench TIGER_JNI)
+# Isolated JNI artifact for device research; never copied into an APK here.
+add_library(panthera SHARED {backend}_adapter.c "{host.as_posix()}/tiger_host.c"
+    "{ROOT.as_posix()}/src/platforms/android/app/src/main/cpp/panthera_jni.cpp")
+panthera_host_target(panthera TIGER_JNI)
+target_compile_features(panthera PRIVATE cxx_std_17)
+target_link_options(panthera PRIVATE "-Wl,--version-script={vendor.as_posix()}/panthera_jni.map" "-Wl,-z,max-page-size=16384" "-Wl,--no-undefined")
 '''
     with (vendor / "CMakeLists.txt").open("a", encoding="utf8") as f:
         f.write(cmake)
@@ -127,9 +138,10 @@ target_link_libraries(panthera_engine_logcat_bench {objects} ${{FAAD_OBJS}} m dl
              f"-DCMAKE_MAKE_PROGRAM={args.cmake.parent.as_posix()}/ninja.exe",
              f"-DCMAKE_TOOLCHAIN_FILE={args.ndk.as_posix()}/build/cmake/android.toolchain.cmake",
              f"-DANDROID_ABI={abi}", "-DANDROID_PLATFORM=android-28", "-DCMAKE_BUILD_TYPE=Release",
+             "-DANDROID_STL=c++_static", "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
              *options], env=env, stdout=log, stderr=subprocess.STDOUT)
         run([args.cmake, "--build", out / "build", "--target", "panthera_engine_bench",
-             "panthera_engine_logcat_bench", "panthera_memory_bench", "panthera_native_bench", "-j6"],
+             "panthera_engine_logcat_bench", "panthera_memory_bench", "panthera_native_bench", "panthera", "-j6"],
             env=env, stdout=log, stderr=subprocess.STDOUT)
     print(f"Built {backend} {PINS[backend]} for {abi}: {out / 'build'}")
 
