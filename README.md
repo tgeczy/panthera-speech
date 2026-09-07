@@ -1,7 +1,13 @@
 # panthera-speech
 
-The Android port branch also builds a **native Linux command-line host**.
-See [Linux setup, AAC checks, and the client protocol](docs/linux-native.md).
+**Android TTS** supports Tiger, Leopard, Snow Leopard and Lion on ARMv7 and
+ARM64, with one generation-qualified voice list and accessible settings saved
+per generation. See [Android engine switching and settings](docs/android-engine-workers.md).
+
+The **native Linux command-line host** renders UTF-8 text from arguments,
+files or stdin to WAV files or stdout, and offers persistent streaming IPC.
+Tiger and Leopard are validated on native i686 Linux. See
+[Linux setup, AAC checks, and the client protocol](docs/linux-native.md).
 
 **Apple's Mac OS X speech engines, running as native code on Windows.** No
 virtual machine, no emulator, no CPU translation — a small 32-bit host process

@@ -9,10 +9,8 @@
 # needs (see android/harness/build_unicorn_cyg.sh); Gradle never touches the
 # NDK toolchain, it just bundles the finished .so.
 #
-#   ./build_jni_so.sh            # armeabi-v7a
-#
-# armeabi-v7a only, for the same reason build_ndk.sh is: guest==host address is
-# a 32-bit identity.  A second ABI is a separate design.
+#   ./build_jni_so.sh armeabi-v7a
+#   ./build_jni_so.sh arm64-v8a
 set -e
 export MSYS2_ARG_CONV_EXCL="*"
 export MSYS_NO_PATHCONV=1
