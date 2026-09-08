@@ -53,6 +53,28 @@ then interrupt a long request and require the next request to complete.
 These tests play speech; avoid interacting with TalkBack during the run.
 No engine data or generated audio is committed.
 
+The zip importer has a check of its own, needing no engine data at all: it
+builds a dozen small zips on the device -- a folder around the engine or not,
+Finder's `__MACOSX` noise, Windows separators, all four generations in one
+zip, a Mountain Lion engine to refuse, a path that escapes -- reads each both
+through the central directory and front to back, and imports one into a
+scratch root with a stale folder in the way:
+
+```text
+adb shell am instrument -w -e zipImport true com.pantheraspeech.tts.test/com.pantheraspeech.tts.EngineSmokeTest
+```
+
+To import a real zip without touching the screen, hand the Setup activity a
+path the app can read, or a `content:` URI it has been granted:
+
+```text
+adb shell am start -n com.pantheraspeech.tts/.SettingsActivity --es import /path/the/app/can/read/lion.zip
+```
+
+That route imports without the confirm dialog; typing the command is the
+consent. What the app can read is its own folders: a file pushed with adb
+into shared storage or `Android/data` is not readable by a release build.
+
 On the Pixel Watch 2, each `Hello there.` render at 180 wpm was 15,792 mono
 16-bit samples at 22,050 Hz, peak 25,231. Both 31,628-byte framework WAVs had
 SHA-256 `d3583e45e67d6556f57ebc3fa4b936e8a5b72f345cfb306694b017fecd6e2f5c`.

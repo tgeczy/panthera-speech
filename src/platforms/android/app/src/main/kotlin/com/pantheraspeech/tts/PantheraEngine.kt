@@ -84,10 +84,22 @@ object PantheraEngine {
         File(ctx.filesDir, DATA_DIR),
     )
 
-    /** The root shown to the user as the place to extract data into. */
+    /** The root shown to the user as the place to extract data into. It is
+     * also where a zip import lands: the first root the lookup consults, so
+     * an imported generation is the one that runs. */
     fun dataRoot(ctx: Context): File =
         ctx.getExternalFilesDir(null)?.let { File(it, DATA_DIR) }
             ?: File(ctx.filesDir, DATA_DIR)
+
+    /** A generation just imported is wanted, whatever its switch said
+     * before; then the catalogue is rebuilt and the gate re-run, so the new
+     * voices are offered without a trip to Check Engine. */
+    fun imported(ctx: Context, gens: Collection<String>) {
+        val disabled = disabledGens(ctx).toMutableSet()
+        if (disabled.removeAll(gens.toSet()))
+            prefs(ctx).edit().putStringSet(PREF_DISABLED_GENS, disabled).apply()
+        checkEngine(ctx)
+    }
 
     // Two layouts are accepted inside a generation folder.  The Mac's own is
     // what the desktop add-on extracts and what a person copies over as it

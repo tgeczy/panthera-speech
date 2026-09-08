@@ -62,8 +62,8 @@ android {
         minSdk = 26
         targetSdk = 35
         testInstrumentationRunner = "com.pantheraspeech.tts.EngineSmokeTest"
-        versionCode = 3
-        versionName = "3.0.1"
+        versionCode = 4
+        versionName = "3.0.2"
 
         // Native libraries are prebuilt by build_jni_so.sh. Both ABIs pass
         // the four-generation device suite; each device selects its own ABI.

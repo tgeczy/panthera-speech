@@ -28,6 +28,43 @@ Ignored engine data and build products are excluded. An explicit
 `PANTHERA_RUNTIME=unicorn` build and Gradle `-PpantheraLegacyUnicorn=true` retain
 the earlier GPL comparison configuration; package its sources with `--legacy`.
 
+## Getting engine data onto the device
+
+Nothing of Apple's ships in the app; the desktop add-on extracts a
+generation's folder from the user's own copy of Mac OS X, and that folder is
+what the phone needs. Two routes, both ending in
+`Android/data/com.pantheraspeech.tts/files/panthera-data/<generation>`:
+
+* **Extract engine from zip file** (Setup, step 1; since 3.0.2). Zip the
+  extracted folder, get the zip onto the device by whatever means -- Downloads,
+  a cloud drive, a message to yourself -- and choose it in the system file
+  picker. `ZipImport` reads the zip's central directory (a few kilobytes, so a
+  700 MB Leopard zip is checked before the confirm dialog rather than after),
+  finds every `MacinTalk.SpeechSynthesizer` inside it wherever it sits -- at
+  the top, under a folder, under `panthera-data/lion/`, all four generations
+  at once -- and asks the engine what it is rather than believing the folder:
+  `Contents/Info.plist`'s `CFBundleVersion` first (3.3 Tiger, 3.6.59 Leopard,
+  3.10.35 Snow Leopard), and where an extraction carries no plist, as Lion's
+  does not, the `SpeechSynthesis-4.0.74` build path inside the binary. Finder's
+  `__MACOSX` entries and `.DS_Store` are skipped, backslashes are accepted, a
+  path that escapes its folder refuses the whole zip, and 4.1.x (Mountain Lion,
+  64-bit only) is refused by name. The confirm dialog says "Will import into
+  Lion: MacinTalk 4.0.74, 52 voices, 1.2 GB" and whether a folder will be
+  replaced; the import streams into `<gen>.importing` and swaps it in only at
+  the end, so a cancelled or failed import leaves the existing folder alone.
+  Afterwards the generation is switched on if it had been switched off, the
+  voice catalogue is rebuilt and Check Engine runs. A source the provider
+  cannot seek (some cloud drives) is scanned front to back instead, slower
+  but with the same answer.
+* **Copy the folder by hand** over the PC's file window into the path Setup
+  shows, named `tiger`, `leopard`, `snowleopard` or `lion`. Both the Mac's own
+  layout and the flattened one the push script makes are read.
+
+A watch has no file picker (Wear OS answers the request with a stub, and the
+button says so), and adb cannot feed a release build: files pushed into shared
+storage or `Android/data` are not readable by the app. Debug builds take the
+developer route in `docs/android-tts-debugging.md`.
+
 The app process owns preferences. Workers receive a settings snapshot for each
 utterance, rather than reading a separate process's SharedPreferences cache.
 Voice, rate, volume, phrase breaks, number handling, embedded-command acceptance and

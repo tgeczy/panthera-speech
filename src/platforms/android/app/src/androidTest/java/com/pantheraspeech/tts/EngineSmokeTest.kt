@@ -26,7 +26,11 @@ class EngineSmokeTest : Instrumentation() {
     private var nativeWpm = 180
     private var audioOnly = false
     private var latency: String? = null
+    private var zipImport: String? = null
+    private var zipName = "tiger.zip"
     override fun onCreate(arguments: Bundle?) {
+        zipImport = arguments?.getString("zipImport")
+        zipName = arguments?.getString("zipName") ?: zipName
         nativeGen = arguments?.getString("nativeGeneration")
         nativeVoice = arguments?.getString("nativeVoice")
         nativeText = arguments?.getString("nativeText") ?: nativeText
@@ -254,6 +258,8 @@ class EngineSmokeTest : Instrumentation() {
     }
 
     override fun onStart() {
+        if (zipImport == "pick") { ZipImportCheck.pick(this, zipName); return }
+        if (zipImport == "true") { ZipImportCheck.run(this); return }
         if (latency == "lifecycle") { PantheraWorkerCheck.run(this); return }
         if (latency == "reuse") { PantheraWorkerCheck.runReuse(this); return }
         latency?.let { PantheraLatencyCheck.run(this, it); return }
