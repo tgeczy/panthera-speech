@@ -51,7 +51,7 @@ jobs:
           - arch: aarch64
             aac: glint
             suffix: -glint
-            packages: g++ cmake python3
+            packages: g++ cmake python3 gdb
             runner: ubuntu-22.04-arm
     name: ${{ matrix.arch }}-${{ matrix.aac }}
     env:
@@ -129,6 +129,16 @@ jobs:
           python3 tools/android_abbreviation_oracle.py
           build/linux-${{ matrix.arch }}${{ matrix.suffix }}/tiger_host --capabilities | python3 -m json.tool
           build/linux-${{ matrix.arch }}${{ matrix.suffix }}/tiger_host --libc-check
+
+      - name: Where the aarch64 check faults (diagnostic, does not fail the job)
+        if: matrix.arch == 'aarch64'
+        run: |
+          out="$PWD/build/linux-${{ matrix.arch }}${{ matrix.suffix }}"
+          printf '0 N A U 1 0 0 0
+' > /tmp/empty.txt
+          gdb -batch -ex run -ex bt -ex 'info registers pc sp x0 x1' -ex 'x/6i $pc'             --args "$out/tiger_host" --linalg-check < /tmp/empty.txt 2>&1 | tail -60 || true
+          echo "=== and the sqlite check, which passes, for comparison ==="
+          printf '' | "$out/tiger_host" --sqlite-check 2>&1 | tail -5 || true
 
       - name: Generated linear algebra and SQLite ABI oracles
         run: |
