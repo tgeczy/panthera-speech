@@ -80,7 +80,9 @@ enable_language(CXX)
 function(panthera_host_target target)
     target_include_directories(${{target}} PRIVATE "{host.as_posix()}")
     target_compile_definitions(${{target}} PRIVATE TIGER_UC TIGER_INLINE_GUEST TIGER_BOX64 TIGER_AAC_GLINT _GNU_SOURCE ${{ARGN}})
-    target_compile_options(${{target}} PRIVATE -O2 -fno-strict-aliasing -Wno-deprecated-declarations -Wno-macro-redefined)
+    # Box64's CMake compiles everything with -fvisibility=hidden, which would
+    # hide the panthera_* API from the version script; the host is visible.
+    target_compile_options(${{target}} PRIVATE -O2 -fno-strict-aliasing -Wno-deprecated-declarations -Wno-macro-redefined -fvisibility=default)
     target_link_libraries(${{target}} {objects} panthera_glint_decoder m dl pthread)
 endfunction()
 add_executable(tiger_host box64_adapter.c "{host.as_posix()}/tiger_host.c")
