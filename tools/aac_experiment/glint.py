@@ -134,11 +134,6 @@ static double pns_rand(uint32_t& state) {
             "    int first_ = 1;\n    uint32_t pns_state_ = 0x1234567u;  // PNS noise state, reseeded by init()")
     shutil.copy2(HERE / "glint_bridge.cpp", vendor)
     shutil.copy2(HERE / "pcm16.h", vendor)
-    shutil.copy2(HERE / "tiger_host_aac_glint.c", host)
-    replace(host / "tiger_host_aac.c", "#if defined(TIGER_AAC_FAAD)",
-        '#if defined(TIGER_AAC_GLINT)\n#include "tiger_host_aac_glint.c"\n#elif defined(TIGER_AAC_FAAD)')
-    replace(host / "tiger_host.c", "#elif defined(TIGER_AAC_FAAD)",
-        '#elif defined(TIGER_AAC_GLINT)\n        const char *backend = "glint-experimental";\n#elif defined(TIGER_AAC_FAAD)')
     (vendor / "EXPERIMENT.txt").write_text(
         f"Glint {PIN}, MIT. Local cube-root cache, Huffman prefix table, and binary64 PCM output.\n"
         "Experimental decoder; not approved for release. See tools/aac_experiment/README.md.\n",

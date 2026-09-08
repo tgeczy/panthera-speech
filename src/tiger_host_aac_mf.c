@@ -24,8 +24,8 @@
 /*
  * Bound at run time rather than linked: a Windows N install without the Media
  * Feature Pack has no mfplat.dll, and an import would stop the host loading at
- * all -- taking the other twenty-two voices down with it.  Missing here just
- * means Vicki renders silence, which is what she did before.
+ * all -- taking the formant voices down with it. The normal Windows build
+ * selects Glint when initialization here fails.
  */
 typedef HRESULT (STDAPICALLTYPE *MFStartup_t)(ULONG, DWORD);
 typedef HRESULT (STDAPICALLTYPE *MFCreateMediaType_t)(IMFMediaType **);
@@ -114,6 +114,11 @@ static int aac_open(void)
     IMFMediaType *mt = NULL;
     unsigned char ud[12 + ASC_MAX];
     HRESULT hr;
+#ifdef TIGER_AAC_FALLBACK
+    /* Diagnostic injection exercises the real initialization failure paths
+     * without uninstalling Windows components or altering COM registration. */
+    const char *missing = getenv("TIGER_AAC_MF_UNAVAILABLE");
+#endif
 
     if (g_aac_state) return g_aac_state > 0;
     g_aac_state = -1;                        /* pessimistic until it works */
@@ -141,8 +146,14 @@ static int aac_open(void)
                    chn, g_sc.channels);
     }
     mf = LoadLibraryA("mfplat.dll");
+#ifdef TIGER_AAC_FALLBACK
+    if (missing && !strcmp(missing, "library")) {
+        if (mf) FreeLibrary(mf);
+        mf = NULL;
+    }
+#endif
     if (!mf) {
-        if (g_verbose) printf("  [aac] no mfplat.dll on this system -- Vicki stays silent\n");
+        if (g_verbose) printf("  [aac] mfplat.dll unavailable\n");
         return 0;
     }
     p_MFStartup = (MFStartup_t)GetProcAddress(mf, "MFStartup");
@@ -163,6 +174,13 @@ static int aac_open(void)
     }
     hr = CoCreateInstance(&g_clsid_aac, NULL, CLSCTX_INPROC_SERVER,
                           &IID_IMFTransform, (void **)&g_aac);
+#ifdef TIGER_AAC_FALLBACK
+    if (missing && !strcmp(missing, "decoder")) {
+        if (g_aac) IMFTransform_Release(g_aac);
+        g_aac = NULL;
+        hr = REGDB_E_CLASSNOTREG;
+    }
+#endif
     if (FAILED(hr) || !g_aac) {
         if (g_verbose) printf("  [aac] no AAC decoder registered (%08lx)\n", (unsigned long)hr);
         return 0;

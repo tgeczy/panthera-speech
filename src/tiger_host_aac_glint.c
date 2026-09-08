@@ -1,4 +1,4 @@
-/* Experimental AAC-LC backend. Only compiled by the isolated research build. */
+/* AAC-LC backend using the pinned Glint decoder and shared converter timing. */
 extern void *pt_glint_open(void);
 extern void pt_glint_close(void *);
 extern int pt_glint_decode(void *, const unsigned char *, int, short *, unsigned, unsigned);
@@ -67,6 +67,6 @@ static int aac_check(void) {
     void *p = pt_glint_open();
     if (!p) return 2;
     pt_glint_close(p);
-    fprintf(stderr, "RESULT: experimental Glint decoder linked.\n");
+    fprintf(stderr, "RESULT: Glint decoder linked.\n");
     return 0;
 }

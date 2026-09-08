@@ -194,17 +194,12 @@ static void aac_dump_adts(const snd_data *in)
     if (g_verbose) printf("  [aac] wrote %ld access units to %s\n", (long)in->frameCount, path);
 }
 
-/* ---- the decoder itself, one backend per platform ---------------------- */
-/*
- * Everything above is the same whoever decodes: the converter state, the PCM
- * sink, and the ADTS dump that lets this be checked against a decoder that is
- * not ours.  Everything below is the same too -- the priming, the unit loop and
- * the fourteen shims.  Only the decode is the platform's own, and it is always
- * the platform's own: Windows has shipped an AAC decoder since 7 and Android
- * since 4.1, so neither build carries one, exactly as neither carries SQLite
- * (see tiger_host_sqlite.c).
- */
-#if defined(TIGER_AAC_FAAD)
+/* The converter state, PCM sink and priming are shared by every decoder. */
+#if defined(TIGER_AAC_FALLBACK)
+#include "tiger_host_aac_windows.c"    /* Media Foundation, then Glint */
+#elif defined(TIGER_AAC_GLINT)
+#include "tiger_host_aac_glint.c"
+#elif defined(TIGER_AAC_FAAD)
 #include "tiger_host_aac_faad.c"       /* in process, FAAD2 */
 #elif defined(TIGER_AAC_NDK)
 #include "tiger_host_aac_ndk.c"        /* Android: AMediaCodec */

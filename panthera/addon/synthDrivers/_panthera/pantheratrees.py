@@ -293,42 +293,13 @@ def find_runtime(tree, names):
 #: ever differs overrides this in its own module rather than editing it here.
 PLAYABLE_ENGINES = ("mtk3", "gala", "meow")
 
-#: The AAC decoder the concatenative banks need, by class id.  Checking the
-#: registration is cheaper and quieter than starting the host to ask, and it
-#: is the same test the host's own `CoCreateInstance` will make a moment later.
-_AAC_CLSID = r"CLSID\{32D186A7-218F-4C75-8876-DD77273A8999}"
-
-
 def aac_available():
-    """-> True when Windows has an AAC decoder for the `meow` sample banks.
+    """The packaged native host carries Glint when Windows AAC is unavailable.
 
-    Windows N and KN editions ship without one until the Media Feature Pack is
-    installed.  Absent from *both* registry views is a clear answer; anything
-    else -- no registry at all, an unexpected error -- is not, and says yes,
-    because losing a voice to a failed check is the smaller mistake and the
-    driver still has to survive a host that renders silence.
-
-    What it costs varies by generation.  On Tiger it is Vicki alone; from
-    Leopard on it is Alex as well, which is the voice these add-ons exist for.
+    Both the EXE and secure-screen DLL include it. Windows N/KN registration
+    therefore no longer determines whether Alex or Vicki can be offered.
     """
-    try:
-        import winreg
-    except ImportError:
-        return True
-    views = (getattr(winreg, "KEY_WOW64_32KEY", 0),
-             getattr(winreg, "KEY_WOW64_64KEY", 0))
-    missing = 0
-    for view in views:
-        try:
-            key = winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, _AAC_CLSID, 0,
-                                 winreg.KEY_READ | view)
-            key.Close()
-            return True
-        except FileNotFoundError:
-            missing += 1
-        except OSError:
-            return True
-    return missing < len(views)
+    return True
 
 
 #: Concatenative voices first: the voice list is a menu a blind user arrows

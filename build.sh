@@ -30,60 +30,9 @@ export MSYS_NO_PATHCONV=1
 ROOT="$(cd "$(dirname "$0")" && pwd -W 2>/dev/null || cygpath -m "$(pwd)")"
 OUT="$ROOT/build"
 
-newest() { for p in "$@"; do [ -e "$p" ] && echo "$p"; done | sort -V | tail -1; }
-
-MSVC="$(newest "C:/Program Files (x86)/Microsoft Visual Studio"/*/*/VC/Tools/MSVC/* \
-               "C:/Program Files/Microsoft Visual Studio"/*/*/VC/Tools/MSVC/*)"
-SDK="C:/Program Files (x86)/Windows Kits/10"
-SDKV="$(newest "$SDK/Include"/* | sed 's#.*/##')"
-
-[ -n "$MSVC" ] || { echo "no MSVC toolchain found"; exit 1; }
-[ -n "$SDKV" ] || { echo "no Windows SDK found"; exit 1; }
-echo "MSVC: $MSVC"
-echo "SDK:  $SDKV"
-
-mkdir -p "$OUT"
-
-INC="-I\"$MSVC/include\" -I\"$SDK/Include/$SDKV/ucrt\" -I\"$SDK/Include/$SDKV/um\" -I\"$SDK/Include/$SDKV/shared\""
-LIB="-LIBPATH:\"$MSVC/lib/x86\" -LIBPATH:\"$SDK/lib/$SDKV/ucrt/x86\" -LIBPATH:\"$SDK/lib/$SDKV/um/x86\""
-CL="$MSVC/bin/Hostx64/x86/cl.exe"
-
-# /MT for the same reason the sibling project uses it: a /MD build needs a
-# redistributable that is present on this machine and absent on a clean one.
-eval "\"$CL\" -nologo -O2 -MT -W3 $INC \"$ROOT/src/tiger_host.c\" \
-    -Fe\"$OUT/tiger_host.exe\" -Fo\"$OUT/\" \
-    -link $LIB winmm.lib ole32.lib mfuuid.lib -LARGEADDRESSAWARE" > "$OUT/build.log" 2>&1 || {
-        echo "build failed:"; tail -40 "$OUT/build.log"; exit 1; }
-
-echo "  -> build/tiger_host.exe"
-
-# The same program again, as a DLL, for NVDA's secure screens.
-#
-# NVDA's config._setSystemConfig drops every file ending .exe when it copies
-# the user configuration to systemConfig, so an add-on that ships one has no
-# engine on the sign-in desktop or on a UAC prompt -- the user is handed a
-# different synthesizer at exactly the moment a password is being typed.  A
-# .dll is copied like any other file, and NVDA's own 32-bit bridge provides
-# the 32-bit process to load it into.
-#
-# PT_DLL swaps main() for src/tiger_host_api.c and nothing else: the loader,
-# the shims and the request loop are the same source, compiled twice.  Both
-# halves are built here, every time, so a change that breaks one is a build
-# failure rather than a discovery weeks later on a screen nobody tests on.
-#
-# **No /LARGEADDRESSAWARE.**  It is a property of the executable, so on a DLL
-# it would be meaningless in any case -- but the host this one is loaded into
-# is nvda_synthDriverHost.exe, which is not large-address-aware, and the whole
-# 4 GB question is settled there rather than here.  All four generations were
-# measured rendering inside 2 GB, Leopard's 669 MB Alex included, because the
-# loader relocates when a prebound base is unavailable (tiger_host_macho.c).
-mkdir -p "$OUT/dll"          # -Fo will not create it, and says so obscurely
-eval "\"$CL\" -nologo -O2 -MT -W3 -DPT_DLL $INC \"$ROOT/src/tiger_host.c\" \
-    -Fe\"$OUT/tiger_host.dll\" -Fo\"$OUT/dll/\" \
-    -LD -link $LIB winmm.lib ole32.lib mfuuid.lib" > "$OUT/build-dll.log" 2>&1 || {
-        echo "DLL build failed:"; tail -40 "$OUT/build-dll.log"; exit 1; }
-
-echo "  -> build/tiger_host.dll"
+# One native builder is shared by NVDA and SAPI. It links the pinned Glint
+# fallback into both EXE and secure-screen DLL, with a static C++ runtime.
+python "$ROOT/tools/build_windows.py" --out "$OUT"
 
 # Stage them into the add-on immediately.  A driver loads its own copy, not
 # this one, and a stale copy there presents as "the fix did not work" -- which

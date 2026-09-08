@@ -858,6 +858,10 @@ int main(int argc, char **argv)
         int available = aac_check() == 0;
 #if defined(TIGER_NO_AAC)
         const char *backend = "none";
+#elif defined(TIGER_AAC_FALLBACK)
+        const char *backend = aac_backend_name();
+#elif defined(TIGER_AAC_GLINT)
+        const char *backend = "glint";
 #elif defined(TIGER_AAC_FAAD)
         const char *backend = "faad2";
 #elif defined(__ANDROID__)

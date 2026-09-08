@@ -1,8 +1,10 @@
 # Experimental MIT AAC decoder
 
-Glint can render through Panthera's existing AAC seam on native Windows and
-experimental Box Android builds. **This is an opt-in experiment, not the release
-decoder.** Production builds still use their existing backends. No voice data,
+Glint renders through Panthera's existing AAC seam on native Windows and
+experimental Box Android builds. Native Windows now includes it as a fallback
+when Media Foundation or its AAC transform is unavailable; the existing Windows
+codec stays preferred. Android and Linux promotion is still separate work.
+No voice data,
 AAC packets, generated PCM, or upstream implementation belongs in this directory.
 
 Upstream: [CrispStrobe/glint](https://github.com/CrispStrobe/glint), pinned at

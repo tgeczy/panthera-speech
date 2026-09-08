@@ -9,7 +9,10 @@ These dependencies retain their own copyright notices and license terms.
 
 The original Panthera source, including the Windows NVDA and SAPI ports,
 remains MIT-licensed. The Windows builds do not link Unicorn or FAAD2 and
-are distributed under MIT. See Panthera-MIT.txt and GPL-2.0.txt.
+are distributed under MIT. Native Windows builds prefer Media Foundation
+and carry the MIT-licensed Glint AAC decoder as a fallback for systems
+without a usable Windows codec. See Panthera-MIT.txt, Glint-MIT.txt and
+GPL-2.0.txt.
 FAAD2's additional notice is included in FAAD2-COPYING.txt.
 
 Source and build instructions:
@@ -22,6 +25,7 @@ archives when distributing the corresponding binaries.
 
 Unicorn: https://github.com/unicorn-engine/unicorn
 FAAD2: https://github.com/knik0/faad2
+Glint: https://github.com/CrispStrobe/glint
 
 No Apple engine, voice or dictionary data is distributed with Panthera.
 The licenses above cover Panthera and its open-source dependencies only.

@@ -9,9 +9,10 @@ $engineSources = @('runtime.cpp', 'settings.cpp', 'diagnostics.cpp', 'text.cpp')
   ForEach-Object { Join-Path $PSScriptRoot $_ }
 $stage = Join-Path $OutputRoot "sapi"
 New-Item -ItemType Directory -Force $stage,(Join-Path $stage "x86"),(Join-Path $stage "x64") | Out-Null
-$hostCl = Join-Path $msvc.FullName "bin\Hostx64\x86\cl.exe"
-& $hostCl /nologo /O2 /MT /W3 "/I$($msvc.FullName)\include" "/I$($sdk.FullName)\ucrt" "/I$($sdk.FullName)\um" "/I$($sdk.FullName)\shared" (Join-Path $repo "src\tiger_host.c") "/Fe$stage\panthera_host.exe" "/Fo$stage\" /link "/LIBPATH:$($msvc.FullName)\lib\x86" "/LIBPATH:$($sdk.Parent.Parent.FullName)\Lib\$($sdk.Name)\ucrt\x86" "/LIBPATH:$($sdk.Parent.Parent.FullName)\Lib\$($sdk.Name)\um\x86" winmm.lib ole32.lib mfuuid.lib /LARGEADDRESSAWARE
+# Share the exact native host build (and AAC fallback) with NVDA.
+& py -3 (Join-Path $repo "tools\build_windows.py") --out $stage --no-dll
 if ($LASTEXITCODE) { throw "32-bit Panthera host build failed ($LASTEXITCODE)" }
+Move-Item -Force (Join-Path $stage "tiger_host.exe") (Join-Path $stage "panthera_host.exe")
 Copy-Item (Join-Path $stage "panthera_host.exe") (Join-Path $stage "x86\panthera_host.exe")
 Copy-Item (Join-Path $stage "panthera_host.exe") (Join-Path $stage "x64\panthera_host.exe")
 foreach ($arch in "x86","x64") {

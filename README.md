@@ -16,6 +16,10 @@ maps Apple's Intel `MacinTalk` into memory, fills the pointer slots `dyld`
 would have filled, and calls the engine directly. An utterance costs about
 twelve milliseconds.
 
+Windows builds include a Glint AAC fallback, so Alex and Vicki can speak
+without the Media Feature Pack on N/KN editions. Media Foundation remains
+preferred where available. See [Windows AAC selection and checks](docs/windows-aac.md).
+
 **One add-on for NVDA**, `pantheraspeech`, declaring one synthesizer per
 engine generation -- **and a SAPI 5 driver**, so the same voices speak in
 JAWS and every other SAPI application ([`sapi/`](sapi/README.md); the
