@@ -1,4 +1,4 @@
-/* Experimental adapter for Panthera's existing emulator seam. Not a general
+/* Adapter for Panthera's existing emulator seam. Not a general
  * Unicorn implementation: identity mappings and synchronous calls only. */
 #include <stdio.h>
 #include <stdlib.h>
@@ -8,7 +8,7 @@
 #include <ucontext.h>
 #include <dlfcn.h>
 #include <unistd.h>
-#include <unicorn/unicorn.h>
+#include "tiger_box_api.h"
 #include "box64context.h"
 #include "env.h"
 #include "debug.h"
@@ -23,6 +23,7 @@
 #include "emu/x87emu_private.h"
 #include "tools/bridge_private.h"
 #include "box_signals.h"
+#include "box_memory.h"
 extern void thread_set_emu(x64emu_t *);
 struct uc_struct {
     x64emu_t *emu;
@@ -36,7 +37,7 @@ static pthread_once_t once=PTHREAD_ONCE_INIT;
 static __thread uc_engine *active;
 static void init(void) {
     box_capture_native_signals();
-    ftrace=stderr;box64_pagesize=4096;LoadEnvVariables();DetectHostCpuFeatures();
+    ftrace=stderr;box64_pagesize=sysconf(_SC_PAGESIZE);LoadEnvVariables();DetectHostCpuFeatures();
     // Initialize native memory bookkeeping without reserving every address
     // above 4 GB. Only guest-visible allocations need the i386 address limit;
     // bionic and the Android runtime must retain their normal address space.
@@ -48,13 +49,14 @@ uc_err uc_open(uc_arch arch, uc_mode mode, uc_engine **out) {
     if(arch!=UC_ARCH_X86 || mode!=UC_MODE_32) return UC_ERR_ARCH;
     pthread_once(&once,init);
     uc_engine *u=calloc(1,sizeof(*u));
+    if(!u)return UC_ERR_NOMEM;
     u->emu=NewX64Emu(ctx,0,0,0,0); SetupX64Emu(u->emu,NULL);
     thread_set_emu(u->emu);*out=u; return UC_ERR_OK;
 }
 uc_err uc_close(uc_engine *u) {
     clean_current_emuthread(); free(u); return UC_ERR_OK;
 }
-const char *uc_strerror(uc_err e) {return e==UC_ERR_OK?"OK":"Box64 experiment fault";}
+const char *uc_strerror(uc_err e) {return e==UC_ERR_OK?"OK":"Box64 adapter fault";}
 static uint64_t *reg(uc_engine *u,int id) {
     x64emu_t *emu=u->emu;
     switch(id) {
@@ -76,14 +78,14 @@ uc_err uc_mem_read(uc_engine *u,uint64_t a,void *p,uint64_t n) {
     memcpy(p,(void*)(uintptr_t)a,n);return UC_ERR_OK;
 }
 uc_err uc_mem_write(uc_engine *u,uint64_t a,const void *p,uint64_t n) {
+    if(n) unprotectDB((uintptr_t)a,(size_t)n,1);
     memcpy((void*)(uintptr_t)a,p,n);return UC_ERR_OK;
 }
 uc_err uc_mem_map_ptr(uc_engine *u,uint64_t a,uint64_t n,uint32_t prot,void *p) {
-    if(a!=(uintptr_t)p)return UC_ERR_ARG;
-    setProtection(a,n,prot);return UC_ERR_OK;
+    return box_map(a,n,prot,p);
 }
 uc_err uc_mem_unmap(uc_engine *u,uint64_t a,uint64_t n) {
-    setProtection(a,n,0);return UC_ERR_OK;
+    return box_unmap(a,n);
 }
 uc_err uc_hook_add(uc_engine *u,uc_hook *h,int type,void *cb,void *user,uint64_t b,uint64_t e,...) {
     if(type==UC_HOOK_CODE) {u->dispatch=cb;u->user=user;}
@@ -125,7 +127,7 @@ uc_err uc_context_restore(uc_engine *u,uc_context *p) {
 }
 uc_err uc_context_free(uc_context *p) {free(p);return UC_ERR_OK;}
 
-/* Only Panthera-owned bridge records are supported by this experiment.
+/* Only Panthera-owned bridge records are supported by this adapter.
  * Linux i386 wrappers (the separate BOX32 build option) are not used. */
 void x86Int3(x64emu_t *emu,uintptr_t *addr) {
     onebridge_t *b=(onebridge_t*)(*addr-1);

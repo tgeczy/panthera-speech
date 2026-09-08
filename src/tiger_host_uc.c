@@ -32,7 +32,11 @@
  */
 
 #include <stdint.h>
+#if defined(TIGER_BOX86) || defined(TIGER_BOX64)
+#include "tiger_box_api.h"
+#else
 #include <unicorn/unicorn.h>
+#endif
 
 /* ---- guest address map (host == guest, identity) ----------------------- *
  * One contiguous block is reserved with VirtualAlloc(NULL) in uc_host_init --

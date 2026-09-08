@@ -876,7 +876,11 @@ int main(int argc, char **argv)
                "\"number_flags\":{\"fix\":2,\"words\":4},"
                "\"render_cli\":true,\"cancel_signal\":%s}\n", backend,
                available ? "true" : "false",
-#ifdef TIGER_UC
+#if defined(TIGER_BOX86)
+               "box86",
+#elif defined(TIGER_BOX64)
+               "box64",
+#elif defined(TIGER_UC)
                "unicorn",
 #else
                "native",

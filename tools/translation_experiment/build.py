@@ -1,4 +1,4 @@
-"""Build isolated Android translator experiments from a pinned local Git clone.
+"""Build isolated Android translator artifacts from a pinned local Git clone.
 
 Does not modify the supplied clone, production sources, APK, or connected devices.
 Uses git archive so local third-party edits cannot silently affect the comparison.
@@ -33,6 +33,41 @@ def replace(path, old, new):
     path.write_text(source.replace(old, new), encoding="utf8")
 
 
+def android_legacy_function(path, signature, fallback):
+    """Keep unused Linux launcher helpers from raising Android's minimum API.
+
+    They are outside Panthera's guest-call interface. Before API 28, report
+    unsupported Linux wrapper calls and omit Steam symlink discovery.
+    """
+    source = path.read_text(encoding="utf8")
+    start = source.index("{", source.index(signature)) + 1
+    end = source.index("\n}", start)
+    source = (source[:start] + "\n#if defined(__ANDROID__) && __ANDROID_API__ < 28\n"
+              "    /* Panthera embedding: this Linux wrapper is outside our guest interface. */\n"
+              f"    {fallback}\n#else\n" + source[start:end] + "\n#endif" + source[end:])
+    path.write_text(source, encoding="utf8")
+
+
+def wrapper_command(vendor, backend):
+    """Put the long upstream header argument list in a file, not a cmd line."""
+    path = vendor / "CMakeLists.txt"
+    source = path.read_text(encoding="utf8")
+    root = "${" + backend.upper() + "_ROOT}"
+    command = 'COMMAND "${PYTHON_EXECUTABLE}" "' + root + '/rebuild_wrappers.py"'
+    start = source.index(command)
+    end = source.index("MAIN_DEPENDENCY", start)
+    arguments = source[start+len(command):end].strip()
+    setup = ('set(PANTHERA_WRAPPER_ARGS ' + arguments + ')\n'
+             'string(REPLACE ";" "\\n" PANTHERA_WRAPPER_ARGS "${PANTHERA_WRAPPER_ARGS}")\n'
+             'file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/panthera-wrapper-args.txt" "${PANTHERA_WRAPPER_ARGS}\\n")\n')
+    replacement = ('COMMAND "${PYTHON_EXECUTABLE}" "' + root + '/wrapper_args.py"\n'
+                   '        "' + root + '/rebuild_wrappers.py" "${CMAKE_CURRENT_BINARY_DIR}/panthera-wrapper-args.txt"\n        ')
+    source = source[:start] + replacement + source[end:]
+    position = source.index("set(WRAPPER ")
+    path.write_text(source[:position] + setup + source[position:], encoding="utf8")
+    shutil.copy2(HERE / "wrapper_args.py", vendor)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--backend", choices=PINS, required=True)
@@ -41,6 +76,7 @@ def main():
     parser.add_argument("--out", type=Path, required=True, help="New experiment directory")
     parser.add_argument("--aac", choices=["faad", "glint"], default="faad")
     parser.add_argument("--aac-source", type=Path, help="Official Glint clone; required with --aac glint")
+    parser.add_argument("--api", type=int, default=26, help="Android minimum API (matches the app by default)")
     parser.add_argument("--ndk", type=Path, default=Path("C:/Android/sdk/ndk/27.2.12479018"))
     parser.add_argument("--cmake", type=Path, default=Path("C:/Android/sdk/cmake/3.22.1/bin/cmake.exe"))
     args = parser.parse_args()
@@ -108,12 +144,23 @@ def main():
         objects = "mainobj dynarec interpreter"
         options = ["-DARM64=ON", "-DBOX32=OFF", "-DNOBOX64=ON", "-DNOLOADADDR=ON"]
 
+    libc = vendor / "src/wrapped/wrappedlibc.c"
+    android_legacy_function(libc, "EXPORT int32_t my_posix_spawnp(", "return ENOSYS;")
+    if backend == "box64":
+        android_legacy_function(libc, "EXPORT int32_t my_posix_spawn(", "return ENOSYS;")
+        android_legacy_function(vendor / "src/steam.c", "static void create_libs_symlink(", "(void)folder;")
+        for name in ("attr_getinheritsched", "attr_setinheritsched",
+                     "mutexattr_getprotocol", "mutexattr_setprotocol"):
+            android_legacy_function(vendor / "src/libtools/threads.c",
+                                    f"EXPORT int my_pthread_{name}(", "return ENOSYS;")
+
+    wrapper_command(vendor, backend)
     replace(vendor / "CMakeLists.txt", "$(git rev-parse --short HEAD)", PINS[backend][:7])
-    for filename in (f"{backend}_adapter.c", f"memory_{backend}.c", "engine_bench.c", "memory_native.c", "box_signals.h"):
+    for filename in (f"{backend}_adapter.c", f"memory_{backend}.c", "engine_bench.c", "memory_native.c", "box_signals.h", "box_memory.h", "runtime_check.c"):
         shutil.copy2(HERE / filename, vendor / filename)
-    uc = ROOT / "android/harness/unicorn"
     (vendor / "panthera_jni.map").write_text(
         "{ global: Java_com_pantheraspeech_tts_PantheraNative_*; local: *; };\n", encoding="utf8")
+    faad_include = ('"' + (ROOT / "android/harness/faad2/include").as_posix() + '"') if args.aac == "faad" else ""
     cmake = f'''
 remove_definitions(-std=gnu11)
 add_compile_options("$<$<COMPILE_LANGUAGE:C>:-std=gnu11>")
@@ -121,7 +168,7 @@ enable_language(CXX)
 {aac_cmake}
 file(GLOB FAAD_OBJS "{faad.as_posix()}/*.o")
 function(panthera_host_target target mode)
-    target_include_directories(${{target}} PRIVATE "{host.as_posix()}" "{uc.as_posix()}/include" "{ROOT.as_posix()}/android/harness/faad2/include")
+    target_include_directories(${{target}} PRIVATE "{host.as_posix()}" {faad_include})
     target_compile_definitions(${{target}} PRIVATE TIGER_UC TIGER_INLINE_GUEST TIGER_{backend.upper()} TIGER_AAC_{args.aac.upper()} ${{mode}})
     target_compile_options(${{target}} PRIVATE -Wno-macro-redefined)
     target_link_libraries(${{target}} {objects} {aac_library} m dl log mediandk)
@@ -132,6 +179,8 @@ target_link_libraries(panthera_memory_bench {objects} m dl)
 add_executable(panthera_native_bench memory_native.c)
 add_executable(panthera_engine_bench engine_bench.c {backend}_adapter.c "{host.as_posix()}/tiger_host.c")
 panthera_host_target(panthera_engine_bench TIGER_SHARED)
+add_executable(panthera_runtime_check runtime_check.c {backend}_adapter.c)
+panthera_host_target(panthera_runtime_check TIGER_SHARED)
 # Exercise Android's stderr-pump thread before translator initialization too.
 # The shared-library benchmark alone does not reproduce app startup ordering.
 add_executable(panthera_engine_logcat_bench engine_bench.c {backend}_adapter.c "{host.as_posix()}/tiger_host.c")
@@ -151,12 +200,13 @@ target_link_options(panthera PRIVATE "-Wl,--version-script={vendor.as_posix()}/p
         run([args.cmake, "-S", vendor, "-B", out / "build", "-G", "Ninja",
              f"-DCMAKE_MAKE_PROGRAM={args.cmake.parent.as_posix()}/ninja.exe",
              f"-DCMAKE_TOOLCHAIN_FILE={args.ndk.as_posix()}/build/cmake/android.toolchain.cmake",
-             f"-DANDROID_ABI={abi}", "-DANDROID_PLATFORM=android-28", "-DCMAKE_BUILD_TYPE=Release",
+             f"-DANDROID_ABI={abi}", f"-DANDROID_PLATFORM=android-{args.api}", "-DCMAKE_BUILD_TYPE=Release",
              "-DANDROID_STL=c++_static", "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
+             f"-DPYTHON_EXECUTABLE={sys.executable}",
              *options], env=env, stdout=log, stderr=subprocess.STDOUT)
         checks = ["pcm16_check", "huffman_check"] if args.aac == "glint" else []
         run([args.cmake, "--build", out / "build", "--target", "panthera_engine_bench",
-             "panthera_engine_logcat_bench", "panthera_memory_bench", "panthera_native_bench", "panthera", *checks, "-j6"],
+             "panthera_engine_logcat_bench", "panthera_memory_bench", "panthera_native_bench", "panthera_runtime_check", "panthera", *checks, "-j6"],
             env=env, stdout=log, stderr=subprocess.STDOUT)
     print(f"Built {backend} {PINS[backend]} for {abi}: {out / 'build'}")
 

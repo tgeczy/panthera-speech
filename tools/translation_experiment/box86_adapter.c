@@ -1,10 +1,10 @@
-/* Experimental adapter for Panthera's existing emulator seam. Not a general
+/* Adapter for Panthera's existing emulator seam. Not a general
  * Unicorn implementation: identity mappings and synchronous calls only. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
-#include <unicorn/unicorn.h>
+#include "tiger_box_api.h"
 #include "box86context.h"
 #include "box86lib.h"
 #include "x86emu.h"
@@ -17,6 +17,7 @@
 #include "emu/x87emu_private.h"
 #include "tools/bridge_private.h"
 #include "box_signals.h"
+#include "box_memory.h"
 extern void thread_set_emu(x86emu_t *);
 struct uc_struct {
     x86emu_t *emu;
@@ -36,13 +37,14 @@ uc_err uc_open(uc_arch arch, uc_mode mode, uc_engine **out) {
     if(arch!=UC_ARCH_X86 || mode!=UC_MODE_32) return UC_ERR_ARCH;
     pthread_once(&once,init);
     uc_engine *u=calloc(1,sizeof(*u));
+    if(!u)return UC_ERR_NOMEM;
     u->emu=NewX86Emu(ctx,0,0,0,0); SetupX86Emu(u->emu);
     thread_set_emu(u->emu);*out=u; return UC_ERR_OK;
 }
 uc_err uc_close(uc_engine *u) {
     clean_current_emuthread(); free(u); return UC_ERR_OK;
 }
-const char *uc_strerror(uc_err e) {return e==UC_ERR_OK?"OK":"Box86 experiment fault";}
+const char *uc_strerror(uc_err e) {return e==UC_ERR_OK?"OK":"Box86 adapter fault";}
 static uint32_t *reg(uc_engine *u,int id) {
     x86emu_t *emu=u->emu;
     switch(id) {
@@ -64,14 +66,14 @@ uc_err uc_mem_read(uc_engine *u,uint64_t a,void *p,uint64_t n) {
     memcpy(p,(void*)(uintptr_t)a,n);return UC_ERR_OK;
 }
 uc_err uc_mem_write(uc_engine *u,uint64_t a,const void *p,uint64_t n) {
+    if(n) unprotectDB((uintptr_t)a,(size_t)n,1);
     memcpy((void*)(uintptr_t)a,p,n);return UC_ERR_OK;
 }
 uc_err uc_mem_map_ptr(uc_engine *u,uint64_t a,uint64_t n,uint32_t prot,void *p) {
-    if(a!=(uintptr_t)p)return UC_ERR_ARG;
-    setProtection(a,n,prot);return UC_ERR_OK;
+    return box_map(a,n,prot,p);
 }
 uc_err uc_mem_unmap(uc_engine *u,uint64_t a,uint64_t n) {
-    setProtection(a,n,0);return UC_ERR_OK;
+    return box_unmap(a,n);
 }
 uc_err uc_hook_add(uc_engine *u,uc_hook *h,int type,void *cb,void *user,uint64_t b,uint64_t e,...) {
     if(type==UC_HOOK_CODE) {u->dispatch=cb;u->user=user;}
