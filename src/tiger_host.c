@@ -714,13 +714,9 @@ static int host_open(const char *mtpath, const char *sdpath)
      * so the guest's faults surface through uc (and uc_on_badmem) instead. */
 #ifdef _WIN32
     AddVectoredExceptionHandler(1, on_fault);
-#else
-    /* No equivalent installed on POSIX, and deliberately so.  A vectored
-     * handler is a Windows facility; the honest translation is a sigaction,
-     * and a native build has no Unicorn handler to conflict with -- but a
-     * crash reporter that has never run is worse than none, because it is
-     * believed.  Left out until it can be tested on the platform that needs
-     * it, where the default disposition still gives a core file. */
+#elif defined(__linux__) && defined(__i386__)
+    if (!install_native_divzero(native_fault_in_guest))
+        die("cannot install native guest divide-by-zero recovery");
 #endif
 #endif
 
@@ -847,6 +843,9 @@ int main(int argc, char **argv)
 
     if(argc>1&&!strcmp(argv[1],"--help")){cli_help();return 0;}
     if(argc>1&&!strcmp(argv[1],"--render"))return cli_render(argc,argv);
+#ifndef TIGER_UC
+    if(argc>1&&!strcmp(argv[1],"--audio-timeline-check"))return timeline_check();
+#endif
 
     /* --serve <MacinTalk> <SpeechDictionary> <VoicesDir> : stay resident and
      * answer requests on stdin/stdout.  Otherwise render one utterance and

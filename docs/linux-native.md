@@ -189,6 +189,30 @@ UTF-8 conversion against IPC, number styles, rate, and mute using personal data.
 `tools/native_cli_args_check.py HOST` checks argument handling without engine
 data and runs in CI for both Linux builds.
 
+The native i686 host also carries the same high-rate guest divide-by-zero
+recovery as Windows. Tiger Fred at 380 and 387 wpm has been checked against
+Windows byte for byte, through both codec builds; the shared-library client
+also checks streaming and cancellation at 387 wpm. Recovery is restricted to
+zero memory divisors in loaded guest images. Other arithmetic faults retain
+the previous signal action or the normal process fault.
+
+`tools/native_library_check.c` accepts `TREE VOICE [WPM]` to exercise the public
+library at a chosen rate. Building Linux runs the synthetic instruction/signal
+tests in `tools/native_divide_check.c`; native i686 additionally runs
+`tiger_host --audio-timeline-check`. These tests need no engine data.
+
+The Glint decoder remains opt-in:
+
+```sh
+AAC=glint GLINT_SOURCE=/path/to/glint-clone sh build_linux.sh i686
+```
+
+This requires a C++17 multilib toolchain and the pinned official source clone
+described in [the AAC experiment](../tools/aac_experiment/README.md). It builds
+into `build/linux-i686-glint`, separately from the default codec, and has its
+own Linux CI job. Dependency promotion and release packaging remain separate
+from this experimental build.
+
 ## Android volume
 
 The in-process API exposes `panthera_set_volume(level, generation)` under

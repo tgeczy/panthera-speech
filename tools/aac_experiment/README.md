@@ -116,12 +116,15 @@ not resolve the native Lion difference; the later investigation did.
 
 ## Before adopting
 
-Resolve the separate Box paragraph timing issue;
-assess the remaining ARMv7 performance gap; audit decoder bounds, reset state (including PNS),
-and source provenance. Upstream generates normative AAC tables by extracting
-and comparing tables from vo-aacenc and FFmpeg; its MIT declaration alone is
-not a completed provenance review. Keep the current release license notices
-and decoder defaults until the complete dependency selection is settled.
+The decoder bounds/reset fixes and source-provenance findings are recorded
+below. The Box paragraph overwrite is fixed by tagging slices with their
+scheduled player restart, and the native Linux high-rate Fred crash is fixed
+by porting Windows' guest divide-by-zero recovery. Before promotion, finish
+the Box signal/mapping/code-cache review, reproducible default build and
+distribution notices, and final real-navigation checks on the pure ARM64
+phone. The remaining ARMv7 decoder cost is measured above. Keep the current
+release license notices and decoder defaults until the complete dependency
+selection is settled.
 
 ### Decoder audit, later September 7
 
@@ -303,5 +306,36 @@ and both S22 ABIs, including reference WAVs, settings application, playback,
 and stop/restart. Original APKs, primary ABIs, and exact preference bytes were
 restored. The previous native Glint build fails the new explicit comparison
 gate on the Lion paragraph, providing a negative control for the fix. The
-separate intermittent Box paragraph-length issue remains open; a passing
-ARM64 run does not establish that it is resolved.
+separate Box paragraph-length issue was still open at that point; the later
+restart-tag fix addresses the measured overwrite rather than relying on a
+passing ARM64 run.
+
+## Review after the restart and Linux changes
+
+The collector's one-frame replacement exception now requires a zero sample,
+matching its documented purpose. Synthetic slices test consecutive restarts
+at zero, replacement of the silent kick, preservation of a nonzero one-frame
+slice, and a fresh origin after reset. The Android paragraph check retains
+the documented four-frame allowance for measured zero-padding variation and
+still requires Alex's breath; the existing short reference WAVs are unchanged.
+
+Native Linux Fred's high-rate SIGFPE was the missing platform counterpart of
+Windows' existing divide-by-zero recovery. The native Linux handler handles
+only zero memory divisors in loaded guest images; the translator's signal
+handling is untouched. Independent synthetic cases check operand widths,
+instruction bounds, overflow and read-only rejection, preservation of errno,
+and prior/default signal ownership. The shared instruction parser is also
+used by the Windows handler.
+
+All 56 native Glint configurations remain byte-identical to the build before
+the restart/audit/Linux changes, and all eight cancellation/recovery checks
+pass. Thirteen native Linux Glint configurations, including Fred at 380/387
+wpm, match Windows Glint byte for byte with exact repeats. Formant controls
+also match in the FAAD2 build. Sixteen public-library cases cover both codecs,
+Tiger Fred/Vicki and Leopard Alex/Vicki at 180/387 wpm, with streaming,
+buffered output, cancellation recovery, and number settings. Linux CI now
+builds Glint and checks its converter, parser, and library without engine data.
+The rebuilt Android app passes its complete audio/settings suite on both S22
+ABIs and Watch 2 ARMv7; original APKs and preferences were restored. The
+collector regression rejects the prior unconditional one-frame replacement
+in an isolated negative-control build.

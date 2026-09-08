@@ -173,5 +173,10 @@ echo "   -> $OUT/libpanthera.so.0 (+ include/panthera.h)"
 echo "== self-tests =="
 "$OUT/tiger_host" --numbers-check
 "$OUT/tiger_host" --regex-check | tail -3
+if [ "$ARCH" = i686 ]; then
+    "$OUT/tiger_host" --audio-timeline-check
+fi
+$CC $CFLAGS "$ROOT/tools/native_divide_check.c" -o "$OUT/native_divide_check"
+"$OUT/native_divide_check"
 echo "Built.  Point it at a MacinTalk tree of your own to hear anything:"
 echo "  $OUT/tiger_host <MacinTalk> <SpeechDictionary> <Voice.SpeechVoice>"

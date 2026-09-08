@@ -79,7 +79,20 @@ static const char *engine_symbol(void *addr)
  * machinery, and clang for Android has no SEH -- so this whole block is
  * Windows-only.  A host SIGSEGV handler here would fight Unicorn's own, the
  * very VEH-priority trap already learned once; the right POSIX answer is to
- * install nothing. */
+ * install no handler for translated execution. Native Linux i386 does need
+ * its counterpart of the Windows divide-by-zero recovery below. */
+#include "tiger_divisor.h"
+#include "tiger_native_divzero.h"
+#if defined(__linux__) && defined(__i386__) && !defined(TIGER_UC)
+static int native_fault_in_guest(uintptr_t pc)
+{
+    int i;
+    for (i = 0; i < g_nimages; ++i)
+        if (pc >= g_images[i]->lo + g_images[i]->slide &&
+            pc < g_images[i]->hi + g_images[i]->slide) return 1;
+    return 0;
+}
+#endif
 #ifdef _WIN32
 /* ---- surviving the engine's own divide by zero ------------------------- */
 /*
@@ -111,33 +124,14 @@ static int reg_of(const CONTEXT *c, int i)
  * not a shape we understand, in which case the fault is left to stand. */
 static void *divisor_operand(const unsigned char *pc, CONTEXT *c, int *width)
 {
-    unsigned char modrm;
-    int mod, rm, base;
-    const unsigned char *p = pc;
-
-    *width = 4;
-    while (*p == 0x66 || *p == 0x67 || *p == 0x2e || *p == 0x36 ||
-           *p == 0x3e || *p == 0x26 || *p == 0x64 || *p == 0x65) {
-        if (*p == 0x66) *width = 2;
-        p++;
-    }
-    if (*p == 0xf6) *width = 1;
-    else if (*p != 0xf7) return NULL;
-    p++;
-
-    modrm = *p++;
-    if (((modrm >> 3) & 7) < 6) return NULL;      /* not div or idiv */
-    mod = modrm >> 6;
-    rm = modrm & 7;
-
-    if (mod == 3) return NULL;                    /* register divisor */
-    if (rm == 4) return NULL;                     /* SIB: not seen here */
-    if (mod == 0 && rm == 5)
-        return (void *)(intptr_t)(*(const int *)p);
-    base = reg_of(c, rm);
-    if (mod == 1) return (void *)(intptr_t)(base + (signed char)*p);
-    if (mod == 2) return (void *)(intptr_t)(base + *(const int *)p);
-    return (void *)(intptr_t)base;
+    uint32_t regs[8], address;
+    unsigned bytes;
+    int i;
+    for (i = 0; i < 8; ++i) regs[i] = (uint32_t)reg_of(c, i);
+    /* Use the same instruction subset on both native hosts. */
+    if (!divisor_memory(pc, 15, regs, &address, &bytes)) return NULL;
+    *width = (int)bytes;
+    return (void *)(uintptr_t)address;
 }
 
 static volatile long g_divzero;

@@ -19,6 +19,37 @@ on:
   workflow_dispatch:
 
 jobs:
+  glint:
+    name: i686-glint-experimental
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the native C++ toolchain
+        run: sudo apt-get update && sudo apt-get install -y g++-multilib
+      - name: Fetch the pinned decoder source
+        run: |
+          pin="$(python3 -c 'import sys; sys.path.insert(0,"tools/aac_experiment"); import glint; print(glint.PIN)')"
+          git init build/research/glint
+          git -C build/research/glint fetch --depth 1 https://github.com/CrispStrobe/glint.git "$pin"
+          git -C build/research/glint checkout --detach FETCH_HEAD
+      - name: Build and check without engine data
+        env:
+          AAC: glint
+        run: |
+          sh build_linux.sh i686
+          out="$PWD/build/linux-i686-glint"
+          "$out/tiger_host" --libc-check
+          "$out/tiger_host" --capabilities | python3 -m json.tool
+          g++ -m32 -msse2 -mfpmath=sse -O2 -std=c++17 \
+            tools/aac_experiment/pcm16_check.cpp -o "$out/pcm16_check"
+          g++ -m32 -msse2 -mfpmath=sse -O2 -std=c++17 \
+            -I"$out/glint/glint/src" tools/aac_experiment/huffman_check.cpp -o "$out/huffman_check"
+          "$out/pcm16_check"
+          "$out/huffman_check"
+          cc -m32 tools/native_library_check.c -I"$out/include" \
+            -L"$out" -lpanthera -Wl,-rpath,"$out" -o "$out/library_check"
+          "$out/library_check" --check
+
   build:
     # Match the supported runtime baseline. ubuntu-latest pulled in GLIBC_2.38
     # symbols, so an otherwise passing archive could not load on Ubuntu 22.04.
@@ -111,7 +142,7 @@ jobs:
           mkdir -p "$out/licenses" "$out/sources"
           cp licenses/* "$out/licenses/"
           git archive --format=tar.gz -o "$PWD/$out/sources/panthera.tar.gz" HEAD \
-            src build_linux.sh LICENSE licenses docs/linux-native.md tools/native_library_check.c
+            src build_linux.sh LICENSE licenses docs/linux-native.md tools/native_library_check.c tools/native_divide_check.c
           if [ "${{ matrix.arch }}" != "i686" ]; then
             cp unicorn-src/COPYING "$out/licenses/Unicorn-GPL-2.0.txt"
             git -C unicorn-src archive --format=tar.gz \

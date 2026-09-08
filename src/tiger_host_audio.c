@@ -488,7 +488,8 @@ static void collect_slice(unsigned char *slice, unsigned epoch)
      * replaced, and replaced here exactly as it always was. */
     if (epoch != g_last_epoch) {
         if (g_last_epoch != ~0u)
-            g_epoch_base = (g_epoch_slices == 1 && g_pcm_n == g_epoch_start + 1)
+            g_epoch_base = (g_epoch_slices == 1 && g_pcm_n == g_epoch_start + 1 &&
+                            g_pcm[g_epoch_start] == 0.0f)
                            ? g_epoch_start : g_pcm_n;
         g_time_origin = stime; g_have_origin = 1;
         g_last_stime = 0.0;
@@ -548,6 +549,46 @@ static void collect_slice(unsigned char *slice, unsigned epoch)
             g_pcm_n = (pos + n < PCM_CAP) ? pos + n : PCM_CAP;
     }
 }
+
+#ifndef TIGER_UC
+/* Synthetic slices exercise the collector without an engine or voice bank.
+ * In particular, two restarts at zero must preserve both pieces of speech;
+ * the replaceable one-frame kick must actually be silent. */
+static void timeline_check_slice(unsigned epoch, double time, const float *samples, unsigned count)
+{
+    union { double align; unsigned char bytes[SLICE_BUFLIST_OFF + sizeof(gptr)]; } slice;
+    unsigned buffers[4];
+    memset(&slice, 0, sizeof slice);
+    buffers[0] = 1; buffers[1] = 1; buffers[2] = count * sizeof(float);
+    buffers[3] = (gptr)(uintptr_t)samples;
+    *(unsigned *)(slice.bytes + SLICE_FRAMES_OFF) = count;
+    *(gptr *)(slice.bytes + SLICE_BUFLIST_OFF) = (gptr)(uintptr_t)buffers;
+    *(double *)(slice.bytes + SLICE_SAMPLETIME_OFF) = time;
+    *(unsigned *)(slice.bytes + SLICE_TSFLAGS_OFF) = kAudioTimeStampSampleTimeValid;
+    collect_slice(slice.bytes, epoch);
+}
+
+static int timeline_check(void)
+{
+    const float zero = 0.0f;
+    const float expected[] = {0.1f,0.2f,0.3f,0.4f,0.5f,0.6f,0.7f,0.8f};
+    g_pcm_n = 0; timeline_reset();
+    timeline_check_slice(10, 0, &zero, 1);
+    timeline_check_slice(11, 0, expected, 2);
+    timeline_check_slice(12, 0, expected + 2, 2);
+    timeline_check_slice(13, 0, expected + 4, 1);
+    timeline_check_slice(14, 0, expected + 5, 2);
+    timeline_check_slice(14, 2, expected + 7, 1);
+    if (g_pcm_n != 8 || memcmp(g_pcm, expected, sizeof expected)) return 1;
+    g_pcm_n = 0; timeline_reset();
+    timeline_check_slice(20, 500, expected, 2);
+    timeline_check_slice(20, 502, expected + 2, 2);
+    if (g_pcm_n != 4 || memcmp(g_pcm, expected, 4 * sizeof(float))) return 2;
+    g_pcm_n = 0; timeline_reset();
+    puts("PASS audio timeline: consecutive zero-time restarts, silent kick, nonzero one-frame slice, reset origin");
+    return 0;
+}
+#endif
 
 static DWORD WINAPI pacer_thread(LPVOID arg)
 {
