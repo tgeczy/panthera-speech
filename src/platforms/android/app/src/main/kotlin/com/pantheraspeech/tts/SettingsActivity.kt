@@ -337,6 +337,42 @@ class SettingsActivity : Activity() {
             PantheraEngine.unsupportedReason(gen)?.let { root.addView(body(it)) }
         }
 
+        // Which of the installed generations to offer at all. Data can be
+        // present and unwanted -- one generation's Fred is enough for most
+        // people -- and an unwanted engine must not turn up in a voice list a
+        // screen reader reads out forty entries at a time. Off hides it
+        // everywhere at once and leaves its folder alone.
+        // Every generation this app knows is named here, installed or not, so
+        // a person sees at a glance what they have and what they could add.
+        val installed = PantheraEngine.installedGens(this)
+        root.addView(heading("Engines"))
+        root.addView(body("Switch off a generation you do not want. Its voices leave " +
+            "every list at once; its data stays where it is. A generation marked " +
+            "not installed has no data folder yet."))
+        for (gen in PantheraEngine.SUPPORTED_GENERATIONS) {
+            root.addView(android.widget.CheckBox(this).apply {
+                if (gen !in installed) {
+                    text = "${PantheraEngine.genLabel(gen)}: not installed"
+                    isChecked = false
+                    isEnabled = false
+                    return@apply
+                }
+                text = PantheraEngine.genLabel(gen)
+                isChecked = PantheraEngine.genOffered(this@SettingsActivity, gen)
+                setOnCheckedChangeListener { box, checked ->
+                    if (!PantheraEngine.setGenOffered(this@SettingsActivity, gen, checked)) {
+                        box.isChecked = true
+                        android.widget.Toast.makeText(this@SettingsActivity,
+                            "Keep at least one engine on.", android.widget.Toast.LENGTH_SHORT).show()
+                        return@setOnCheckedChangeListener
+                    }
+                    PantheraEngine.refreshVoiceCatalogue()
+                    rebuildVoices()
+                    refreshVoiceButton()
+                }
+            })
+        }
+
         root.addView(heading("Rate"))
         root.addView(body(
             "By default this engine follows the rate in the system's own " +

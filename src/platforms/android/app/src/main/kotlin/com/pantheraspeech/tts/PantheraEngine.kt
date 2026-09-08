@@ -48,6 +48,11 @@ object PantheraEngine {
         if (gen in SUPPORTED_GENERATIONS) null else "${genLabel(gen)} is not supported yet."
 
     const val PREF_GEN = "engine_generation"
+    /** Generations the person has switched off.  Their data may well be
+     * present; they are simply not wanted, and a generation that is not
+     * wanted is not offered anywhere: not in the voice list a screen reader
+     * sees, not in the settings picker, not as a fallback engine. */
+    const val PREF_DISABLED_GENS = "disabled_generations"
 
     data class VoiceInfo(
         val name: String,      // "Fred"
@@ -110,14 +115,41 @@ object PantheraEngine {
      * app with no engine, so presence wins over preference. */
     fun activeGen(ctx: Context): String {
         val chosen = prefs(ctx).getString(PREF_GEN, null)
-        if (chosen != null && chosen in SUPPORTED_GENERATIONS &&
+        if (chosen != null && chosen in SUPPORTED_GENERATIONS && genOffered(ctx, chosen) &&
             genRoot(ctx, chosen) != null) return chosen
-        return SUPPORTED_GENERATIONS.firstOrNull { genRoot(ctx, it) != null } ?: GEN_TIGER
+        return SUPPORTED_GENERATIONS.firstOrNull { genOffered(ctx, it) && genRoot(ctx, it) != null }
+            ?: GEN_TIGER
     }
 
-    /** The generations whose data is present AND which run here. This is what
-     * the settings picker and the voice list are built from. */
+    /** The generations the person has switched off in Engine settings. */
+    fun disabledGens(ctx: Context): Set<String> =
+        prefs(ctx).getStringSet(PREF_DISABLED_GENS, null) ?: emptySet()
+
+    fun genOffered(ctx: Context, gen: String): Boolean = gen !in disabledGens(ctx)
+
+    /** Switch a generation on or off.  Off means its voices vanish from every
+     * list at once, its data untouched; on brings them back.  The last
+     * generation standing cannot be switched off, because an engine with no
+     * voices is a screen reader with no speech. */
+    fun setGenOffered(ctx: Context, gen: String, offered: Boolean): Boolean {
+        val disabled = disabledGens(ctx).toMutableSet()
+        if (offered) disabled.remove(gen) else {
+            val remaining = SUPPORTED_GENERATIONS.filter { genPresent(ctx, it) && it != gen && it !in disabled }
+            if (remaining.isEmpty()) return false
+            disabled.add(gen)
+        }
+        prefs(ctx).edit().putStringSet(PREF_DISABLED_GENS, disabled).apply()
+        return true
+    }
+
+    /** The generations whose data is present, which run here, AND which the
+     * person has not switched off. This is what the settings picker and the
+     * voice list are built from. */
     fun availableGens(ctx: Context): List<String> =
+        SUPPORTED_GENERATIONS.filter { genOffered(ctx, it) && genPresent(ctx, it) }
+
+    /** Present and runnable, whether offered or not: what the switches list. */
+    fun installedGens(ctx: Context): List<String> =
         SUPPORTED_GENERATIONS.filter { genPresent(ctx, it) }
 
     /** Present, but known not to run -- so the settings page can say why
