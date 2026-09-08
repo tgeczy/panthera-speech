@@ -84,10 +84,25 @@ object PantheraEngine {
         ctx.getExternalFilesDir(null)?.let { File(it, DATA_DIR) }
             ?: File(ctx.filesDir, DATA_DIR)
 
-    private fun mtIn(root: File, gen: String) = File(root, "$gen/MacinTalk")
+    // Two layouts are accepted inside a generation folder.  The Mac's own is
+    // what the desktop add-on extracts and what a person copies over as it
+    // is: Speech/Synthesizers/MacinTalk.SpeechSynthesizer/Contents/MacOS/
+    // MacinTalk, Speech/Voices, SpeechDictionary.framework.  The flattened
+    // one, MacinTalk and Voices at the top, is what the development push
+    // script makes.  The dictionary framework sits at the same place in both,
+    // and so does the engine's C++ runtime, which the host finds by searching
+    // upward from the dictionary -- so nothing below this needs to know.
+    private fun mtIn(root: File, gen: String): File {
+        val flat = File(root, "$gen/MacinTalk")
+        return if (flat.isFile) flat
+        else File(root, "$gen/Speech/Synthesizers/MacinTalk.SpeechSynthesizer/Contents/MacOS/MacinTalk")
+    }
     private fun sdIn(root: File, gen: String) =
         File(root, "$gen/SpeechDictionary.framework/Versions/A/SpeechDictionary")
-    private fun voicesIn(root: File, gen: String) = File(root, "$gen/Voices")
+    private fun voicesIn(root: File, gen: String): File {
+        val flat = File(root, "$gen/Voices")
+        return if (flat.isDirectory) flat else File(root, "$gen/Speech/Voices")
+    }
 
     /** The generation the engine is (or would be) loaded from: the user's
      * choice if its data is actually there, otherwise the first generation that

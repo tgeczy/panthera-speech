@@ -224,9 +224,11 @@ class SettingsActivity : Activity() {
             text = PantheraEngine.dataRoot(this@SettingsActivity).absolutePath
         })
         root.addView(body(
-            "Inside it, one folder per engine generation — a “tiger” folder " +
-            "holding MacinTalk, the SpeechDictionary framework, and a Voices " +
-            "folder of .SpeechVoice bundles."))
+            "Inside it, one folder per engine generation, named tiger, leopard, " +
+            "snowleopard or lion. Copy the folder the desktop add-on extracted " +
+            "exactly as it is: Speech, SpeechDictionary.framework and the rest. " +
+            "On a PC, plug the phone in and use the file window; the folder " +
+            "above is under Android, then data, then this app."))
 
         root.addView(heading("2.  Check the engine"))
         root.addView(Button(this).apply {
@@ -691,9 +693,10 @@ class SettingsActivity : Activity() {
                     "Engine found and verified. You can now select Panthera " +
                     "Speech in Text-to-speech settings."
                 else
-                    "No engine data found.\nExpected an engine folder (e.g. " +
-                    "“tiger”) with MacinTalk, SpeechDictionary and " +
-                    "Voices under:\n${PantheraEngine.dataRoot(this).absolutePath}"
+                    "No engine data found.\nExpected a generation folder (tiger, " +
+                    "leopard, snowleopard or lion) holding the extracted Speech and " +
+                    "SpeechDictionary.framework folders, under:\n" +
+                    PantheraEngine.dataRoot(this).absolutePath
                 refresh()
             }
         }.start()
