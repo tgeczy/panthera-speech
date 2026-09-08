@@ -82,27 +82,29 @@ android {
 
     // Release signing.  Android refuses to install an unsigned APK, so a
     // release is only a release once it is signed with the project's key.
-    // The key lives outside the repository: a `keystore.properties` beside
-    // settings.gradle.kts, ignored by Git, naming it --
+    // The key lives outside the repository: a `signing.properties` beside
+    // settings.gradle.kts, ignored by Git, naming it -- the same file, with
+    // the same four names, that TGSpeechBox's Android build reads, so one
+    // convention serves both of the maintainer's apps:
     //
-    //   storeFile=C:/Users/you/panthera-release.jks
-    //   storePassword=...
-    //   keyAlias=panthera
-    //   keyPassword=...
+    //   STORE_FILE=C:/Users/you/release.keystore
+    //   STORE_PASSWORD=...
+    //   KEY_ALIAS=...
+    //   KEY_PASSWORD=...
     //
     // Without that file the release build still succeeds and stays unsigned,
     // which is what CI and anyone without the key should get.  The same key
     // must sign every future release, or Android treats the update as a
     // different app and refuses it: keep it backed up.
-    val keystoreProperties = rootProject.file("keystore.properties")
-    if (keystoreProperties.isFile) {
-        val keys = Properties().apply { keystoreProperties.inputStream().use { load(it) } }
+    val signingProperties = rootProject.file("signing.properties")
+    if (signingProperties.isFile) {
+        val keys = Properties().apply { signingProperties.inputStream().use { load(it) } }
         signingConfigs {
             create("release") {
-                storeFile = rootProject.file(keys.getProperty("storeFile"))
-                storePassword = keys.getProperty("storePassword")
-                keyAlias = keys.getProperty("keyAlias")
-                keyPassword = keys.getProperty("keyPassword")
+                storeFile = file(keys.getProperty("STORE_FILE"))
+                storePassword = keys.getProperty("STORE_PASSWORD")
+                keyAlias = keys.getProperty("KEY_ALIAS")
+                keyPassword = keys.getProperty("KEY_PASSWORD")
             }
         }
     }
@@ -110,7 +112,7 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            if (keystoreProperties.isFile) signingConfig = signingConfigs.getByName("release")
+            if (signingProperties.isFile) signingConfig = signingConfigs.getByName("release")
         }
     }
 

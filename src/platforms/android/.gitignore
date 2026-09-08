@@ -15,6 +15,7 @@ local.properties
 /app/src/main/jniLibs/**/build.json
 
 # Keystores never go in the repo.
+signing.properties
 keystore.properties
 *.keystore
 *.jks

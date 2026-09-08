@@ -17,9 +17,10 @@ with the dependency clone paths used by the build. Distribute the resulting
 `build/panthera-android-sources.tar.gz` alongside the APK.
 
 A release APK must be signed before Android will install it. Put a
-`keystore.properties` beside `settings.gradle.kts` (it is ignored by Git) naming
-the key -- `storeFile`, `storePassword`, `keyAlias`, `keyPassword` -- and
-`assembleRelease` signs with it; without the file the build stays unsigned.
+`signing.properties` beside `settings.gradle.kts` (it is ignored by Git) naming
+the key -- `STORE_FILE`, `STORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD`, the
+same file TGSpeechBox's Android build reads -- and `assembleRelease` signs
+with it; without the file the build stays unsigned.
 Every release must be signed with the same key, or devices refuse the update
 as a different app, so the keystore is backed up and never committed. It includes Panthera's
 build scripts, exact pinned upstream sources, commit identifiers and checksums.
