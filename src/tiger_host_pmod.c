@@ -59,7 +59,7 @@ static int pmod_render(speech_api *api, void *chan, const char *text,
     g_defer_arm = 0;
     g_pcm_n = 0; g_slices = 0; g_stopped = 0; g_empty_run = 0;
     g_dup_slices = 0; g_have_last = 0; g_p_drops = 0;
-    g_epoch_base = 0; g_last_stime = 0.0; g_have_origin = 0;
+    timeline_reset();
     g_utt++; g_stale_slices = 0;
 
     err = speak_text(api, chan, text, strlen(text));

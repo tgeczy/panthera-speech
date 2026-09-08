@@ -91,7 +91,7 @@ static void pt_utterance_reset(void)
     g_pcm_n = 0; g_slices = 0; g_stopped = 0; g_empty_run = 0;
     g_defer_arm = 0;  /* Lion signals completion by arming its deferred stop. */
     g_dup_slices = 0; g_have_last = 0; g_p_drops = 0;
-    g_epoch_base = 0; g_last_stime = 0.0; g_have_origin = 0;
+    timeline_reset();
     g_utt++; g_stale_slices = 0; g_pull_pos = 0;
     g_aac_ms = 0.0; g_aac_units = 0;
     /* Time to the FIRST slice, which is the latency a listener actually feels:

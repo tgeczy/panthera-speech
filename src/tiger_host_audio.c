@@ -191,6 +191,24 @@ static double   g_last_stime;
  * been seen yet.  Both reset per utterance, in serve(). */
 static double   g_time_origin;
 static int      g_have_origin;
+/* The engine's restarts of the player, counted where they are asked for
+ * (kAudioUnitProperty_ScheduleStartTimeStamp), and the count the last
+ * collected slice was scheduled under.  A slice is tagged when it is
+ * scheduled, on the engine's thread, so the tag is exact however late the
+ * pacer collects it.  See collect_slice for what a restart means. */
+static unsigned g_epoch_seq;
+static unsigned g_last_epoch = ~0u;
+/* How the current epoch began: where it started in g_pcm and how many
+ * slices it has, for the one case where the next epoch replaces it. */
+static unsigned g_epoch_slices, g_epoch_start;
+
+/* Per utterance: the timeline starts over.  Called from serve(), the
+ * library API and the pmod check, which used to repeat these by hand. */
+static void timeline_reset(void)
+{
+    g_epoch_base = 0; g_last_stime = 0.0; g_have_origin = 0;
+    g_last_epoch = ~0u; g_epoch_slices = 0; g_epoch_start = 0;
+}
 static unsigned g_slices;
 static unsigned g_frames_seen;
 static unsigned g_empty_run;          /* consecutive slices carrying nothing */
@@ -282,7 +300,7 @@ static double g_pace = 100.0;
 static double g_pace_floor = 0.0;
 
 typedef struct { slice_done_t proc; void *udata; void *slice; unsigned frames;
-                 unsigned utt; }
+                 unsigned utt; unsigned epoch; }
         pending;
 
 /* Which utterance the host is collecting for.  Bumped by serve() per request.
@@ -370,6 +388,7 @@ static void queue_completion(slice_done_t p, void *u, void *s, unsigned frames)
             g_pending[g_p_tail].slice = s;
             g_pending[g_p_tail].frames = frames;
             g_pending[g_p_tail].utt = g_utt;
+            g_pending[g_p_tail].epoch = g_epoch_seq;
             g_p_tail = (g_p_tail + 1) % PACE_QCAP;
             g_p_count++;
         } else if (waited >= PACE_QWAIT_MS) {
@@ -406,7 +425,7 @@ static int pacer_idle(void)
  * The completion callback is the contract: after it, the engine may reuse the
  * buffer. Immediately before it, the audio is finished and correct.
  */
-static void collect_slice(unsigned char *slice)
+static void collect_slice(unsigned char *slice, unsigned epoch)
 {
     unsigned frames = *(unsigned *)(slice + SLICE_FRAMES_OFF);
     unsigned char *bl = (unsigned char *)GHOST(*(gptr *)(slice + SLICE_BUFLIST_OFF));
@@ -444,6 +463,40 @@ static void collect_slice(unsigned char *slice)
      *
      * So the first slice of an utterance defines the origin, and everything
      * is placed relative to it. */
+    /* A restart of the player begins a new epoch, whatever the clock says.
+     *
+     * The engine restarts the player -- ScheduleStartTimeStamp, "start
+     * now" -- whenever it believes playback has drained, and the first
+     * slice after a restart sits at sample time zero.  Under a slow
+     * translator it was seen restarting twice within a quarter of a
+     * millisecond at a phrase boundary, each restart's first slice at zero
+     * and each carrying different audio: the tail of the phrase, then its
+     * continuation.  Zero is not less than zero, so the clock check below
+     * saw no new epoch and the continuation was written over the tail:
+     * 208 to 229 frames of speech gone at a hard discontinuity, once or
+     * twice a paragraph, only when the timing fell that way.  Box64's
+     * interpreter on a Galaxy S22 gave 527060, 526833 and 527289 frames
+     * for a paragraph that is 527288 natively; the per-slice trace showed
+     * the two restarts and the overwrite, and showed the lost slice had
+     * been scheduled, collected and then covered.
+     *
+     * So each slice carries the restart count it was scheduled under, and
+     * a change of count starts the new epoch where the collected audio
+     * ends.  One exception keeps native renders byte-identical: the
+     * engine's usual way to start the player is a one-frame silent slice
+     * at zero, a restart, then the audio at zero -- a kick, meant to be
+     * replaced, and replaced here exactly as it always was. */
+    if (epoch != g_last_epoch) {
+        if (g_last_epoch != ~0u)
+            g_epoch_base = (g_epoch_slices == 1 && g_pcm_n == g_epoch_start + 1)
+                           ? g_epoch_start : g_pcm_n;
+        g_time_origin = stime; g_have_origin = 1;
+        g_last_stime = 0.0;
+        g_last_epoch = epoch;
+        g_epoch_slices = 0;
+        g_epoch_start = g_epoch_base;
+    }
+    g_epoch_slices++;
     if (!g_have_origin) { g_time_origin = stime; g_have_origin = 1; }
     stime -= g_time_origin;
     if (stime < 0.0) {
@@ -534,7 +587,7 @@ static DWORD WINAPI pacer_thread(LPVOID arg)
          * regardless -- that is the engine's clock, and refusing to tick it is
          * how the channel wedges -- but do not collect what it carries. */
         if (job.utt == g_utt && !g_au_cancel)
-            collect_slice((unsigned char *)job.slice);
+            collect_slice((unsigned char *)job.slice, job.epoch);
         else
             g_stale_slices++;
         *(unsigned *)((unsigned char *)job.slice + SLICE_FLAGS_OFF)
@@ -787,6 +840,10 @@ static int __cdecl sh_AudioUnitSetProperty(au_obj *unit, unsigned id,
          * leaving the next utterance wedged. */
         take_slice((unsigned char *)data);
     } else if (id == kAUProp_ScheduleStartTime) {
+        /* "Start now": the player's timeline begins again, and so does
+         * ours -- for the slices scheduled from here on, not for any
+         * still queued from before.  Hence a count, not a flag. */
+        g_epoch_seq++;
         if (g_verbose) printf("  [au] ScheduleStartTime sampleTime %.1f\n",
                data ? *(const double *)data : 0.0);
     } else {

@@ -521,7 +521,7 @@ static int serve(image *mt, void *chan, const char *voicesdir)
         g_pcm_n = 0; g_slices = 0; g_stopped = 0; g_empty_run = 0;
         InterlockedExchange(&g_au_cancel, 0);
         g_dup_slices = 0; g_have_last = 0; g_p_drops = 0;
-        g_epoch_base = 0; g_last_stime = 0.0; g_have_origin = 0;
+        timeline_reset();
         /* A new utterance: anything still in flight for the last one is stale
          * from here on, and the pacer will complete those slices without
          * collecting them. */

@@ -733,7 +733,18 @@ class EngineSmokeTest : Instrumentation() {
                         // Native references disable the optional SQLite table,
                         // matching Android's app linker namespace.
                         val frames = when (gen) { "leopard" -> 508455; "snowleopard" -> 520641; else -> 527288 }
-                        check(breathing.size == 44 + frames * 2) { "$gen paragraph differs from native: ${(breathing.size - 44) / 2} frames" }
+                        // Within a few frames, not exact.  When its worker falls behind
+                        // the pacer at a phrase gap the engine restarts its player, and a
+                        // restart made with audio already in hand leaves one zero sample
+                        // of padding in the stream (traced on the S22 under Box64's
+                        // interpreter, 2026-09-07).  The host now keeps every slice across
+                        // those restarts -- it used to write the second restart's audio
+                        // over the first's, losing about 228 frames of speech at a click --
+                        // so what remains is a sample or two of silence, the engine's own
+                        // and below anything audible.  A paragraph short by a slice, or
+                        // missing its breath, still fails here.
+                        val got = (breathing.size - 44) / 2
+                        check(Math.abs(got - frames) <= 4) { "$gen paragraph differs from native: $got frames, expected $frames" }
                         check(breathCount(breathing) == 1) { "$gen lost Alex's paragraph breath" }
                     }
                     for (i in 1..24) {
