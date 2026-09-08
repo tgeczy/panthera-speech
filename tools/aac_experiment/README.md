@@ -13,13 +13,15 @@ archive. The source clone is left untouched. Its local modification caches cube
 roots of integer spectral magnitudes, retaining the original multiplication
 order and the original calculation for larger escape values, and adds an
 eight-bit Huffman prefix table with the original tree walk as fallback.
+It also preserves the transform's binary64 precision through its output buffer,
+so conversion to integer PCM rounds once instead of narrowing to float first.
 
 The host bridge wraps raw AAC-LC access units in ADTS, validates the supported
 mono ASC/rate, checks the returned frame size, and retains shared priming and
 tail handling. It saves the caller's floating-point environment, uses the default
 environment while decoding, then restores the caller's state. This matters on
 native i386, where guest arithmetic and host arithmetic share a thread.
-PCM conversion uses the binary32 significand to implement exact nearest-even
+PCM conversion uses the binary64 significand to implement exact nearest-even
 rounding and saturation without calling libm for every sample.
 
 ## Reproduce
@@ -40,6 +42,9 @@ The comparison writes whole renders and reports lengths, differences, repeated
 render identity, and the existing breath detector. It does not silently turn a
 numeric tolerance into a passing oracle. Its timings are complete renders,
 including driver overhead, not acoustic onset.
+Pass `--max-pcm-delta 2` explicitly to require matching lengths, exact repeats
+from both hosts, and a maximum two-unit PCM difference. `--max-pcm-delta 0`
+requires byte identity. Without this option the tool only reports differences.
 
 The Windows `fpcheck.exe` accepts a caller-supplied 22050 Hz mono ADTS AAC-LC
 file. It checks identical decoded PCM under all four rounding modes and verifies
@@ -49,7 +54,7 @@ Both builders also produce `pcm16_check` and `huffman_check`; Windows registers
 them with CTest (`ctest --test-dir OUT/build -C Release --output-on-failure`).
 These checks require no engine or voice data. On Android, run the matching ABI's
 executables directly over ADB. They compare rounding boundaries, arbitrary
-float bit patterns, and Huffman consumption/overrun behavior against independent
+float/double bit patterns, and Huffman consumption/overrun behavior against independent
 references; the existing audio oracles remain unchanged.
 
 Android produces `libpanthera.so` and the existing native benchmarks in the
@@ -71,9 +76,9 @@ Local user-supplied trees; native i386 Windows baseline uses Media Foundation.
 * 55 configurations differ by at most two signed-16-bit PCM units. One Lion
   Alex paragraph at 387 wpm differs in 724 samples, max delta 3961, SNR 45.43 dB,
   with equal 241402-frame length and stable candidate repeats. This difference
-  is unresolved; it is not waved through as rounding. A decoder-output dump
-  before trimming has unequal backend tail lengths and is not a valid direct
-  sample comparison.
+  was subsequently isolated to double rounding and fixed; see the later
+  investigation below. The initial decoder-output dump mixed unequal backend
+  tail lengths and was not a valid direct sample comparison.
 * Initially one of eight Leopard cancellation/recovery tests failed. The
   floating-point environment guard makes all eight pass, including Vicki's
   full next-utterance PCM. A separate 25600-frame unit test changes over 11000
@@ -106,12 +111,12 @@ Fresh builds from the committed scripts also reproduced 72/72 short renders
 exactly against the prototype (three processes, eight renders each, on all
 three device/ABI combinations), with the native signal check passing each time.
 The fresh Windows build repeated the 56 comparisons, all eight cancellation
-recovery cases, and all four rounding-mode checks. None of these results turns
-the unresolved Lion paragraph difference into a pass.
+recovery cases, and all four rounding-mode checks. Those initial results did
+not resolve the native Lion difference; the later investigation did.
 
 ## Before adopting
 
-Resolve the remaining native Lion PCM difference and Box paragraph timing;
+Resolve the separate Box paragraph timing issue;
 assess the remaining ARMv7 performance gap; audit decoder bounds, reset state (including PNS),
 and source provenance. Upstream generates normative AAC tables by extracting
 and comparing tables from vo-aacenc and FFmpeg; its MIT declaration alone is
@@ -186,3 +191,56 @@ Validation of fresh builds:
   ABIs. The ARM64 pass does not resolve the previously observed intermittent
   Lion timeline failure; neither optimization changes that contract. Original
   APKs, ABIs, and exact preferences were restored after these temporary tests.
+
+## Native Lion double-rounding fix
+
+The native Lion Alex paragraph discrepancy was traced at matching converter
+boundaries, using locally supplied data only. All 134 requests matched by
+compressed input and requested/returned frame counts; the two decoders consumed
+matching packet prefixes, with different lookahead lengths. Their returned PCM
+differed in 471 samples by at most one signed-16-bit unit. Decode-request order
+also differed, so concatenating their outputs was not a valid comparison.
+
+Replacing Glint's returned PCM with the matched Media Foundation samples made
+the final paragraph byte-identical to Windows. Narrowing the replacement to
+one sample removed the large discrepancy; changing that same sample in the
+Windows run recreated it. This is a causal test, not an inferred codec failure
+from the final waveform alone. The resulting difference was confined to a
+590-frame span (about 27 ms), with identical total length.
+
+The transform calculated the sample as -4779.499919665047 in PCM units. Its
+float output rounded that to -4779.5; nearest-even integer conversion then
+produced -4780 instead of -4779. The isolated decoder now carries its existing
+double precision through the output buffer. The bridge converts that binary64
+value directly to int16, with the same nearest-even and saturation rules. No
+voice-specific adjustment, priming change, or reference-waveform substitution
+is used by the retained fix. The integer conversion remains free of per-sample
+libm calls and independent of the caller's rounding mode.
+
+Fresh native comparisons now pass the explicit `--max-pcm-delta 2` gate for
+all 56 configurations, with matching lengths and exact repeats from both hosts.
+The Lion paragraph's maximum difference falls from 3961 to 2 PCM units, and
+SNR rises from 45.43 to 107.35 dB. All eight cancellation/recovery cases pass.
+The converter checks cover 1195698 binary32 and 1220684 binary64 finite inputs
+in each of four rounding modes, plus non-finite rejection. Both these checks
+and the 4800000 Huffman equivalence cases pass on Windows, both S22 ABIs, and
+Watch 2 ARMv7. The decoder rounding-environment check also passes all four modes.
+
+Matched Android trials rotate the previous optimized Glint, corrected Glint,
+and FAAD2 through three fresh processes each. All 72 corrected short renders
+(24 per device/ABI) match the corrected native Windows Glint output exactly;
+the control renders retain their own references. Native signal checks pass.
+For the debug phrase, old/new AAC medians are 42/43 ms on S22 ARMv7, 18/19 ms
+on S22 ARM64, and 140/145 ms on Watch 2. Corresponding first-pull medians are
+40.9/41.0, 32.7/28.0, and 119.5/121.6 ms. These are matched warm measurements,
+not acoustic onset or evidence of an ARM64 speed improvement. The retained
+precision costs a small amount of decoding time, while preserving the earlier
+optimization's substantial gain.
+
+The complete Android audio/settings suite passes with this build on Watch 2
+and both S22 ABIs, including reference WAVs, settings application, playback,
+and stop/restart. Original APKs, primary ABIs, and exact preference bytes were
+restored. The previous native Glint build fails the new explicit comparison
+gate on the Lion paragraph, providing a negative control for the fix. The
+separate intermittent Box paragraph-length issue remains open; a passing
+ARM64 run does not establish that it is resolved.

@@ -32,7 +32,11 @@ def main():
     parser.add_argument("--data-root", type=Path, required=True,
                         help="Parent of the user's speech-tiger, speech-leopard, etc. trees")
     parser.add_argument("--generation", action="append", choices=["tiger", "leopard", "snowleopard", "lion"])
+    parser.add_argument("--max-pcm-delta", type=int,
+                        help="Fail on unequal lengths, unstable repeats, or PCM differences above this explicit tolerance")
     args = parser.parse_args()
+    if args.max_pcm_delta is not None and args.max_pcm_delta < 0:
+        parser.error("--max-pcm-delta must be nonnegative")
     generations = args.generation or ["tiger", "leopard", "snowleopard", "lion"]
     for gen in generations:
         tree = args.data_root / ("speech-" + gen)
@@ -45,6 +49,7 @@ def main():
              breath.S1 + " " + breath.S2]
     args.out.mkdir(parents=True, exist_ok=False)
     rows = []
+    failures = []
     for gen in generations:
         module = importlib.import_module("synthDrivers." + gen + "speech")
         for voice in (("Vicki",) if gen == "tiger" else ("Alex", "Vicki")):
@@ -82,10 +87,22 @@ def main():
                                     row["max_delta"] = float(np.max(np.abs(a - b)))
                                     row["snr_db"] = float(10 * np.log10(np.sum(b*b) / max(error, 1e-20)))
                             rows.append(row)
+                            if args.max_pcm_delta is not None:
+                                if not row["repeat_exact"]:
+                                    failures.append(f"{name} {backend}: unstable repeat")
+                                if backend == "candidate":
+                                    if row["frames"] != row["reference_frames"]:
+                                        failures.append(f"{name}: unequal frame counts")
+                                    elif row["max_delta"] > args.max_pcm_delta:
+                                        failures.append(f"{name}: PCM delta {row['max_delta']} exceeds {args.max_pcm_delta}")
                             (args.out / "comparison.json").write_text(json.dumps(rows, indent=2) + "\n", encoding="utf8")
                             print(json.dumps(row), flush=True)
                 finally:
                     driver.terminate()
+    if failures:
+        raise SystemExit("Comparison failed:\n" + "\n".join(failures))
+    if args.max_pcm_delta is not None:
+        print(f"PASS: {len(rows)//2} configurations, equal lengths, exact repeats, PCM delta <= {args.max_pcm_delta}")
 
 
 if __name__ == "__main__":

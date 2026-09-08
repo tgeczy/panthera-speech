@@ -28,7 +28,10 @@ extern "C" int pt_glint_decode(void *p, const unsigned char *data, int len,
                                 short *out, unsigned rate, unsigned channels) {
     DecoderFloatEnvironment fp;
     try {
-        float pcm[2048];
+        // The transform already uses double. Keep that precision until the
+        // one and only PCM quantization; a float intermediate can round a
+        // value onto a half-way boundary and change the final integer.
+        double pcm[2048];
         glint::aac::AacFrameInfo info;
         int n = static_cast<glint::aac::AacDecoder *>(p)->decode_frame(data, len, pcm, &info);
         if (n != 1024 || info.sample_rate != (int)rate ||

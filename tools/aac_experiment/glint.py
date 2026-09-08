@@ -75,6 +75,18 @@ def prepare(source, out, host):
     replace(decoder, "    g_imdct_long.init(2048);", """    for (auto &tree : g_spec) tree.prepare_prefix();
     g_scf.prepare_prefix();
     g_imdct_long.init(2048);""")
+    # Preserve the transform's existing binary64 precision through the output
+    # buffer. Our bridge consumes int16, so a binary32 intermediate would add
+    # a second rounding step (and can move a sample across an integer tie).
+    header = vendor / "src/aac_decoder.hpp"
+    for path in (header, decoder):
+        replace(path, "int len, float* pcm,", "int len, double* pcm,")
+        replace(path, "imdct_channel(int ch, float* out)", "imdct_channel(int ch, double* out)")
+    replace(header, "interleaved float PCM", "interleaved double PCM")
+    replace(decoder, "static thread_local float ch_pcm[2][1024];",
+            "static thread_local double ch_pcm[2][1024];")
+    replace(decoder, "static_cast<float>((time[n] + overlap_[ch][n]) * kNorm)",
+            "(time[n] + overlap_[ch][n]) * kNorm")
     shutil.copy2(HERE / "glint_bridge.cpp", vendor)
     shutil.copy2(HERE / "pcm16.h", vendor)
     shutil.copy2(HERE / "tiger_host_aac_glint.c", host)
@@ -83,7 +95,7 @@ def prepare(source, out, host):
     replace(host / "tiger_host.c", "#elif defined(TIGER_AAC_FAAD)",
         '#elif defined(TIGER_AAC_GLINT)\n        const char *backend = "glint-experimental";\n#elif defined(TIGER_AAC_FAAD)')
     (vendor / "EXPERIMENT.txt").write_text(
-        f"Glint {PIN}, MIT. Local cube-root cache and Huffman prefix table in src/aac_decoder.cpp.\n"
+        f"Glint {PIN}, MIT. Local cube-root cache, Huffman prefix table, and binary64 PCM output.\n"
         "Experimental decoder; not approved for release. See tools/aac_experiment/README.md.\n",
         encoding="utf8")
     return vendor
