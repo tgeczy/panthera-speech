@@ -73,23 +73,30 @@ def test_an_unreadable_file_does_not_condemn_a_tree(tmp_path):
     assert tree.needs_dsmos(str(tmp_path / "does-not-exist")) is False
 
 
-@pytest.mark.skipif(not os.path.isdir(r"D:\speech-tiger45"),
-                    reason="no 10.4.5 tree on this machine")
+#: Two trees, named by the environment: TIGER45_TREE is a 10.4.5 extraction
+#: (MacinTalk 3.4, the one that reproduces issue #1), TIGER_TREE the 3.3
+#: tree the suite already uses.  Nobody's disk is written here.
+TIGER45 = os.environ.get("TIGER45_TREE") or ""
+TIGER = os.environ.get("TIGER_TREE") or ""
+
+
+@pytest.mark.skipif(not (os.path.isdir(TIGER45) and os.path.isdir(TIGER)),
+                    reason="set TIGER45_TREE and TIGER_TREE to real trees")
 def test_against_the_real_trees():
     """The real thing, both ways round, if the trees are here.
 
-    `D:\\speech-tiger45` is MacinTalk 3.4 and reproduces issue #1 exactly;
-    the tree in `D:\\speech-tiger\\x86` is 3.3 and renders fine.
+    The 10.4.5 tree is MacinTalk 3.4 and reproduces issue #1 exactly; the
+    3.3 tree renders fine.
     """
-    assert tree.needs_dsmos(
-        r"D:\speech-tiger45\SpeechDictionary.framework\Versions\A"
-        r"\SpeechDictionary") is True
-    assert tree.needs_dsmos(
-        r"D:\speech-tiger45\MacinTalk.SpeechSynthesizer\Contents\MacOS"
-        r"\MacinTalk") is True
-    assert tree.needs_dsmos(
-        r"D:\speech-tiger\x86\SpeechDictionary.framework\Versions\A"
-        r"\SpeechDictionary") is False
-    assert tree.needs_dsmos(
-        r"D:\speech-tiger\x86\Speech\Synthesizers"
-        r"\MacinTalk.SpeechSynthesizer\Contents\MacOS\MacinTalk") is False
+    assert tree.needs_dsmos(os.path.join(
+        TIGER45, "SpeechDictionary.framework", "Versions", "A",
+        "SpeechDictionary")) is True
+    assert tree.needs_dsmos(os.path.join(
+        TIGER45, "MacinTalk.SpeechSynthesizer", "Contents", "MacOS",
+        "MacinTalk")) is True
+    assert tree.needs_dsmos(os.path.join(
+        TIGER, "SpeechDictionary.framework", "Versions", "A",
+        "SpeechDictionary")) is False
+    assert tree.needs_dsmos(os.path.join(
+        TIGER, "Speech", "Synthesizers", "MacinTalk.SpeechSynthesizer",
+        "Contents", "MacOS", "MacinTalk")) is False

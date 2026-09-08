@@ -26,7 +26,10 @@ export MSYS_NO_PATHCONV=1
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-ADB="${ADB:-C:/Android/Sdk/platform-tools/adb.exe}"
+# The Android SDK: ANDROID_HOME or ANDROID_SDK_ROOT if set, else the SDK's
+# own standard install folder.  Nothing here names one machine.
+SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-${LOCALAPPDATA:-$HOME}/Android/Sdk}}"
+ADB="${ADB:-$SDK/platform-tools/adb}"
 PKG="com.pantheraspeech.tts"
 GEN="${1:-tiger}"
 APKDIR="$ROOT/src/platforms/android/app/build/outputs/apk"
@@ -47,9 +50,10 @@ TEST="$(cygpath -w "$TEST")"
 echo "== device =="
 "$ADB" shell "getprop ro.product.model; getprop ro.product.cpu.abilist"
 
+# The trees come from the same variables the test suite reads.
 case "$GEN" in
-  tiger)   ENGINE="D:/speech-tiger/x86" ;;
-  leopard) ENGINE="D:/speech-leopard"   ;;
+  tiger)   ENGINE="${TIGER_TREE:?set TIGER_TREE to your extracted Tiger tree}" ;;
+  leopard) ENGINE="${LEOPARD_TREE:?set LEOPARD_TREE to your extracted Leopard tree}" ;;
   *) echo "unknown generation '$GEN'"; exit 1 ;;
 esac
 

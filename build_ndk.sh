@@ -28,7 +28,10 @@ ROOT="$(cd "$(dirname "$0")" && pwd -W 2>/dev/null || pwd)"
 OUT="$ROOT/build/ndk"
 DOLINK="${1:-}"
 
-NDK="${ANDROID_NDK:-C:/Android/Sdk/ndk/27.2.12479018}"
+# The Android SDK: ANDROID_HOME or ANDROID_SDK_ROOT if set, else the SDK's
+# own standard install folder.  Nothing here names one machine.
+SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-${LOCALAPPDATA:-$HOME}/Android/Sdk}}"
+NDK="${ANDROID_NDK:-$SDK/ndk/27.2.12479018}"
 API="${ANDROID_API:-26}"
 TARGET="armv7-none-linux-androideabi${API}"
 CLANG="$NDK/toolchains/llvm/prebuilt/windows-x86_64/bin/clang.exe"

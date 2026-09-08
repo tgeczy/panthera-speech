@@ -25,7 +25,10 @@
 #   ./watch_keepalive.sh [serial-or-ip:port]
 set -e
 
-ADB="${ADB:-C:/Android/Sdk/platform-tools/adb.exe}"
+# The Android SDK: ANDROID_HOME or ANDROID_SDK_ROOT if set, else the SDK's
+# own standard install folder.  Nothing here names one machine.
+SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-${LOCALAPPDATA:-$HOME}/Android/Sdk}}"
+ADB="${ADB:-$SDK/platform-tools/adb}"
 DEV="$1"
 if [ -n "$DEV" ]; then SEL="-s $DEV"; else SEL=""; fi
 

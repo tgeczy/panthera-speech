@@ -26,7 +26,7 @@ PATTERNS = [
     # project quotes Tomi constantly in its comments -- `# Tomi: "it does do
     # it"` -- and matching those made the check report twenty hits on every
     # single run, which is exactly how a guard stops being read. What actually
-    # leaks is `C:\Users\Tomi\...`, and that is one separator away from a name
+    # leaks is `C:\Users\<name>\...`, and that is one separator away from a name
     # in prose. The two patterns around this one catch the rest.
     (re.compile(rb"(?i)[\\/]tomi(?![A-Za-z0-9_])"), "a user name in a path"),
     (re.compile(rb"(?i)/Users/|\\Users\\"), "a home directory"),

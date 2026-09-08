@@ -32,7 +32,10 @@ TAG="${FAAD2_TAG:-2.11.2}"
 ABI="${1:-armeabi-v7a}"
 OBJ="$HERE/faad2-obj-$ABI"
 
-NDK="${ANDROID_NDK:-C:/Android/Sdk/ndk/27.2.12479018}"
+# The Android SDK: ANDROID_HOME or ANDROID_SDK_ROOT if set, else the SDK's
+# own standard install folder.  Nothing here names one machine.
+SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-${LOCALAPPDATA:-$HOME}/Android/Sdk}}"
+NDK="${ANDROID_NDK:-$SDK/ndk/27.2.12479018}"
 API="${ANDROID_API:-26}"
 case "$ABI" in
   armeabi-v7a) TARGET="armv7-none-linux-androideabi${API}" ;;

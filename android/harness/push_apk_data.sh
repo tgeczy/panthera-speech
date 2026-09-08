@@ -18,7 +18,7 @@
 # Any generation, not just Tiger:
 #
 #   ./push_apk_data.sh                                    # tiger, the default
-#   GEN=leopard ENGINE=D:/speech-leopard ./push_apk_data.sh
+#   GEN=leopard ENGINE=/path/to/your/extracted/leopard ./push_apk_data.sh
 #
 # Generations are added rather than replaced, so pushing Leopard leaves Tiger
 # standing -- the app looks each one up separately and the user picks between
@@ -29,10 +29,13 @@ set -e
 export MSYS_NO_PATHCONV=1
 export MSYS2_ARG_CONV_EXCL="*"
 
-ADB="${ADB:-C:/Android/Sdk/platform-tools/adb.exe}"
+# The Android SDK: ANDROID_HOME or ANDROID_SDK_ROOT if set, else the SDK's
+# own standard install folder.  Nothing here names one machine.
+SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-${LOCALAPPDATA:-$HOME}/Android/Sdk}}"
+ADB="${ADB:-$SDK/platform-tools/adb}"
 PKG="com.pantheraspeech.tts"
 GEN="${GEN:-tiger}"
-ENGINE="${ENGINE:-D:/speech-tiger/x86}"
+ENGINE="${ENGINE:?set ENGINE to your extracted tree for GEN}"
 SKIP="${SKIP:-Vicki.SpeechVoice Alex.SpeechVoice}"
 MT="$ENGINE/Speech/Synthesizers/MacinTalk.SpeechSynthesizer/Contents/MacOS/MacinTalk"
 SDVER="$ENGINE/SpeechDictionary.framework/Versions/A"

@@ -98,7 +98,7 @@ def test_mountain_lion_is_refused_and_says_why():
 
 
 def test_something_that_is_not_a_mac_disc_is_refused_kindly():
-    path = _find("coconut") or _find("ubuntu") or _find("debian")
+    path = _find("ubuntu") or _find("debian") or _find("linux")
     if not path:
         pytest.skip("no non-Mac image to try")
     disc = pantheradiscs.identify(path)

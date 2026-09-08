@@ -13,7 +13,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True, help="Local official Glint Git clone")
     parser.add_argument("--out", type=Path, required=True, help="New ignored experiment directory")
-    parser.add_argument("--cmake", default="C:/Android/sdk/cmake/3.22.1/bin/cmake.exe")
+    parser.add_argument("--cmake", default=shutil.which("cmake") or str(
+        Path(os.environ.get("ANDROID_HOME") or os.environ.get("ANDROID_SDK_ROOT")
+             or Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "Android/Sdk")
+        / "cmake/3.22.1/bin/cmake.exe"), help="cmake, from PATH or the Android SDK")
     args = parser.parse_args()
     out = args.out.resolve()
     if out.exists():

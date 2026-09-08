@@ -36,13 +36,15 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))
 HOST = os.path.join(ROOT, "build", "tiger_host.exe")
 
-TREE = r"D:\speech-lion"
-ENGINE = os.path.join(TREE, r"Speech\Synthesizers"
-                            r"\MacinTalk.SpeechSynthesizer\Contents\MacOS"
-                            r"\MacinTalk")
-DICT = os.path.join(TREE, r"SpeechDictionary.framework\Versions\A"
-                          r"\SpeechDictionary")
-VOICE = os.path.join(TREE, r"Speech\Voices\Fred.SpeechVoice")
+#: The Lion tree is named by LION_TREE, as the conftest expects; nothing
+#: about anybody's disk is written here.
+TREE = os.environ.get("LION_TREE") or ""
+ENGINE = os.path.join(TREE, "Speech", "Synthesizers",
+                      "MacinTalk.SpeechSynthesizer", "Contents", "MacOS",
+                      "MacinTalk")
+DICT = os.path.join(TREE, "SpeechDictionary.framework", "Versions", "A",
+                    "SpeechDictionary")
+VOICE = os.path.join(TREE, "Speech", "Voices", "Fred.SpeechVoice")
 
 #: "Hello there." -- the host's own default, so nothing has to be passed in.
 FRAMES = 18704
@@ -60,7 +62,7 @@ def render(tmp_path_factory):
     """-> (wav path, host stderr). The host writes into its own cwd."""
     for p in (HOST, ENGINE, DICT):
         if not os.path.exists(p):
-            pytest.skip("not built, or no Lion tree at %s" % TREE)
+            pytest.skip("not built, or no Lion tree (set LION_TREE)")
     out = tmp_path_factory.mktemp("lion")
     env = dict(os.environ)
     env.pop("TIGER_TEXT", None)          # the default utterance is the subject

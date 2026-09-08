@@ -12,7 +12,7 @@ either as 98900 frames with every word present or as 50395 with the second
 sentence written over the first, a coin flip run to run, and it only looked
 like a coin flip once each render had a process to itself.
 
-    set TIGER_TREE=D:\\speech-leopard
+    set TIGER_TREE=<your extracted Leopard tree>
     py -3 tools/render_once.py "One, two, three." Alex 180 out.wav
 
 Useful alongside it:

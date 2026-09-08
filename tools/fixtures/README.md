@@ -13,9 +13,9 @@ On Windows, run the real driver and engine with the repository's simulated
 player, without touching the user's NVDA configuration:
 
 ```powershell
-py -3 tools/rapid_navigation_check.py --generation leopard --tree D:/speech-leopard --interval-ms 150 --output build/rapid-leopard.json
-py -3 tools/rapid_navigation_check.py --generation lion --tree D:/speech-lion --interval-ms 100 --output build/rapid-lion.json
-py -3 tools/rapid_navigation_check.py --generation leopard --tree D:/speech-leopard --posts tools/fixtures/navigation-long-posts.json --host-timing --output build/rapid-leopard-long.json
+py -3 tools/rapid_navigation_check.py --generation leopard --tree <leopard tree> --interval-ms 150 --output build/rapid-leopard.json
+py -3 tools/rapid_navigation_check.py --generation lion --tree <lion tree> --interval-ms 100 --output build/rapid-lion.json
+py -3 tools/rapid_navigation_check.py --generation leopard --tree <leopard tree> --posts tools/fixtures/navigation-long-posts.json --host-timing --output build/rapid-leopard-long.json
 ```
 
 The driver uses Alex at slider rate 50. Requests alternate at a fixed cadence;

@@ -10,7 +10,7 @@
 # right": a single differing sample says the emulation diverged, and where.
 #
 #   ./push_and_run.sh                 # uses the default engine paths below
-#   ENGINE=D:/speech-tiger/x86 ./push_and_run.sh
+#   ENGINE=/path/to/your/extracted/tiger ./push_and_run.sh
 #
 # Nothing of Apple's is shipped anywhere: these files go from Tomi's own disk to
 # Tomi's own watch, and the WAV is his own render on his own device.
@@ -23,14 +23,17 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd -W 2>/dev/null || pwd)"
 BIN="$ROOT/build/ndk/tiger_host"
 ORACLE="$ROOT/build/ndk/fred-desktop-uc.wav"
 
-ENGINE="${ENGINE:-D:/speech-tiger/x86}"
+ENGINE="${ENGINE:?set ENGINE to your extracted Tiger tree}"
 MT="$ENGINE/Speech/Synthesizers/MacinTalk.SpeechSynthesizer/Contents/MacOS/MacinTalk"
 SDVER="$ENGINE/SpeechDictionary.framework/Versions/A"   # binary + Resources/ live here
 SD="$SDVER/SpeechDictionary"                            # not the top-level symlink
 SDRES="$SDVER/Resources"                                # StdDictionary, SymbolDictionary, ...
 FV="$ENGINE/Speech/Voices/Fred.SpeechVoice"
 
-ADB="${ADB:-C:/Android/Sdk/platform-tools/adb.exe}"
+# The Android SDK: ANDROID_HOME or ANDROID_SDK_ROOT if set, else the SDK's
+# own standard install folder.  Nothing here names one machine.
+SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-${LOCALAPPDATA:-$HOME}/Android/Sdk}}"
+ADB="${ADB:-$SDK/platform-tools/adb}"
 DEV=/data/local/tmp/panthera
 
 for f in "$BIN" "$MT" "$SD" "$SDRES" "$FV"; do

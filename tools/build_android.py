@@ -32,8 +32,9 @@ def main():
     parser.add_argument("--abi", choices=["armeabi-v7a", "arm64-v8a"], required=True)
     parser.add_argument("--box-source", type=Path)
     parser.add_argument("--glint-source", type=Path, default=os.environ.get("GLINT_SOURCE"))
-    parser.add_argument("--ndk", type=Path, default=os.environ.get("ANDROID_NDK", "C:/Android/sdk/ndk/27.2.12479018"))
-    parser.add_argument("--cmake", type=Path, default="C:/Android/sdk/cmake/3.22.1/bin/cmake.exe")
+    parser.add_argument("--ndk", type=Path,
+                        default=Path(os.environ.get("ANDROID_NDK") or box.android_sdk() / "ndk/27.2.12479018"))
+    parser.add_argument("--cmake", type=Path, default=box.sdk_cmake())
     args = parser.parse_args()
     backend = "box86" if args.abi == "armeabi-v7a" else "box64"
     source = checkout(backend, args.box_source or os.environ.get(backend.upper() + "_SOURCE"),

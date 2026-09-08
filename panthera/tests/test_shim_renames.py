@@ -42,22 +42,44 @@ import machodyld as M                                          # noqa: E402
 
 SHIMTAB = os.path.join(ROOT, "src", "tiger_host_shimtab.c")
 
-#: Every binary of a generation newer than Leopard that this host loads.
+def _tree(env_name):
+    """An extracted tree named by the environment, as the conftest does, or
+    None.  Nobody's disk layout lives in this file."""
+    tree = os.environ.get(env_name)
+    return tree if tree and os.path.isdir(tree) else None
+
+
+def _macintalk(tree):
+    """The engine inside a tree, in either layout an extraction keeps it."""
+    if not tree:
+        return None
+    for rel in (("Speech", "Synthesizers", "MacinTalk.SpeechSynthesizer",
+                 "Contents", "MacOS", "MacinTalk"),
+                ("MacinTalk.SpeechSynthesizer", "Contents", "MacOS", "MacinTalk")):
+        path = os.path.join(tree, *rel)
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def _under(tree, *rel):
+    return os.path.join(tree, *rel) if tree else None
+
+
+_LION = _tree("LION_TREE")
+#: Every binary of a generation newer than Leopard that this host loads,
+#: from the trees LION_TREE and SNOWLEOPARD_TREE name.
 NEWER = {
-    "lion MacinTalk":
-        r"D:\speech-lion\Speech\Synthesizers"
-        r"\MacinTalk.SpeechSynthesizer\Contents\MacOS\MacinTalk",
+    "lion MacinTalk": _macintalk(_LION),
     "lion SpeechDictionary":
-        r"D:\speech-lion\SpeechDictionary.framework\Versions\A"
-        r"\SpeechDictionary",
-    "snowleopard MacinTalk":
-        r"D:\speech-snowleopard\MacinTalk.SpeechSynthesizer"
-        r"\Contents\MacOS\MacinTalk",
+        _under(_LION, "SpeechDictionary.framework", "Versions", "A",
+               "SpeechDictionary"),
+    "snowleopard MacinTalk": _macintalk(_tree("SNOWLEOPARD_TREE")),
     # The runtime is load-bearing from 10.7 on and its imports go through the
     # same resolver, so it is watched on the same terms. libc++abi is where
     # the C++ ABI actually lives; libstdc++ 6.0.9 is what re-exports it.
-    "lion libstdc++":  r"D:\speech-lion\libstdc++.6.0.9.dylib",
-    "lion libc++abi":  r"D:\speech-lion\libc++abi.dylib",
+    "lion libstdc++":  _under(_LION, "libstdc++.6.0.9.dylib"),
+    "lion libc++abi":  _under(_LION, "libc++abi.dylib"),
 }
 
 #: Renames that change the *name* and nothing else, so one implementation can
@@ -128,8 +150,8 @@ def test_no_import_is_missed_on_spelling_alone(label, shimmed):
     is finding it as a null pointer four frames away from anything related.
     """
     path = NEWER[label]
-    if not os.path.isfile(path):
-        pytest.skip("no engine at %s" % path)
+    if not path or not os.path.isfile(path):
+        pytest.skip("no %s (set LION_TREE / SNOWLEOPARD_TREE)" % label)
     missed = []
     for sym in M.Image(path).undefined_symbols():
         if _resolves(sym, shimmed):

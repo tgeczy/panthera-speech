@@ -36,25 +36,47 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 
 import machodyld as M                                          # noqa: E402
 
+def _tree(env_name):
+    """An extracted tree named by the environment, as the conftest does, or
+    None.  Nobody's disk layout lives in this file."""
+    tree = os.environ.get(env_name)
+    return tree if tree and os.path.isdir(tree) else None
+
+
+def _macintalk(tree):
+    """The engine inside a tree, in either layout an extraction keeps it."""
+    if not tree:
+        return None
+    for rel in (("Speech", "Synthesizers", "MacinTalk.SpeechSynthesizer",
+                 "Contents", "MacOS", "MacinTalk"),
+                ("MacinTalk.SpeechSynthesizer", "Contents", "MacOS", "MacinTalk")):
+        path = os.path.join(tree, *rel)
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def _under(tree, *rel):
+    return os.path.join(tree, *rel) if tree else None
+
+
 #: The two generations that use compressed info, and the one that does not.
 #: Nothing here is in the repository; these are the trees a developer
-#: extracted for themselves.
+#: extracted for themselves, named by SNOWLEOPARD_TREE, LION_TREE and
+#: LEOPARD_TREE exactly as the conftest expects them.
 BINARIES = {
-    "snowleopard": r"D:\speech-snowleopard\MacinTalk.SpeechSynthesizer"
-                   r"\Contents\MacOS\MacinTalk",
-    "lion": r"D:\speech-lion\Speech\Synthesizers"
-            r"\MacinTalk.SpeechSynthesizer\Contents\MacOS\MacinTalk",
+    "snowleopard": _macintalk(_tree("SNOWLEOPARD_TREE")),
+    "lion": _macintalk(_tree("LION_TREE")),
 }
-CLASSIC = (r"D:\speech-leopard\Speech\Synthesizers"
-           r"\MacinTalk.SpeechSynthesizer\Contents\MacOS\MacinTalk")
+CLASSIC = _macintalk(_tree("LEOPARD_TREE"))
 
 HOST = os.path.join(ROOT, "build", "tiger_host.exe")
 
 
 def _image(name):
     path = BINARIES[name]
-    if not os.path.isfile(path):
-        pytest.skip("no %s engine at %s" % (name, path))
+    if not path:
+        pytest.skip("no %s engine (set %s_TREE)" % (name, name.upper()))
     return M.Image(path)
 
 
@@ -174,7 +196,7 @@ def test_leopard_has_no_compressed_info():
     If Leopard ever grew a dyld info command, the loader would have two paths
     live on one image and the classic one would be writing over the other.
     """
-    if not os.path.isfile(CLASSIC):
+    if not CLASSIC:
         pytest.skip("no Leopard engine")
     im = M.Image(CLASSIC)
     assert im.info is None

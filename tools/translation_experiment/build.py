@@ -22,6 +22,20 @@ sys.path.insert(0, str(ROOT / "tools/aac_experiment"))
 import glint as glint_experiment
 
 
+def android_sdk():
+    """The Android SDK: ANDROID_HOME or ANDROID_SDK_ROOT if set, else the SDK's
+    own standard install folder.  Nothing here names one machine."""
+    for name in ("ANDROID_HOME", "ANDROID_SDK_ROOT"):
+        if os.environ.get(name):
+            return Path(os.environ[name])
+    return Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "Android/Sdk"
+
+
+def sdk_cmake():
+    exe = ".exe" if os.name == "nt" else ""
+    return android_sdk() / f"cmake/3.22.1/bin/cmake{exe}"
+
+
 def run(args, **kwargs):
     subprocess.run([str(a) for a in args], check=True, **kwargs)
 
@@ -151,8 +165,9 @@ def main():
     parser.add_argument("--aac", choices=["faad", "glint"], default="faad")
     parser.add_argument("--aac-source", type=Path, help="Official Glint clone; required with --aac glint")
     parser.add_argument("--api", type=int, default=26, help="Android minimum API (matches the app by default)")
-    parser.add_argument("--ndk", type=Path, default=Path("C:/Android/sdk/ndk/27.2.12479018"))
-    parser.add_argument("--cmake", type=Path, default=Path("C:/Android/sdk/cmake/3.22.1/bin/cmake.exe"))
+    parser.add_argument("--ndk", type=Path,
+                        default=Path(os.environ.get("ANDROID_NDK") or android_sdk() / "ndk/27.2.12479018"))
+    parser.add_argument("--cmake", type=Path, default=sdk_cmake())
     args = parser.parse_args()
     out = args.out.resolve()
     if out.exists():
@@ -214,7 +229,7 @@ target_link_options(panthera PRIVATE "-Wl,--version-script={vendor.as_posix()}/p
     env["PATH"] = "C:/Program Files/Git/bin" + os.pathsep + env["PATH"]
     with (out / "build.log").open("w", encoding="utf8") as log:
         run([args.cmake, "-S", vendor, "-B", out / "build", "-G", "Ninja",
-             f"-DCMAKE_MAKE_PROGRAM={args.cmake.parent.as_posix()}/ninja.exe",
+             f"-DCMAKE_MAKE_PROGRAM={args.cmake.parent.as_posix()}/ninja{args.cmake.suffix}",
              f"-DCMAKE_TOOLCHAIN_FILE={args.ndk.as_posix()}/build/cmake/android.toolchain.cmake",
              f"-DANDROID_ABI={abi}", f"-DANDROID_PLATFORM=android-{args.api}", "-DCMAKE_BUILD_TYPE=Release",
              "-DANDROID_STL=c++_static", "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",

@@ -22,9 +22,12 @@ ROOTW="$(cygpath -m "$ROOTC")"                   # ... Windows form (C:/...)
 export PATH="$ROOTC/shims:/usr/local/bin:/usr/bin:/bin"
 
 # Toolchain (override via env if your NDK/cmake live elsewhere).
-NDKW="${ANDROID_NDK:-C:/Android/Sdk/ndk/27.2.12479018}"
-CMAKE="${CMAKE:-/cygdrive/c/Android/Sdk/cmake/3.22.1/bin/cmake.exe}"
-NINJA="${NINJA:-C:/Android/Sdk/cmake/3.22.1/bin/ninja.exe}"
+# ANDROID_HOME (Windows form, e.g. C:/Users/you/AppData/Local/Android/Sdk) names the SDK; ANDROID_NDK,
+# CMAKE and NINJA override the pieces individually.
+SDKW="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-${LOCALAPPDATA:-$HOME}/Android/Sdk}}"
+NDKW="${ANDROID_NDK:-$SDKW/ndk/27.2.12479018}"
+CMAKE="${CMAKE:-$(cygpath -u "$SDKW")/cmake/3.22.1/bin/cmake.exe}"
+NINJA="${NINJA:-$SDKW/cmake/3.22.1/bin/ninja.exe}"
 
 # Clone Unicorn 2.1.4 with LF endings (the autocrlf fix) if not present.
 if [ ! -d "$ROOTC/unicorn" ]; then

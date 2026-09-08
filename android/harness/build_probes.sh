@@ -3,7 +3,11 @@
 # Static-ish, self-contained; one pushable binary per ABI. No Unicorn needed.
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
-BIN="C:/Android/Sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/windows-x86_64/bin"
+# The Android SDK: ANDROID_HOME or ANDROID_SDK_ROOT if set, else the SDK's
+# own standard install folder.  Nothing here names one machine.
+SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-${LOCALAPPDATA:-$HOME}/Android/Sdk}}"
+NDK="${ANDROID_NDK:-$SDK/ndk/27.2.12479018}"
+BIN="$NDK/toolchains/llvm/prebuilt/windows-x86_64/bin"
 OUT="$HERE/build"
 mkdir -p "$OUT"
 

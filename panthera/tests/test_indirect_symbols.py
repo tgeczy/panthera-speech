@@ -36,8 +36,33 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 
 import machodyld as M                                          # noqa: E402
 
-LION_CXX = r"D:\speech-lion\libstdc++.6.0.9.dylib"
-LEOPARD_CXX = r"D:\speech-leopard\libstdc++.6.0.4.dylib"
+def _tree(env_name):
+    """An extracted tree named by the environment, as the conftest does, or
+    None.  Nobody's disk layout lives in this file."""
+    tree = os.environ.get(env_name)
+    return tree if tree and os.path.isdir(tree) else None
+
+
+def _macintalk(tree):
+    """The engine inside a tree, in either layout an extraction keeps it."""
+    if not tree:
+        return None
+    for rel in (("Speech", "Synthesizers", "MacinTalk.SpeechSynthesizer",
+                 "Contents", "MacOS", "MacinTalk"),
+                ("MacinTalk.SpeechSynthesizer", "Contents", "MacOS", "MacinTalk")):
+        path = os.path.join(tree, *rel)
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def _under(tree, *rel):
+    return os.path.join(tree, *rel) if tree else None
+
+
+LION_TREE = _tree("LION_TREE")
+LION_CXX = _under(LION_TREE, "libstdc++.6.0.9.dylib")
+LEOPARD_CXX = _under(_tree("LEOPARD_TREE"), "libstdc++.6.0.4.dylib")
 
 #: What the engines import and libstdc++ answers with an alias. Naming them
 #: rather than counting them: if a future runtime resolves one of these for
@@ -56,8 +81,8 @@ THROUGH_AN_ALIAS = (
 
 
 def _image(path):
-    if not os.path.isfile(path):
-        pytest.skip("no runtime at %s" % path)
+    if not path or not os.path.isfile(path):
+        pytest.skip("no runtime at %s (set LION_TREE / LEOPARD_TREE)" % path)
     return M.Image(path)
 
 
@@ -97,14 +122,11 @@ def test_leopards_runtime_has_none():
 
 def test_the_engines_still_import_them():
     """If these ever stop being imported, this whole file is obsolete."""
-    for path in (r"D:\speech-lion\Speech\Synthesizers"
-                 r"\MacinTalk.SpeechSynthesizer\Contents\MacOS\MacinTalk",
-                 r"D:\speech-lion\SpeechDictionary.framework\Versions\A"
-                 r"\SpeechDictionary"):
-        if not os.path.isfile(path):
-            pytest.skip("no engine at %s" % path)
-    macintalk = _image(r"D:\speech-lion\Speech\Synthesizers"
-                       r"\MacinTalk.SpeechSynthesizer\Contents\MacOS"
-                       r"\MacinTalk").undefined_symbols()
+    engine = _macintalk(LION_TREE)
+    for path in (engine, _under(LION_TREE, "SpeechDictionary.framework",
+                                "Versions", "A", "SpeechDictionary")):
+        if not path or not os.path.isfile(path):
+            pytest.skip("no Lion engine (set LION_TREE)")
+    macintalk = _image(engine).undefined_symbols()
     assert "___dynamic_cast" in macintalk
     assert "___cxa_guard_acquire" in macintalk
