@@ -100,6 +100,10 @@ static void bridge_dispatch(x64emu_t *emu,uintptr_t slot) {
 void box64_write_slot(uc_engine *u,unsigned at,int fp) {
     onebridge_t b={0}; b.CC=0xcc;b.S='S';b.C='C';
     b.w=bridge_dispatch;b.f=at|(fp?1u:0u);b.C3=0xc3;
+    /* The slot lives in guest-executable memory the dynarec protects; a
+     * host write there faults on glibc (it happened to pass on bionic).
+     * Unprotect first, exactly as uc_mem_write does. */
+    unprotectDB((uintptr_t)at,sizeof(b),1);
     memcpy((void*)at,&b,sizeof(b));
 }
 uc_err uc_emu_start(uc_engine *u,uint64_t begin,uint64_t end,uint64_t timeout,size_t count) {
