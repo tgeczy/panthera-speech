@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__)))), "addon",
     "synthDrivers", "_panthera"))
 
-import pantherastress as leopardstress                                          # noqa: E402
+from synthDrivers._panthera import pantherastress as leopardstress              # noqa: E402
 
 
 def test_it_fixes_the_word_that_is_broken():
@@ -70,7 +70,7 @@ def test_the_driver_exposes_it_as_a_setting_that_is_on():
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
         os.path.dirname(os.path.abspath(__file__)))), "addon",
         "synthDrivers"))
-    import leopardspeech
+    from synthDrivers import leopardspeech
     names = [s.id for s in leopardspeech.SynthDriver.supportedSettings]
     assert "fixStress" in names
     setting = [s for s in leopardspeech.SynthDriver.supportedSettings

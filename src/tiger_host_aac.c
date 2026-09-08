@@ -52,22 +52,35 @@
 #define AAC_PRIMING     2112                   /* Apple's AAC-LC codec delay */
 #define kExtendedSoundData        (1 << 14)
 
+/* The ENGINE fills this in and hands over the address, so every field is the
+ * width an i386 compiler gave it: `long` is four bytes and so is a pointer.
+ * Spelled with the host's own types it is 96 bytes on arm64 rather than 52,
+ * and `buffer` is then read out of the middle of `sampleCount`.  The byte
+ * offsets in the comment above are the engine's, not this host's, and this
+ * is where that stops being true by accident. */
 typedef struct {
-    long           flags;
+    glong          flags;
     unsigned       format;
     short          numChannels;
     short          sampleSize;
     unsigned       sampleRate;
-    long           sampleCount;
-    unsigned char *buffer;
-    long           reserved;
+    glong          sampleCount;
+    gptr           buffer;              /* unsigned char *  */
+    glong          reserved;
     /* live only when flags & kExtendedSoundData */
-    long           recordSize;
-    long           extendedFlags;
-    long           bufferSize;
-    long           frameCount;
-    long          *frameSizes;
+    glong          recordSize;
+    glong          extendedFlags;
+    glong          bufferSize;
+    glong          frameCount;
+    gptr           frameSizes;          /* glong *          */
 } snd_data;
+
+/* Read the two pointers back at host width once, by name, rather than at
+ * every call site each remembering to. */
+static const unsigned char *snd_buffer(const snd_data *in)
+{ return (const unsigned char *)GHOST(in->buffer); }
+static const glong *snd_frame_sizes(const snd_data *in)
+{ return (const glong *)GHOST(in->frameSizes); }
 
 /* Boolean, so the callee only sets AL -- reading the whole of EAX would make
  * "no more data" look like "more data" whenever the high bytes held junk. */
@@ -84,6 +97,10 @@ typedef struct {
     unsigned      sessions;
     unsigned      prime_left;           /* priming still to drop this stream */
     int           ac_live;              /* an AudioConverter stream is open  */
+    unsigned      st_fed;               /* access units fed this stream      */
+    unsigned      st_given;             /* samples handed the engine, ditto  */
+    unsigned char *lastpkt;             /* the stream's newest access unit   */
+    unsigned      lastpkt_len, lastpkt_cap;
     unsigned      resets;               /* AudioConverterReset calls */
     unsigned      lost;                 /* access units the decoder refused */
     int           complained;
@@ -107,242 +124,22 @@ static unsigned g_pkts_fed, g_frames_out;
  * length and obvious in a transcript. */
 static int g_ac_trace = -1;
 static unsigned g_ac_silent_streams;
+/* TIGER_SIM_WIN7: pretend to be Windows 7's AAC decoder; see aac_end. */
+static int g_sim_win7 = -1;
 
+/* Wall time spent inside the decoder, and how many access units went through
+ * it, for one utterance.  Alex renders twenty times slower on a watch than the
+ * same emulator does on a desktop while Fred is only three times slower, and
+ * the two of them differ in exactly one thing: Alex decodes AAC.  Whether that
+ * decode is the cost is a question about where time goes, so it is measured
+ * rather than argued -- and measured at the decoder, because Alex arrives
+ * through AudioConverter and Vicki through the Sound Manager, and instrumenting
+ * either route alone answers for only one voice.  g_aac_depth keeps a feed that
+ * drains inside itself from being counted twice. */
+static double   g_aac_ms;
+static unsigned g_aac_units;
+static int      g_aac_depth;
 
-/* ---- AAC, through the decoder Windows already ships -------------------- */
-/*
- * Bound at run time rather than linked: a Windows N install without the Media
- * Feature Pack has no mfplat.dll, and an import would stop the host loading at
- * all -- taking the other twenty-two voices down with it.  Missing here just
- * means Vicki renders silence, which is what she did before.
- */
-typedef HRESULT (STDAPICALLTYPE *MFStartup_t)(ULONG, DWORD);
-typedef HRESULT (STDAPICALLTYPE *MFCreateMediaType_t)(IMFMediaType **);
-typedef HRESULT (STDAPICALLTYPE *MFCreateSample_t)(IMFSample **);
-typedef HRESULT (STDAPICALLTYPE *MFCreateMemoryBuffer_t)(DWORD, IMFMediaBuffer **);
-
-static MFStartup_t            p_MFStartup;
-static MFCreateMediaType_t    p_MFCreateMediaType;
-static MFCreateSample_t       p_MFCreateSample;
-static MFCreateMemoryBuffer_t p_MFCreateMemoryBuffer;
-
-/* CLSID_CMSAACDecMFT, spelled out rather than linked from wmcodecdspuuid.lib
- * so the build needs nothing beyond the base SDK. */
-static const CLSID g_clsid_aac =
-    { 0x32d186a7, 0x218f, 0x4c75,
-      { 0x88, 0x76, 0xdd, 0x77, 0x27, 0x3a, 0x89, 0x99 } };
-
-static IMFTransform *g_aac;
-static int           g_aac_state;       /* 0 untried, 1 ready, -1 no decoder */
-static LONGLONG      g_aac_time;
-
-/* The engine decodes on its Multiprocessing worker, not on main. */
-static __declspec(thread) int g_com_ready;
-
-static void com_join(void)
-{
-    if (g_com_ready) return;
-    CoInitializeEx(NULL, COINIT_MULTITHREADED);
-    g_com_ready = 1;
-}
-
-/* 16-bit PCM at the voice's own rate.  Block alignment and bytes-per-second
- * are not optional here; a type without them is refused. */
-static int aac_set_output(void)
-{
-    IMFMediaType *mt = NULL;
-    DWORD i;
-    HRESULT hr;
-    if (SUCCEEDED(p_MFCreateMediaType(&mt))) {
-        IMFMediaType_SetGUID(mt, &MF_MT_MAJOR_TYPE, &MFMediaType_Audio);
-        IMFMediaType_SetGUID(mt, &MF_MT_SUBTYPE, &MFAudioFormat_PCM);
-        IMFMediaType_SetUINT32(mt, &MF_MT_AUDIO_NUM_CHANNELS, g_sc.channels);
-        IMFMediaType_SetUINT32(mt, &MF_MT_AUDIO_SAMPLES_PER_SECOND, g_sc.rate);
-        IMFMediaType_SetUINT32(mt, &MF_MT_AUDIO_BITS_PER_SAMPLE, 16);
-        IMFMediaType_SetUINT32(mt, &MF_MT_AUDIO_BLOCK_ALIGNMENT,
-                               2 * g_sc.channels);
-        IMFMediaType_SetUINT32(mt, &MF_MT_AUDIO_AVG_BYTES_PER_SECOND,
-                               2 * g_sc.channels * g_sc.rate);
-        IMFMediaType_SetUINT32(mt, &MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
-        hr = IMFTransform_SetOutputType(g_aac, 0, mt, 0);
-        IMFMediaType_Release(mt);
-        mt = NULL;
-        if (SUCCEEDED(hr)) return 1;
-        if (g_verbose) printf("  [aac] 16-bit PCM out refused (%08lx); enumerating\n",
-               (unsigned long)hr);
-    }
-    for (i = 0; i < 16; i++) {
-        UINT32 bits = 0, rate = 0, ch = 0;
-        GUID sub;
-        HRESULT ehr = IMFTransform_GetOutputAvailableType(g_aac, 0, i, &mt);
-        if (FAILED(ehr) || !mt) {
-            if (!i) printf("  [aac] no output types offered (%08lx)\n",
-                           (unsigned long)ehr);
-            break;
-        }
-        memset(&sub, 0, sizeof sub);
-        IMFMediaType_GetGUID(mt, &MF_MT_SUBTYPE, &sub);
-        IMFMediaType_GetUINT32(mt, &MF_MT_AUDIO_BITS_PER_SAMPLE, &bits);
-        IMFMediaType_GetUINT32(mt, &MF_MT_AUDIO_SAMPLES_PER_SECOND, &rate);
-        IMFMediaType_GetUINT32(mt, &MF_MT_AUDIO_NUM_CHANNELS, &ch);
-        if (IsEqualGUID(&sub, &MFAudioFormat_PCM) && bits == 16 &&
-            rate == g_sc.rate && ch == g_sc.channels &&
-            SUCCEEDED(IMFTransform_SetOutputType(g_aac, 0, mt, 0))) {
-            IMFMediaType_Release(mt);
-            return 1;
-        }
-        IMFMediaType_Release(mt);
-        mt = NULL;
-    }
-    return 0;
-}
-
-static int aac_open(void)
-{
-    HMODULE mf;
-    IMFMediaType *mt = NULL;
-    unsigned char ud[12 + ASC_MAX];
-    HRESULT hr;
-
-    if (g_aac_state) return g_aac_state > 0;
-    g_aac_state = -1;                        /* pessimistic until it works */
-
-    if (g_sc.asclen < 2) {
-        if (g_verbose) printf("  [aac] no AudioSpecificConfig in the voice's 'wave' atom\n");
-        return 0;
-    }
-    /* The config is not passed to the decoder (see below), but it does say
-     * whether this is a stream the decoder can be asked for at all. */
-    {
-        static const unsigned asc_rates[13] = {
-            96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050,
-            16000, 12000, 11025, 8000, 7350 };
-        unsigned obj = g_sc.asc[0] >> 3;
-        unsigned idx = ((g_sc.asc[0] & 7) << 1) | (g_sc.asc[1] >> 7);
-        unsigned chn = (g_sc.asc[1] >> 3) & 0xf;
-        if (obj != 2)
-            if (g_verbose) printf("  [aac] object type %u is not AAC-LC -- trying anyway\n", obj);
-        if (idx < 13 && asc_rates[idx] != g_sc.rate)
-            if (g_verbose) printf("  [aac] the config says %u Hz but the voice says %u\n",
-                   asc_rates[idx], g_sc.rate);
-        if (chn && chn != g_sc.channels)
-            if (g_verbose) printf("  [aac] the config says %u channels but the voice says %u\n",
-                   chn, g_sc.channels);
-    }
-    mf = LoadLibraryA("mfplat.dll");
-    if (!mf) {
-        if (g_verbose) printf("  [aac] no mfplat.dll on this system -- Vicki stays silent\n");
-        return 0;
-    }
-    p_MFStartup = (MFStartup_t)GetProcAddress(mf, "MFStartup");
-    p_MFCreateMediaType =
-        (MFCreateMediaType_t)GetProcAddress(mf, "MFCreateMediaType");
-    p_MFCreateSample = (MFCreateSample_t)GetProcAddress(mf, "MFCreateSample");
-    p_MFCreateMemoryBuffer =
-        (MFCreateMemoryBuffer_t)GetProcAddress(mf, "MFCreateMemoryBuffer");
-    if (!p_MFStartup || !p_MFCreateMediaType || !p_MFCreateSample ||
-        !p_MFCreateMemoryBuffer) {
-        if (g_verbose) printf("  [aac] mfplat.dll is missing entry points\n");
-        return 0;
-    }
-    com_join();
-    if (FAILED(p_MFStartup(MF_VERSION, MFSTARTUP_LITE))) {
-        if (g_verbose) printf("  [aac] MFStartup failed\n");
-        return 0;
-    }
-    hr = CoCreateInstance(&g_clsid_aac, NULL, CLSCTX_INPROC_SERVER,
-                          &IID_IMFTransform, (void **)&g_aac);
-    if (FAILED(hr) || !g_aac) {
-        if (g_verbose) printf("  [aac] no AAC decoder registered (%08lx)\n", (unsigned long)hr);
-        return 0;
-    }
-    if (FAILED(p_MFCreateMediaType(&mt))) return 0;
-    IMFMediaType_SetGUID(mt, &MF_MT_MAJOR_TYPE, &MFMediaType_Audio);
-    IMFMediaType_SetGUID(mt, &MF_MT_SUBTYPE, &MFAudioFormat_AAC);
-    IMFMediaType_SetUINT32(mt, &MF_MT_AUDIO_BITS_PER_SAMPLE, 16);
-    IMFMediaType_SetUINT32(mt, &MF_MT_AUDIO_SAMPLES_PER_SECOND, g_sc.rate);
-    IMFMediaType_SetUINT32(mt, &MF_MT_AUDIO_NUM_CHANNELS, g_sc.channels);
-    IMFMediaType_SetUINT32(mt, &MF_MT_AAC_PAYLOAD_TYPE, 0);   /* raw blocks */
-    /* HEAACWAVEINFO past its WAVEFORMATEX -- and *only* that.  Appending the
-     * AudioSpecificConfig, which is what the documentation describes and what
-     * every example does, makes this decoder ignore the sample rate and the
-     * channel count it was just given and fall back to 44100 stereo; it then
-     * refuses 22050 mono out.  Measured across six recipes: the bare twelve
-     * bytes is the one that configures it from the media type.  Vicki's
-     * config says the same thing the media type does, so nothing is lost. */
-    memset(ud, 0, sizeof ud);
-    ud[2] = 0xfe;                            /* profile-level: unspecified */
-    IMFMediaType_SetBlob(mt, &MF_MT_USER_DATA, ud, 12);
-    hr = IMFTransform_SetInputType(g_aac, 0, mt, 0);
-    IMFMediaType_Release(mt);
-    if (FAILED(hr)) {
-        if (g_verbose) printf("  [aac] the decoder refused %u Hz %u ch AAC (%08lx)\n",
-               g_sc.rate, g_sc.channels, (unsigned long)hr);
-        return 0;
-    }
-    if (!aac_set_output()) {
-        if (g_verbose) printf("  [aac] the decoder refused 16-bit PCM out\n");
-        return 0;
-    }
-    IMFTransform_ProcessMessage(g_aac, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0);
-    IMFTransform_ProcessMessage(g_aac, MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0);
-    if (g_verbose) {
-        unsigned i;
-        if (g_verbose) printf("  [aac] Windows' AAC decoder ready: %u Hz, %u ch, ASC",
-               g_sc.rate, g_sc.channels);
-        for (i = 0; i < g_sc.asclen; i++) printf(" %02x", g_sc.asc[i]);
-        printf("\n");
-    }
-    g_aac_state = 1;
-    return 1;
-}
-
-/* `tiger_host --aac-check`: does this machine's AAC decoder behave like the
- * one Vicki was measured against?  Needs no engine, no voices and no
- * arguments, so it is something a user can be asked to run and paste back --
- * which is the only way to tell "she sounds wrong here" from "she sounds wrong
- * everywhere". */
-static int aac_check(void)
-{
-    DWORD i;
-    IMFMediaType *mt = NULL;
-    static const unsigned char asc[2] = { 0x13, 0x88 };
-
-    g_verbose = 1;
-    g_sc.rate = 22050;
-    g_sc.channels = 1;
-    memcpy(g_sc.asc, asc, 2);
-    g_sc.asclen = 2;
-
-    printf("tiger_host AAC check\n");
-    if (!aac_open()) {
-        printf("\nRESULT: no usable AAC decoder -- Vicki cannot speak here,\n"
-               "and the driver should not be offering her.\n");
-        return 1;
-    }
-    printf("  input accepted at %u Hz, %u channel(s)\n",
-           g_sc.rate, g_sc.channels);
-    for (i = 0; i < 8; i++) {
-        UINT32 bits = 0, rate = 0, ch = 0;
-        GUID sub;
-        if (FAILED(IMFTransform_GetOutputAvailableType(g_aac, 0, i, &mt)) || !mt)
-            break;
-        memset(&sub, 0, sizeof sub);
-        IMFMediaType_GetGUID(mt, &MF_MT_SUBTYPE, &sub);
-        IMFMediaType_GetUINT32(mt, &MF_MT_AUDIO_BITS_PER_SAMPLE, &bits);
-        IMFMediaType_GetUINT32(mt, &MF_MT_AUDIO_SAMPLES_PER_SECOND, &rate);
-        IMFMediaType_GetUINT32(mt, &MF_MT_AUDIO_NUM_CHANNELS, &ch);
-        printf("  offers #%lu: fmt %08lx  %u bit  %u Hz  %u ch\n",
-               (unsigned long)i, (unsigned long)sub.Data1, bits, rate, ch);
-        IMFMediaType_Release(mt);
-        mt = NULL;
-    }
-    printf("\nRESULT: decoder present and configured. If Vicki still sounds\n"
-           "wrong here, it is the frame counts that differ -- select her in\n"
-           "NVDA, speak a sentence, and send the NVDA log: the host writes a\n"
-           "line there saying so.\n");
-    return 0;
-}
 
 static void pcm_append(const unsigned char *p, unsigned bytes)
 {
@@ -358,81 +155,6 @@ static void pcm_append(const unsigned char *p, unsigned bytes)
     }
     memcpy(g_sc.pcm + g_sc.pcm_n, p, bytes & ~1u);
     g_sc.pcm_n += bytes / 2;
-}
-
-/* Take everything the transform is holding.  The AAC decoder does not supply
- * its own samples, so the buffer is ours to provide. */
-static void aac_drain(void)
-{
-    MFT_OUTPUT_STREAM_INFO si;
-    memset(&si, 0, sizeof si);
-    IMFTransform_GetOutputStreamInfo(g_aac, 0, &si);
-    for (;;) {
-        MFT_OUTPUT_DATA_BUFFER ob;
-        IMFSample *s = NULL;
-        IMFMediaBuffer *b = NULL;
-        DWORD status = 0, cb = si.cbSize ? si.cbSize : 65536;
-        HRESULT hr;
-        if (FAILED(p_MFCreateSample(&s))) return;
-        if (FAILED(p_MFCreateMemoryBuffer(cb, &b))) {
-            IMFSample_Release(s);
-            return;
-        }
-        IMFSample_AddBuffer(s, b);
-        memset(&ob, 0, sizeof ob);
-        ob.pSample = s;
-        hr = IMFTransform_ProcessOutput(g_aac, 0, 1, &ob, &status);
-        if (SUCCEEDED(hr)) {
-            BYTE *p = NULL;
-            DWORD len = 0;
-            if (SUCCEEDED(IMFMediaBuffer_Lock(b, &p, NULL, &len))) {
-                pcm_append(p, len);
-                IMFMediaBuffer_Unlock(b);
-            }
-        }
-        if (ob.pEvents) IMFCollection_Release(ob.pEvents);
-        IMFMediaBuffer_Release(b);
-        IMFSample_Release(s);
-        if (hr == MF_E_TRANSFORM_STREAM_CHANGE) {
-            /* The decoder wants to restate its output format; say PCM again. */
-            if (!aac_set_output()) return;
-            continue;
-        }
-        if (FAILED(hr)) return;              /* NEED_MORE_INPUT lands here */
-    }
-}
-
-static int aac_feed(const unsigned char *data, unsigned len)
-{
-    IMFSample *s = NULL;
-    IMFMediaBuffer *b = NULL;
-    BYTE *p = NULL;
-    HRESULT hr;
-    int tries;
-    if (FAILED(p_MFCreateSample(&s))) return 0;
-    if (FAILED(p_MFCreateMemoryBuffer(len, &b))) { IMFSample_Release(s); return 0; }
-    if (SUCCEEDED(IMFMediaBuffer_Lock(b, &p, NULL, NULL))) {
-        memcpy(p, data, len);
-        IMFMediaBuffer_Unlock(b);
-    }
-    IMFMediaBuffer_SetCurrentLength(b, len);
-    IMFSample_AddBuffer(s, b);
-    IMFSample_SetSampleTime(s, g_aac_time);
-    IMFSample_SetSampleDuration(s, 10000000LL * AAC_FRAME / g_sc.rate);
-    g_aac_time += 10000000LL * AAC_FRAME / g_sc.rate;
-    /* A transform holding finished output refuses new input with
-     * MF_E_NOTACCEPTING.  Dropping the access unit there would be silent and
-     * ruinous: every later unit would sit 1024 samples out of place, which is
-     * not silence but *wrong* speech.  Drain and offer it again. */
-    for (tries = 0; tries < 8; tries++) {
-        hr = IMFTransform_ProcessInput(g_aac, 0, s, 0);
-        if (hr != MF_E_NOTACCEPTING) break;
-        aac_drain();
-    }
-    if (SUCCEEDED(hr)) aac_drain();
-    IMFMediaBuffer_Release(b);
-    IMFSample_Release(s);
-    return SUCCEEDED(hr);
 }
 
 /* Set TIGER_AAC_DUMP to a path and the first unit's access units are written
@@ -453,7 +175,7 @@ static void aac_dump_adts(const snd_data *in)
     f = fopen(path, "wb");
     if (!f) return;
     for (i = 0; i < in->frameCount; i++) {
-        unsigned sz = (unsigned)in->frameSizes[i], len = sz + 7;
+        unsigned sz = (unsigned)snd_frame_sizes(in)[i], len = sz + 7;
         unsigned char h[7];
         if (!sz || off + sz > (unsigned)in->bufferSize) break;
         h[0] = 0xff;
@@ -465,26 +187,25 @@ static void aac_dump_adts(const snd_data *in)
         h[5] = (unsigned char)(((len & 7) << 5) | 0x1f);
         h[6] = 0xfc;
         fwrite(h, 1, 7, f);
-        fwrite(in->buffer + off, 1, sz, f);
+        fwrite(snd_buffer(in) + off, 1, sz, f);
         off += sz;
     }
     fclose(f);
-    if (g_verbose) printf("  [aac] wrote %ld access units to %s\n", in->frameCount, path);
+    if (g_verbose) printf("  [aac] wrote %ld access units to %s\n", (long)in->frameCount, path);
 }
 
-/* One unit of the voice's database: `n` access units laid end to end, with
- * their sizes alongside.  Everything is decoded here and doled out to the
- * engine afterwards, because the engine's own loop wants it that way. */
-/* Start and finish one run of packets.  Split out because Alex arrives through
- * AudioConverter and Vicki through the Sound Manager, and only the plumbing
- * differs -- the decoder underneath is the same one. */
-static void aac_begin(void)
-{
-    g_sc.pcm_n = g_sc.pcm_pos = 0;
-    IMFTransform_ProcessMessage(g_aac, MFT_MESSAGE_COMMAND_FLUSH, 0);
-    IMFTransform_ProcessMessage(g_aac, MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0);
-    g_aac_time = 0;
-}
+/* The converter state, PCM sink and priming are shared by every decoder. */
+#if defined(TIGER_AAC_FALLBACK)
+#include "tiger_host_aac_windows.c"    /* Media Foundation, then Glint */
+#elif defined(TIGER_AAC_GLINT)
+#include "tiger_host_aac_glint.c"
+#elif defined(TIGER_AAC_FAAD)
+#include "tiger_host_aac_faad.c"       /* in process, FAAD2 */
+#elif defined(TIGER_AAC_NDK)
+#include "tiger_host_aac_ndk.c"        /* Android: AMediaCodec */
+#else
+#include "tiger_host_aac_mf.c"         /* Windows: Media Foundation */
+#endif
 
 /* Push the decoder's own latency out of it before draining.
  *
@@ -510,11 +231,28 @@ static void aac_flush_delay(const unsigned char *last, unsigned lastlen)
     for (i = 0; i < 2; i++) aac_feed(last, lastlen);
 }
 
+/* Close the stream, then say how much of what came back is really audio.
+ *
+ * The flush is the backend's (aac_end_stream); the arithmetic after it is not,
+ * and deliberately so.  How many samples a decoder withholds is a property of
+ * that decoder, but what to *do* about it is a property of AAC, and the moment
+ * two backends each keep a copy of this they can come to disagree about where a
+ * voice starts -- which is not a crash, it is Vicki's syllables running
+ * together, and it took a Windows 7 machine to find the first time.
+ *
+ * TIGER_SIM_WIN7 reproduces the decoder that withholds the newest frame even
+ * through a drain, on a machine that has no Windows 7. */
 static void aac_end(void)
 {
-    IMFTransform_ProcessMessage(g_aac, MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0);
-    IMFTransform_ProcessMessage(g_aac, MFT_MESSAGE_COMMAND_DRAIN, 0);
-    aac_drain();
+    unsigned before = g_sc.pcm_n;
+    aac_end_stream();
+    if (g_sim_win7 < 0) g_sim_win7 = getenv("TIGER_SIM_WIN7") ? 1 : 0;
+    if (g_sim_win7) {
+        unsigned got = g_sc.pcm_n - before;
+        unsigned hold = AAC_FRAME * (g_sc.channels ? g_sc.channels : 1);
+        if (hold > got) hold = got;
+        g_sc.pcm_n -= hold;
+    }
 }
 
 static void aac_run_unit(const snd_data *in)
@@ -523,14 +261,14 @@ static void aac_run_unit(const snd_data *in)
     long i;
     aac_begin();
     for (i = 0; i < in->frameCount; i++) {
-        unsigned sz = (unsigned)in->frameSizes[i];
+        unsigned sz = (unsigned)snd_frame_sizes(in)[i];
         if (!sz || off + sz > (unsigned)in->bufferSize) break;
-        if (!aac_feed(in->buffer + off, sz)) g_sc.lost++;
+        if (!aac_feed(snd_buffer(in) + off, sz)) g_sc.lost++;
         lastoff = off;
         lastlen = sz;
         off += sz;
     }
-    aac_flush_delay(in->buffer + lastoff, lastlen);
+    aac_flush_delay(snd_buffer(in) + lastoff, lastlen);
     aac_end();
 }
 
@@ -549,10 +287,8 @@ static void aac_decode_unit(const snd_data *in)
      * decode the unit again on a new one -- once.  Cheaper than being wrong,
      * and it only ever runs when something is already amiss. */
     full = (unsigned)in->frameCount * AAC_FRAME;
-    if (g_sc.pcm_n < full && g_aac) {
-        IMFTransform_Release(g_aac);
-        g_aac = NULL;
-        g_aac_state = 0;
+    if (g_sc.pcm_n < full && aac_is_open()) {
+        aac_reset_decoder();
         g_sc.lost = 0;
         if (aac_open()) aac_run_unit(in);
     }
@@ -599,12 +335,13 @@ static void aac_decode_unit(const snd_data *in)
                         "tiger_host: AAC decoder returned %u frames for %ld "
                         "units, expected %u (%u short); %u access unit(s) "
                         "refused. Vicki will sound wrong on this machine.\n",
-                        g_sc.pcm_n, in->frameCount, full, full - g_sc.pcm_n,
+                        g_sc.pcm_n, (long)in->frameCount, full,
+                        full - g_sc.pcm_n,
                         g_sc.lost);
             }
         } else if (g_verbose && g_sc.sessions <= 3) {
             if (g_verbose) printf("  [aac] unit %ld units -> %u frames, want %u, dropping %u\n",
-                   in->frameCount, g_sc.pcm_n, target, trim);
+                   (long)in->frameCount, g_sc.pcm_n, target, trim);
         }
     }
 }
@@ -716,14 +453,35 @@ static int __cdecl sh_SoundConverterFillBuffer(void *sc, fill_proc upp,
     (void)sc;
     if (g_sc.pcm_pos >= g_sc.pcm_n) {           /* need another blob */
         snd_data *in = NULL;
+        int more = 0;
         g_sc.pcm_n = g_sc.pcm_pos = 0;
-        if (upp && upp(&in, refcon) && in && in->buffer) {
+        if (upp) {
+            /* Into the guest, so through the emulator rather than by calling
+             * the pointer.  A direct call is right only when the host runs the
+             * guest's own instruction set: on i386 it worked for years, and on
+             * ARM it jumps into i386 bytes and takes the process with it.
+             *
+             * `in` is an out-parameter the guest writes, so it needs an address
+             * the guest can see -- a host stack slot is not one under the
+             * identity mapping.  UC_OUT lends it a guest-visible slot and
+             * UC_OUT_GET takes the answer back; both are identities off ARM.
+             *
+             * Only AL is meaningful: the callee sets a Boolean, and reading the
+             * whole of EAX would make "no more data" look like more whenever
+             * the high bytes held junk.  The old code got that from the
+             * function pointer's `unsigned char` return type; say it here. */
+            void *slot = UC_OUT_PTR(in);
+            more = CALL_GUEST2((void *)upp, slot, refcon) & 0xff;
+            UC_OUT_PTR_GET(slot, in);
+            UC_FREE(slot);
+        }
+        if (more && in && in->buffer) {
             if (!(in->flags & kExtendedSoundData) || in->recordSize < 68 ||
                 !in->frameSizes || in->frameCount <= 0) {
                 if (!g_sc.quiet++)
                     if (g_verbose) printf("  [snd] fill: flags %08lx recordSize %ld -- not the "
                            "extended VBR descriptor this expects\n",
-                           in->flags, in->recordSize);
+                           (unsigned long)in->flags, (long)in->recordSize);
             } else {
                 aac_decode_unit(in);
             }
@@ -794,7 +552,10 @@ static int __cdecl sh_SoundConverterEndConversion(void *sc, void *outbuf,
  */
 #define AC_MAGIC 0x41434e56u                   /* 'ACNV' */
 
-typedef struct { unsigned mNumberChannels, mDataByteSize; void *mData; } au_buffer;
+/* Also the engine's, and handed both ways: it allocates the output buffer,
+ * and its input callback fills in the one this host lends it. */
+typedef struct { unsigned mNumberChannels, mDataByteSize;
+                 gptr mData; /* void * */ } au_buffer;
 typedef struct { unsigned mNumberBuffers; au_buffer mBuffers[1]; } au_bufferlist;
 typedef struct {
     long long mStartOffset;
@@ -840,7 +601,7 @@ static void asbd_native(const au_asbd *src, au_asbd *dst)
 }
 
 static int __cdecl sh_AudioConverterNew(const au_asbd *insrc,
-                                        const au_asbd *out, void **conv)
+                                        const au_asbd *out, gptr *conv)
 {
     au_asbd native;
     const au_asbd *in = NULL;
@@ -852,11 +613,8 @@ static int __cdecl sh_AudioConverterNew(const au_asbd *insrc,
         if (!rate) rate = 22050;
         fourcc(f, in->mFormatID);
         /* A converter for a different rate cannot reuse the old transform. */
-        if (g_aac && (rate != g_sc.rate || ch != g_sc.channels)) {
-            IMFTransform_Release(g_aac);
-            g_aac = NULL;
-            g_aac_state = 0;
-        }
+        if (aac_is_open() && (rate != g_sc.rate || ch != g_sc.channels))
+            aac_reset_decoder();
         g_sc.rate = rate;
         g_sc.channels = ch;
         if (g_verbose) {
@@ -882,15 +640,15 @@ static int __cdecl sh_AudioConverterNew(const au_asbd *insrc,
             }
         }
     }
-    if (conv) *conv = (void *)AC_MAGIC;
+    if (conv) *conv = AC_MAGIC;
     return 0;
 }
 
 static int __cdecl sh_AudioConverterDispose(void *conv)
 {
     (void)conv;
-    if (g_sc.ac_live && g_aac) {
-        IMFTransform_ProcessMessage(g_aac, MFT_MESSAGE_COMMAND_FLUSH, 0);
+    if (g_sc.ac_live && aac_is_open()) {
+        aac_flush_now();
         g_sc.ac_live = 0;
     }
     g_sc.pcm_n = g_sc.pcm_pos = 0;
@@ -904,8 +662,8 @@ static int __cdecl sh_AudioConverterReset(void *conv)
 {
     (void)conv;
     g_sc.pcm_n = g_sc.pcm_pos = 0;
-    if (g_sc.ac_live && g_aac) {
-        IMFTransform_ProcessMessage(g_aac, MFT_MESSAGE_COMMAND_FLUSH, 0);
+    if (g_sc.ac_live && aac_is_open()) {
+        aac_flush_now();
         g_sc.ac_live = 0;
     }
     /* Whether this is ever called decides whether the packets the engine feeds
@@ -1020,10 +778,28 @@ static int __cdecl sh_AudioConverterFillComplexBuffer_inner(void *conv,
             unsigned packets = 0;
             memset(&in, 0, sizeof in);
             in.mNumberBuffers = 1;
-            proc(conv, &packets, &in, &descs, user);
+            /* Into the guest -- see the Sound Manager fill callback above for
+             * why this cannot be a direct call.  Three out-parameters, so
+             * three borrowed slots, read back before anything looks at them. */
+            {
+                unsigned      *p_packets = (unsigned *)UC_OUT(packets);
+                au_bufferlist *p_in      = (au_bufferlist *)UC_OUT(in);
+                void          *p_descs   = UC_OUT_PTR(descs);
+                if (p_packets && p_in && p_descs) {
+                    memcpy(p_in, &in, sizeof in);
+                    CALL_GUEST5((void *)proc, conv, p_packets, p_in,
+                                p_descs, user);
+                    packets = *p_packets;
+                    memcpy(&in, p_in, sizeof in);
+                    UC_OUT_PTR_GET(p_descs, descs);
+                }
+                /* This runs once per refill and a long utterance has hundreds;
+                 * leaking three slots each is how the arena ran dry. */
+                UC_FREE(p_packets); UC_FREE(p_in); UC_FREE(p_descs);
+            }
             if (packets && descs && in.mBuffers[0].mData) {
                 const unsigned char *base =
-                    (const unsigned char *)in.mBuffers[0].mData;
+                    (const unsigned char *)GHOST(in.mBuffers[0].mData);
                 unsigned i;
                 /* **Open the stream once, not once per refill.**
                  *
@@ -1044,6 +820,9 @@ static int __cdecl sh_AudioConverterFillComplexBuffer_inner(void *conv,
                     g_sc.ac_live = 1;
                     g_sc.sessions++;
                     g_sc.prime_left = AAC_PRIMING;
+                    g_sc.st_fed = 0;
+                    g_sc.st_given = 0;
+                    g_sc.lastpkt_len = 0;
                 }
                 for (i = 0; i < packets; i++) {
                     if (descs[i].mStartOffset < 0 || !descs[i].mDataByteSize)
@@ -1055,17 +834,39 @@ static int __cdecl sh_AudioConverterFillComplexBuffer_inner(void *conv,
                     if (!aac_feed(base + (unsigned)descs[i].mStartOffset,
                                   descs[i].mDataByteSize))
                         g_sc.lost++;
-                    else
+                    else {
                         g_pkts_fed++;
+                        g_sc.st_fed++;
+                        /* Kept so the close below can feed it once more.  A
+                         * copy, because the engine's buffer is its own and
+                         * gone by then. */
+                        if (descs[i].mDataByteSize > g_sc.lastpkt_cap) {
+                            unsigned char *grown = (unsigned char *)
+                                realloc(g_sc.lastpkt, descs[i].mDataByteSize);
+                            if (grown) {
+                                g_sc.lastpkt = grown;
+                                g_sc.lastpkt_cap = descs[i].mDataByteSize;
+                            }
+                        }
+                        if (g_sc.lastpkt_cap >= descs[i].mDataByteSize) {
+                            memcpy(g_sc.lastpkt,
+                                   base + (unsigned)descs[i].mStartOffset,
+                                   descs[i].mDataByteSize);
+                            g_sc.lastpkt_len = descs[i].mDataByteSize;
+                        } else
+                            g_sc.lastpkt_len = 0;
+                    }
                 }
                 /* Collect what is ready without ending the stream.
                  *
                  * Not aac_end(), which would drain *and* close, and not
                  * aac_flush_delay(), which re-feeds the last packet to shake
-                 * Windows 7's held frame loose: on a stream that duplicate is
-                 * harmless because it lands past the end, but here it would be
-                 * payload, and it was -- one packet arrived three times over
-                 * and the engine got the third copy.
+                 * Windows 7's held frame loose: mid-stream that duplicate
+                 * would be payload, and it was -- one packet arrived three
+                 * times over and the engine got the third copy.  The re-feed
+                 * now lives where it is safe, in the no-more-data close
+                 * below, fenced by arithmetic that cuts everything past the
+                 * stream's true end.
                  *
                  * The priming, though, does have to come off, and for a long
                  * time it did not.
@@ -1139,9 +940,48 @@ static int __cdecl sh_AudioConverterFillComplexBuffer_inner(void *conv,
             } else {
                 /* The engine has no more compressed data: flush the decoder's
                  * tail and close the stream, so the next utterance starts
-                 * clean rather than with this one's overlap. */
+                 * clean rather than with this one's overlap.
+                 *
+                 * And shake loose the frame Windows 7's decoder holds back.
+                 * That decoder withholds its newest frame even through
+                 * COMMAND_DRAIN, so on Windows 7 every stream used to end one
+                 * AAC frame -- 46 ms -- short, and Lion opens twenty-five
+                 * streams to an utterance: the tails of words went missing
+                 * (issue #13).  The unit path has re-fed the last packet for
+                 * this since Tiger; here that was long unsafe, because
+                 * mid-stream the duplicate would be *payload* -- it once
+                 * arrived three times over.  At the close it is safe, because
+                 * the arithmetic below knows exactly where the stream ends:
+                 * fed access units say how many samples exist, and everything
+                 * past that is the duplicate, cut before the engine sees it.
+                 * A decoder that withheld nothing therefore loses only the
+                 * duplicate, and Windows 7 gets its real tail back. */
                 if (g_sc.ac_live) {
+                    unsigned expect, given, avail;
+                    int k;
+                    for (k = 0; k < 2 && g_sc.lastpkt_len; k++)
+                        aac_feed(g_sc.lastpkt, g_sc.lastpkt_len);
                     aac_end();
+                    /* The drains above bypassed the collection point, so the
+                     * codec delay of a stream this short comes off here --
+                     * without this, a two-packet stream would hand the engine
+                     * priming as payload and the clamp would then cut real
+                     * samples off its tail. */
+                    if (g_sc.prime_left && g_sc.pcm_n) {
+                        unsigned drop = g_sc.prime_left < g_sc.pcm_n
+                                      ? g_sc.prime_left : g_sc.pcm_n;
+                        memmove(g_sc.pcm, g_sc.pcm + drop,
+                                (g_sc.pcm_n - drop) * sizeof(short));
+                        g_sc.pcm_n      -= drop;
+                        g_sc.prime_left -= drop;
+                    }
+                    expect = g_sc.st_fed * AAC_FRAME;
+                    expect = expect > AAC_PRIMING ? expect - AAC_PRIMING : 0;
+                    given = g_sc.st_given;
+                    avail = g_sc.pcm_n - g_sc.pcm_pos;
+                    if (given + avail > expect)
+                        g_sc.pcm_n = g_sc.pcm_pos +
+                                     (expect > given ? expect - given : 0);
                     g_sc.ac_live = 0;
                 }
                 break;
@@ -1161,13 +1001,24 @@ static int __cdecl sh_AudioConverterFillComplexBuffer_inner(void *conv,
     {
         unsigned take = g_sc.pcm_n - g_sc.pcm_pos;
         if (take > want - give) take = want - give;
-        memcpy((unsigned char *)outdata->mBuffers[0].mData + give * 2,
+        memcpy((unsigned char *)GHOST(outdata->mBuffers[0].mData) + give * 2,
                g_sc.pcm + g_sc.pcm_pos, take * 2);
         g_sc.pcm_pos += take;
         g_frames_out += take;
+        g_sc.st_given += take;
         give += take;
     }
     }
+    /* A short fill is the honest answer at a stream's end -- but Lion's
+     * engine spends its whole request regardless of the count it is handed,
+     * so the frames past `give` are read whether or not anything was written
+     * there.  Left alone they are whatever the last fill put in this buffer,
+     * which the engine then plays: under the Windows 7 simulation that came
+     * out audibly, as a render that differed run to run.  Silence is what a
+     * short fill means, so write it down. */
+    if (give < want)
+        memset((unsigned char *)GHOST(outdata->mBuffers[0].mData) + give * 2, 0,
+               (want - give) * 2);
     outdata->mBuffers[0].mDataByteSize = give * 2;
     *iopackets = give;
     return 0;
@@ -1193,14 +1044,14 @@ static int __cdecl sh_AudioConverterFillComplexBuffer(void *conv,
  * {long flags; OSType format; short channels; short sampleSize;
  *  UnsignedFixed sampleRate; long sampleCount; Byte *buffer; long reserved}. */
 static int __cdecl sh_SoundConverterOpen(const unsigned char *in,
-                                         const unsigned char *out, void **sc)
+                                         const unsigned char *out, gptr *sc)
 {
     int k;
     const unsigned char *p[2];
     p[0] = in; p[1] = out;
     for (k = 0; k < 2; k++) {
         char f[5];
-        if (!p[k]) { printf("  [snd] %s format: NULL\n", k ? "out" : "in"); continue; }
+        if (!p[k]) { fprintf(stderr, "  [snd] %s format: NULL\n", k ? "out" : "in"); continue; }
         fourcc(f, *(const unsigned *)(p[k] + 4));
         if (g_verbose) printf("  [snd] %-3s format '%s'  %d ch  %d bits  rate %.1f\n",
                k ? "out" : "in", f, *(const short *)(p[k] + 8),
@@ -1217,15 +1068,12 @@ static int __cdecl sh_SoundConverterOpen(const unsigned char *in,
         /* A second AAC voice at a different rate would otherwise be decoded
          * with the first one's decoder.  Tiger has only Vicki, but Leopard's
          * Alex uses this same engine. */
-        if (g_aac && (ch != g_sc.channels || rate != g_sc.rate)) {
-            IMFTransform_Release(g_aac);
-            g_aac = NULL;
-            g_aac_state = 0;
-        }
+        if (aac_is_open() && (ch != g_sc.channels || rate != g_sc.rate))
+            aac_reset_decoder();
         g_sc.channels = ch;
         g_sc.rate = rate;
     }
-    if (sc) *sc = (void *)SND_MAGIC;       /* 'SNDC', a handle we never use */
+    if (sc) *sc = SND_MAGIC;       /* 'SNDC', a handle we never use */
     return 0;
 }
 
@@ -1246,5 +1094,5 @@ static int __cdecl sh_SoundConverterSetInfo(void *sc, unsigned sel,
 }
 
 static int __cdecl sh_AudioUnitReset(void *u, unsigned s, unsigned e)
-{ (void)u; (void)s; (void)e; printf("  [au] Reset\n"); return 0; }
+{ (void)u; (void)s; (void)e; return reset_scheduled_audio(); }
 static int __cdecl sh_SpeechBusy(void) { return 0; }

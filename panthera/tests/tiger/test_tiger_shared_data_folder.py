@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.join(ROOT, "addon", "synthDrivers", "_panthera"))
 
 @pytest.fixture
 def cfg(tmp_path, monkeypatch):
-    import pantheratiger as tree
+    from synthDrivers._panthera import pantheratiger as tree
     monkeypatch.setattr(tree, "config_base", lambda: str(tmp_path))
     monkeypatch.delenv("TIGER_TREE", raising=False)
     return str(tmp_path)
@@ -32,7 +32,7 @@ def _plant(folder):
 
 
 def test_the_tree_is_moved_not_copied(cfg):
-    import pantheratiger as tree
+    from synthDrivers._panthera import pantheratiger as tree
     _plant(os.path.join(cfg, "tigerspeech-data"))
     assert tree.migrate()
     assert not os.path.exists(os.path.join(cfg, "tigerspeech-data"))
@@ -40,7 +40,7 @@ def test_the_tree_is_moved_not_copied(cfg):
 
 
 def test_it_never_moves_on_top_of_an_existing_folder(cfg):
-    import pantheratiger as tree
+    from synthDrivers._panthera import pantheratiger as tree
     _plant(os.path.join(cfg, "tigerspeech-data"))
     _plant(os.path.join(cfg, "macintalk", "tiger"))
     assert tree.migrate() is None
@@ -49,7 +49,7 @@ def test_it_never_moves_on_top_of_an_existing_folder(cfg):
 
 
 def test_a_refused_move_changes_nothing_and_still_speaks(cfg, monkeypatch):
-    import pantheratiger as tree
+    from synthDrivers._panthera import pantheratiger as tree
     _plant(os.path.join(cfg, "tigerspeech-data"))
     monkeypatch.setattr(os, "rename", lambda *a, **k: (_ for _ in ()).throw(
         OSError(32, "The process cannot access the file")))
@@ -58,7 +58,7 @@ def test_a_refused_move_changes_nothing_and_still_speaks(cfg, monkeypatch):
 
 
 def test_the_breadcrumb_is_what_an_older_add_on_already_reads(cfg):
-    import pantheratiger as tree
+    from synthDrivers._panthera import pantheratiger as tree
     _plant(os.path.join(cfg, "tigerspeech-data"))
     moved = tree.migrate()
     pointer = os.path.join(cfg, "tigerspeech-data.txt")
@@ -67,7 +67,7 @@ def test_the_breadcrumb_is_what_an_older_add_on_already_reads(cfg):
 
 
 def test_a_pointer_the_user_wrote_is_never_overwritten(cfg):
-    import pantheratiger as tree
+    from synthDrivers._panthera import pantheratiger as tree
     pointer = os.path.join(cfg, "tigerspeech-data.txt")
     with open(pointer, "w", encoding="utf-8") as f:
         f.write("D:\\my-own-tiger")
@@ -77,13 +77,13 @@ def test_a_pointer_the_user_wrote_is_never_overwritten(cfg):
 
 
 def test_find_tree_prefers_the_shared_folder(cfg):
-    import pantheratiger as tree
+    from synthDrivers._panthera import pantheratiger as tree
     _plant(os.path.join(cfg, "macintalk", "tiger"))
     _plant(os.path.join(cfg, "tigerspeech-data"))
     assert tree.find_tree() == os.path.join(cfg, "macintalk", "tiger")
 
 
 def test_nothing_happens_on_a_fresh_install(cfg):
-    import pantheratiger as tree
+    from synthDrivers._panthera import pantheratiger as tree
     assert tree.migrate() is None
     assert not os.path.exists(os.path.join(cfg, "macintalk"))

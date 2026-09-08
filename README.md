@@ -1,10 +1,24 @@
 # panthera-speech
 
+**Android TTS** supports Tiger, Leopard, Snow Leopard and Lion on ARMv7 and
+ARM64, with one generation-qualified voice list and accessible settings saved
+per generation. See [Android engine switching and settings](docs/android-engine-workers.md).
+
+The **native Linux command-line host** renders UTF-8 text from arguments,
+files or stdin to WAV files or stdout, and offers persistent streaming IPC
+and a linkable C synthesis library. Tiger and Leopard are validated on i686;
+the amd64 emulation build has documented performance and stability caveats. See
+[Linux setup, AAC checks, and the client protocol](docs/linux-native.md).
+
 **Apple's Mac OS X speech engines, running as native code on Windows.** No
 virtual machine, no emulator, no CPU translation — a small 32-bit host process
 maps Apple's Intel `MacinTalk` into memory, fills the pointer slots `dyld`
 would have filled, and calls the engine directly. An utterance costs about
 twelve milliseconds.
+
+Windows builds include a Glint AAC fallback, so Alex and Vicki can speak
+without the Media Feature Pack on N/KN editions. Media Foundation remains
+preferred where available. See [Windows AAC selection and checks](docs/windows-aac.md).
 
 **One add-on for NVDA**, `pantheraspeech`, declaring one synthesizer per
 engine generation -- **and a SAPI 5 driver**, so the same voices speak in
@@ -253,6 +267,17 @@ CPU emulator. Different host, different era, its own repository.
 
 ## Licence
 
-**MIT** — see `LICENSE`. It covers the loader, the drivers, the shims and the
-tools. It does not and cannot cover Apple's engine, which is not distributed
-here.
+Panthera's own source is **MIT** — see [LICENSE](LICENSE). Windows NVDA and
+SAPI builds remain MIT; they do not link Unicorn or FAAD2.
+
+Normal **Android builds use Box86/Box64 and Glint**; native **i686 Linux uses
+Glint**. These dependencies are MIT licensed, with the additional component
+and compiler runtime notices supplied alongside the binaries. Windows includes
+Glint as a fallback when the system AAC decoder is unavailable.
+
+Optional Unicorn or FAAD2 builds retain GPL distribution requirements. In
+particular, x86-64 and AArch64 Linux still use Unicorn. See
+[distribution licensing](licenses/DISTRIBUTION.txt) for each configuration.
+
+These licenses do not cover Apple's engine or voice data, which is not
+distributed here.

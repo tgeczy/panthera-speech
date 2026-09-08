@@ -10,7 +10,7 @@ import os
 
 import pytest
 
-import pantheradiscs
+from synthDrivers._panthera import pantheradiscs
 
 IMAGE_DIR = os.environ.get("MAC_IMAGES") or r"D:\downloads"
 
@@ -150,7 +150,7 @@ def test_the_reader_has_not_drifted_from_the_extractor(tmp_path):
         import extract_lion
     finally:
         sys.path.remove(lion_tools)
-    import pantherahfs
+    from synthDrivers._panthera import pantherahfs
 
     path = _image("leopard", "10.5")
     got = []

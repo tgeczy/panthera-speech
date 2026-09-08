@@ -72,6 +72,28 @@ static const char *engine_symbol(void *addr)
     return buf;
 }
 
+/* Everything from here to the thunks is the crash reporter and the survivable
+ * divide-by-zero, and it is Windows-x86 to the bone: SEH (__try/__except),
+ * the i386 CONTEXT, IsBadReadPtr, GetModuleHandleEx.  Under emulation the
+ * engine's faults surface through uc_emu_start, not the host's exception
+ * machinery, and clang for Android has no SEH -- so this whole block is
+ * Windows-only.  A host SIGSEGV handler here would fight Unicorn's own, the
+ * very VEH-priority trap already learned once; the right POSIX answer is to
+ * install no handler for translated execution. Native Linux i386 does need
+ * its counterpart of the Windows divide-by-zero recovery below. */
+#include "tiger_divisor.h"
+#include "tiger_native_divzero.h"
+#if defined(__linux__) && defined(__i386__) && !defined(TIGER_UC)
+static int native_fault_in_guest(uintptr_t pc)
+{
+    int i;
+    for (i = 0; i < g_nimages; ++i)
+        if (pc >= g_images[i]->lo + g_images[i]->slide &&
+            pc < g_images[i]->hi + g_images[i]->slide) return 1;
+    return 0;
+}
+#endif
+#ifdef _WIN32
 /* ---- surviving the engine's own divide by zero ------------------------- */
 /*
  * MacinTalk 3 divides by (index2 - index1) when interpolating segment
@@ -102,33 +124,14 @@ static int reg_of(const CONTEXT *c, int i)
  * not a shape we understand, in which case the fault is left to stand. */
 static void *divisor_operand(const unsigned char *pc, CONTEXT *c, int *width)
 {
-    unsigned char modrm;
-    int mod, rm, base;
-    const unsigned char *p = pc;
-
-    *width = 4;
-    while (*p == 0x66 || *p == 0x67 || *p == 0x2e || *p == 0x36 ||
-           *p == 0x3e || *p == 0x26 || *p == 0x64 || *p == 0x65) {
-        if (*p == 0x66) *width = 2;
-        p++;
-    }
-    if (*p == 0xf6) *width = 1;
-    else if (*p != 0xf7) return NULL;
-    p++;
-
-    modrm = *p++;
-    if (((modrm >> 3) & 7) < 6) return NULL;      /* not div or idiv */
-    mod = modrm >> 6;
-    rm = modrm & 7;
-
-    if (mod == 3) return NULL;                    /* register divisor */
-    if (rm == 4) return NULL;                     /* SIB: not seen here */
-    if (mod == 0 && rm == 5)
-        return (void *)(intptr_t)(*(const int *)p);
-    base = reg_of(c, rm);
-    if (mod == 1) return (void *)(intptr_t)(base + (signed char)*p);
-    if (mod == 2) return (void *)(intptr_t)(base + *(const int *)p);
-    return (void *)(intptr_t)base;
+    uint32_t regs[8], address;
+    unsigned bytes;
+    int i;
+    for (i = 0; i < 8; ++i) regs[i] = (uint32_t)reg_of(c, i);
+    /* Use the same instruction subset on both native hosts. */
+    if (!divisor_memory(pc, 15, regs, &address, &bytes)) return NULL;
+    *width = (int)bytes;
+    return (void *)(uintptr_t)address;
 }
 
 static volatile long g_divzero;
@@ -404,6 +407,7 @@ static LONG CALLBACK on_fault(EXCEPTION_POINTERS *ep)
     ExitProcess(3);
     return EXCEPTION_CONTINUE_SEARCH;
 }
+#endif /* _WIN32 */
 
 /* ---- thunks ------------------------------------------------------------ */
 /*
@@ -421,15 +425,24 @@ static int g_nthunks;
 
 static void *make_thunk(const char *name)
 {
-    unsigned char *t = g_thunks + (size_t)g_nthunks * THUNK_SZ;
     int idx = g_nmissing;
     if (g_nmissing >= MAX_MISSING) die("too many missing symbols");
     g_missing[g_nmissing++] = name;
-    t[0] = 0x68; *(int *)(t + 1) = idx;                       /* push idx   */
-    t[5] = 0xe8;
-    *(int *)(t + 6) = (int)((unsigned char *)shim_missing - (t + 10));
-    t[10] = 0x83; t[11] = 0xc4; t[12] = 0x04;                 /* add esp,4  */
-    t[13] = 0xc3;                                             /* ret        */
-    g_nthunks++;
-    return t;
+#ifdef TIGER_UC
+    /* No host code runs in guest space: hand back a guest trampoline that
+     * records the miss and answers 0, the way the native thunk does. */
+    (void)idx;
+    return uc_missing_tramp(name);
+#else
+    {
+        unsigned char *t = g_thunks + (size_t)g_nthunks * THUNK_SZ;
+        t[0] = 0x68; *(int *)(t + 1) = idx;                   /* push idx   */
+        t[5] = 0xe8;
+        *(int *)(t + 6) = (int)((unsigned char *)shim_missing - (t + 10));
+        t[10] = 0x83; t[11] = 0xc4; t[12] = 0x04;             /* add esp,4  */
+        t[13] = 0xc3;                                         /* ret        */
+        g_nthunks++;
+        return t;
+    }
+#endif
 }

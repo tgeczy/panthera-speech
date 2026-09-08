@@ -211,3 +211,130 @@ def test_no_two_generations_share_a_folder(plugin):
     """
     folders = {g["tree"].config_dir() for g in plugin.GENERATIONS}
     assert len(folders) == len(plugin.GENERATIONS), folders
+
+
+# ---------------------------------------------------------------------------
+# The README goes into a generation's folder whether or not it is ready.
+#
+# It used to be written only on the way to the missing-engine dialog, below
+# an early `if ok: return` -- so a generation that had always had data never
+# got one.  Tomi found exactly that on his own machine: Tiger and Leopard
+# carried a README.txt because each had once been empty, Snow Leopard and Lion
+# had none because they never were.
+#
+# `_checkOne` returns before touching wx when the engine is ready, so it can
+# be called with no `self` at all.
+# ---------------------------------------------------------------------------
+
+class _FakeTree(object):
+    def __init__(self, folder, ok):
+        self._folder = folder
+        self._ok = ok
+
+    def explain(self):
+        return self._ok, ["nothing worth saying"]
+
+    def config_dir(self):
+        return self._folder
+
+
+def _gen(folder, ok):
+    return {"key": "lion", "tree": _FakeTree(folder, ok),
+            "label": "Lion speech", "source": "your own disc",
+            "readme": "Lion speech needs Apple's speech engine.\n"}
+
+
+def test_a_ready_generation_still_gets_its_readme(plugin, tmp_path):
+    folder = str(tmp_path / "lion")
+    os.makedirs(folder)
+    plugin.GlobalPlugin._checkOne(None, _gen(folder, True))
+    written = os.path.join(folder, "README.txt")
+    assert os.path.isfile(written)
+    with open(written, encoding="utf-8") as f:
+        assert "Lion speech" in f.read()
+
+
+def test_a_ready_generation_gets_no_folder_conjured_for_it(plugin, tmp_path):
+    """Its tree may live in %ProgramData% or the SAPI world entirely.
+
+    Creating an empty folder in NVDA's configuration directory just to hold a
+    note would put a bare `lion` beside four real ones, and the speech data
+    manager counts folders.
+    """
+    folder = str(tmp_path / "not-there")
+    plugin.GlobalPlugin._checkOne(None, _gen(folder, True))
+    assert not os.path.exists(folder)
+
+
+class _JustEnoughSelf(object):
+    """The not-ready path goes on to schedule the shared dialog."""
+
+    def _askCombined(self):
+        pass
+
+
+def test_an_empty_generation_still_gets_folder_and_readme(plugin, tmp_path):
+    """The original behaviour, which was right and stays."""
+    folder = str(tmp_path / "made")
+    plugin.GlobalPlugin._checkOne(_JustEnoughSelf(), _gen(folder, False))
+    assert os.path.isfile(os.path.join(folder, "README.txt"))
+
+
+def test_an_existing_readme_is_never_overwritten(plugin, tmp_path):
+    """Somebody may have written notes of their own in it."""
+    folder = str(tmp_path / "lion")
+    os.makedirs(folder)
+    written = os.path.join(folder, "README.txt")
+    with open(written, "w", encoding="utf-8") as f:
+        f.write("my own notes")
+    plugin.GlobalPlugin._checkOne(None, _gen(folder, True))
+    with open(written, encoding="utf-8") as f:
+        assert f.read() == "my own notes"
+
+
+# ---------------------------------------------------------------------------
+# The log stays quiet when everything works.
+#
+# From 2026-08-21 to 2.0.2, every start wrote a ten-line engine report per
+# generation at INFO -- the level a stable NVDA shows by default -- and forty
+# lines of paths and folder listings read exactly like debugging left on.
+# Andre said so within a day of 2.0.1; it had been there for ten days and
+# four releases.  A working generation gets one line at INFO, no more; the
+# report is DEBUG's.  This is the guard that makes "never again" mechanical.
+# ---------------------------------------------------------------------------
+
+class _RecordingLog(object):
+    def __init__(self):
+        self.calls = []
+
+    def __getattr__(self, level):
+        def record(message, *a, **k):
+            self.calls.append((level, message))
+        return record
+
+
+def test_a_ready_generation_logs_one_short_line_at_info(plugin, monkeypatch,
+                                                        tmp_path):
+    folder = str(tmp_path / "lion")
+    os.makedirs(folder)
+    rec = _RecordingLog()
+    monkeypatch.setattr(plugin, "log", rec)
+    plugin.GlobalPlugin._checkOne(None, _gen(folder, True))
+    infos = [m for level, m in rec.calls if level == "info"]
+    assert len(infos) == 1, infos
+    assert "\n" not in infos[0], "a multi-line report at INFO is the bug"
+    assert "ready" in infos[0]
+    # The report is not lost, only demoted.
+    assert any(level == "debug" and "\n" in m for level, m in rec.calls)
+
+
+def test_a_missing_generation_still_reports_in_full_at_info(plugin,
+                                                             monkeypatch,
+                                                             tmp_path):
+    """The one time the report is useful, it is where people will see it."""
+    folder = str(tmp_path / "made")
+    rec = _RecordingLog()
+    monkeypatch.setattr(plugin, "log", rec)
+    plugin.GlobalPlugin._checkOne(_JustEnoughSelf(), _gen(folder, False))
+    infos = [m for level, m in rec.calls if level == "info"]
+    assert any("NOT ready" in m and "\n" in m for m in infos)

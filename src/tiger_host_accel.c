@@ -32,8 +32,8 @@
  * vDSP stride is signed and may run backwards.
  */
 
-typedef long          vdsp_stride;
-typedef unsigned long vdsp_length;
+typedef glong         vdsp_stride;
+typedef unsigned      vdsp_length;
 
 /* vDSP_svemg(A, IA, C, N): *C = sum of |A[n]|.
  *
@@ -67,13 +67,16 @@ static void __cdecl sh_vDSP_svemg(const float *A, vdsp_stride IA,
      *
      * **The accumulation order is unchanged**, which is the part that matters:
      * these are floats, and adding them in a different order gives a different
-     * answer.  This only removes a multiply from the address arithmetic. */
+     * answer. Unit stride removes a multiply from the address arithmetic;
+     * fabsf also lets the compiler clear the sign bit instead of selecting
+     * between a sample and its negation. Keep the sequential float sum: a
+     * reassociated reduction can change which candidate the engine chooses. */
     if (IA == 1) {
         for (n = 0; n < N; n++)
-            sum += (A[n] < 0.0f) ? -A[n] : A[n];
+            sum += fabsf(A[n]);
     } else {
         for (n = 0; n < N; n++, p += IA)
-            sum += (*p < 0.0f) ? -*p : *p;
+            sum += fabsf(*p);
     }
     *C = sum;
     if (accel_debug()) {
@@ -143,6 +146,10 @@ static void __cdecl sh_vDSP_vmsb(const float *A, vdsp_stride IA,
  * Eleven arguments; the call at MacinTalk + 0x56f65 fills [esp] through
  * [esp+0x28]. This is the cross-fade: the tail of one window multiplied by a
  * falling ramp, plus the head of the next by a rising one. */
+/* Defined below; used here.  MSVC's C accepts the forward reference implicitly,
+ * clang does not. */
+static int wsola_variant(void);
+
 static void __cdecl sh_vDSP_vmma(const float *A, vdsp_stride IA,
                                  const float *B, vdsp_stride IB,
                                  const float *C, vdsp_stride IC,
@@ -270,9 +277,9 @@ static void __cdecl sh_vDSP_hann_window(float *C, vdsp_length N, int flag)
 
 /* lrintf: round to nearest, ties to even, which is what the default rounding
  * mode gives. Reached twice, so nothing here is worth optimising. */
-static long __cdecl sh_lrintf(float x)
+static long __cdecl sh_lrintf(unsigned xbits)
 {
-    double d = (double)x;
+    double d = (double)GFLOAT(xbits);
     double r = floor(d + 0.5);
     if (r - d == 0.5) {                 /* a tie: go to even */
         double half = r / 2.0;
@@ -300,7 +307,8 @@ static long __cdecl sh_lrintf(float x)
 
 /* A DSPSplitComplex is two pointers: the reals and the imaginaries kept apart
  * rather than interleaved, so each can be walked with its own stride. */
-typedef struct { float *realp; float *imagp; } split_complex;
+typedef struct { gptr realp, imagp; } split_complex;
+typedef char split_complex_guest_width[(sizeof(split_complex) == 8) ? 1 : -1];
 
 #define FFT_FORWARD  1
 #define FFT_INVERSE (-1)
@@ -340,7 +348,7 @@ static void fft_setup_free(fft_setup *s)
     free(s->tc); free(s->ts); free(s->rc); free(s->rs);
     free(s->re); free(s->im); free(s->ar); free(s->ai);
     free(s->gr); free(s->gi);
-    free(s);
+    GMEM_FREE(s);
 }
 
 static void * __cdecl sh_create_fftsetup(vdsp_length log2n, int radix)
@@ -353,7 +361,7 @@ static void * __cdecl sh_create_fftsetup(vdsp_length log2n, int radix)
         return NULL;
     }
     if (log2n > 20) return NULL;
-    s = (fft_setup *)calloc(1, sizeof(*s));
+    s = (fft_setup *)GMEM_ALLOC(sizeof(*s));
     if (!s) return NULL;
     s->log2n = (unsigned)log2n;
     s->n = n = 1u << log2n;
@@ -504,8 +512,8 @@ static void __cdecl sh_fft_zrip_inner(void *setup, split_complex *io,
         double e = 0.0;
         unsigned q;
         for (q = 0; q < h; q++)
-            e += (double)io->realp[q * stride] * io->realp[q * stride]
-               + (double)io->imagp[q * stride] * io->imagp[q * stride];
+            e += (double)((float *)GHOST(io->realp))[q * stride] * ((float *)GHOST(io->realp))[q * stride]
+               + (double)((float *)GHOST(io->imagp))[q * stride] * ((float *)GHOST(io->imagp))[q * stride];
         if (++calls <= 12)
             printf("  [vDSP] fft_zrip #%u n=%u stride=%ld dir=%d "
                    "input energy=%.6g\n", calls, n, (long)stride, direction, e);
@@ -525,8 +533,8 @@ static void __cdecl sh_fft_zrip_inner(void *setup, split_complex *io,
         }
     }
     for (k = 0; k < h; k++) {
-        re[k] = io->realp[k * stride];
-        im[k] = io->imagp[k * stride];
+        re[k] = ((float *)GHOST(io->realp))[k * stride];
+        im[k] = ((float *)GHOST(io->imagp))[k * stride];
     }
 
     if (direction == FFT_FORWARD) {
@@ -551,8 +559,8 @@ static void __cdecl sh_fft_zrip_inner(void *setup, split_complex *io,
             ai[k] = ei + (orr * sn + oi * c);
         }
         for (k = 0; k < h; k++) {
-            io->realp[k * stride] = (float)(2.0 * ar[k]);
-            io->imagp[k * stride] = (float)(2.0 * ai[k]);
+            ((float *)GHOST(io->realp))[k * stride] = (float)(2.0 * ar[k]);
+            ((float *)GHOST(io->imagp))[k * stride] = (float)(2.0 * ai[k]);
         }
     } else {
         /* The inverse is written the long way round on purpose.
@@ -588,8 +596,8 @@ static void __cdecl sh_fft_zrip_inner(void *setup, split_complex *io,
         }
         fft_complex(gr, gi, n, +1, tc, ts);
         for (k = 0; k < h; k++) {
-            io->realp[k * stride] = (float)gr[2 * k];
-            io->imagp[k * stride] = (float)gr[2 * k + 1];
+            ((float *)GHOST(io->realp))[k * stride] = (float)gr[2 * k];
+            ((float *)GHOST(io->imagp))[k * stride] = (float)gr[2 * k + 1];
         }
         if (!fast) { free(gr); free(gi); }
     }
@@ -615,8 +623,8 @@ static void __cdecl sh_ctoz(const float *C, vdsp_stride IC,
 {
     vdsp_length i;
     for (i = 0; i < N; i++) {
-        Z->realp[i * IZ] = C[i * IC];
-        Z->imagp[i * IZ] = C[i * IC + 1];
+        ((float *)GHOST(Z->realp))[i * IZ] = C[i * IC];
+        ((float *)GHOST(Z->imagp))[i * IZ] = C[i * IC + 1];
     }
 }
 
@@ -625,8 +633,8 @@ static void __cdecl sh_ztoc(const split_complex *Z, vdsp_stride IZ,
 {
     vdsp_length i;
     for (i = 0; i < N; i++) {
-        C[i * IC]     = Z->realp[i * IZ];
-        C[i * IC + 1] = Z->imagp[i * IZ];
+        C[i * IC]     = ((float *)GHOST(Z->realp))[i * IZ];
+        C[i * IC + 1] = ((float *)GHOST(Z->imagp))[i * IZ];
     }
 }
 
@@ -664,10 +672,10 @@ static void __cdecl sh_vDSP_zvcmul(const split_complex *A, vdsp_stride IA,
 {
     vdsp_length i;
     for (i = 0; i < N; i++) {
-        float ar = A->realp[i * IA], ai = A->imagp[i * IA];
-        float br = B->realp[i * IB], bi = B->imagp[i * IB];
-        C->realp[i * IC] = ar * br + ai * bi;
-        C->imagp[i * IC] = ar * bi - ai * br;
+        float ar = ((float *)GHOST(A->realp))[i * IA], ai = ((float *)GHOST(A->imagp))[i * IA];
+        float br = ((float *)GHOST(B->realp))[i * IB], bi = ((float *)GHOST(B->imagp))[i * IB];
+        ((float *)GHOST(C->realp))[i * IC] = ar * br + ai * bi;
+        ((float *)GHOST(C->imagp))[i * IC] = ar * bi - ai * br;
     }
 }
 
@@ -740,8 +748,9 @@ static void __cdecl sh_vDSP_vramp(const float *A, const float *B,
 
 /* catlas_sset(N, alpha, X, incX): fill.  The BLAS-adjacent spelling Apple
  * ships rather than a vDSP one. */
-static void __cdecl sh_catlas_sset(int N, float alpha, float *X, int incX)
+static void __cdecl sh_catlas_sset(int N, unsigned alphabits, float *X, int incX)
 {
+    float alpha = GFLOAT(alphabits);
     int n;
     for (n = 0; n < N; n++) X[n * incX] = alpha;
 }
@@ -793,14 +802,18 @@ static int vdsp_check(void)
 {
     enum { NMAX = 256 };
     float x[NMAX], y[NMAX], z[NMAX], tmp[NMAX * 2];
-    float rp[NMAX], ip[NMAX];
+    float *rp = (float *)GMEM_ALLOC(NMAX * 8 * sizeof(float));
+    float *ip;
     split_complex sc, sa, sb, scc;
-    float ra[NMAX], ia[NMAX], rb[NMAX], ib[NMAX], rc[NMAX], ic[NMAX];
+    float *ra, *ia, *rb, *ib, *rc, *ic;
     vdsp_length idx = 0;
     float val = 0.0f;
     int sizes[4], si;
 
-    sc.realp = rp; sc.imagp = ip;
+    if (!rp) return 1;
+    ip = rp + NMAX; ra = ip + NMAX; ia = ra + NMAX; rb = ia + NMAX;
+    ib = rb + NMAX; rc = ib + NMAX; ic = rc + NMAX;
+    sc.realp = GP(rp); sc.imagp = GP(ip);
 
     /* ctoz and ztoc */
     vd_signal(x, 16, 0);
@@ -871,9 +884,9 @@ static int vdsp_check(void)
     /* zvcmul, on two different signals */
     vd_signal(x, 8, 0);
     vd_signal(y, 8, 3);
-    sa.realp = ra; sa.imagp = ia;
-    sb.realp = rb; sb.imagp = ib;
-    scc.realp = rc; scc.imagp = ic;
+    sa.realp = GP(ra); sa.imagp = GP(ia);
+    sb.realp = GP(rb); sb.imagp = GP(ib);
+    scc.realp = GP(rc); scc.imagp = GP(ic);
     sh_ctoz(x, 2, &sa, 1, 4);
     sh_ctoz(y, 2, &sb, 1, 4);
     sh_vDSP_zvcmul(&sa, 1, &sb, 1, &scc, 1, 4);
@@ -933,8 +946,25 @@ static int vdsp_check(void)
     }
 
     /* catlas_sset */
-    sh_catlas_sset(8, 3.5f, tmp, 1);
+    { float value = 3.5f; unsigned bits;
+      memcpy(&bits, &value, sizeof bits);
+      sh_catlas_sset(8, bits, tmp, 1); }
     vd_emit("sset", tmp, 8);
 
+    /* Magnitude scoring must preserve strides and float accumulation order.
+     * Small terms after 2^24 distinguish this from a reassociated reduction. */
+    {
+        float magnitudes[] = {-16777216.0f, 1.0f, -1.0f, -0.0f,
+                               4.0f, -0.5f, 8.0f};
+        sh_vDSP_svemg(magnitudes, 1, tmp, 7);
+        sh_vDSP_svemg(magnitudes + 6, -1, tmp + 1, 7);
+        sh_vDSP_svemg(magnitudes, 2, tmp + 2, 4);
+        sh_vDSP_svemg(magnitudes + 5, 0, tmp + 3, 7);
+        tmp[4] = 123.0f;
+        sh_vDSP_svemg(magnitudes, 1, tmp + 4, 0);
+        vd_emit("svemg", tmp, 5);
+    }
+
+    GMEM_FREE(rp);
     return 0;
 }

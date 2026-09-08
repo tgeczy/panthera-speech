@@ -73,6 +73,12 @@ def main():
             print("   " + r)
         return 1
 
+    # The native EXE and secure-screen DLL both carry the Glint fallback.
+    # Read notices from their canonical source so packaging cannot omit them
+    # just because a developer staged binaries by hand.
+    for name in ("Panthera-MIT.txt", "Glint-MIT.txt"):
+        files.append((os.path.join(ROOT, "..", "licenses", name), "licenses/" + name))
+
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         for full, rel in sorted(files, key=lambda x: x[1]):
             z.write(full, rel)

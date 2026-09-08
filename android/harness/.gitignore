@@ -1,0 +1,7 @@
+# Generated / fetched — rebuilt by the scripts, never committed.
+build/
+unicorn/
+results/
+*.log
+faad2/
+faad2-obj-*/

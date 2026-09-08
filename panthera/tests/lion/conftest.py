@@ -13,7 +13,7 @@ import pytest
 
 @pytest.fixture(scope="session")
 def engine_tree():
-    import lionspeech
+    from synthDrivers import lionspeech
     tree = lionspeech.find_tree()
     if not tree:
         pytest.skip("no Lion speech tree; set LION_TREE")
@@ -24,7 +24,7 @@ def engine_tree():
 
 @pytest.fixture
 def driver(engine_tree):
-    import lionspeech
+    from synthDrivers import lionspeech
     d = lionspeech.SynthDriver()
     yield d
     d.terminate()

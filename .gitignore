@@ -9,4 +9,7 @@ __pycache__/
 *.pyc
 *.obj
 *.exe
+# The DLL is the same program as the exe above, built beside it for
+# NVDA's secure screens; both are artefacts of build.sh.
+*.dll
 *.nvda-addon

@@ -1,0 +1,41 @@
+Panthera Speech distribution licenses
+
+Copyright (c) 2026 Tamas Geczy
+
+Panthera's original source and normal Windows, Android and native i686 Linux
+builds are distributed under the MIT license. No Apple engine, voice or
+dictionary data is distributed. The user supplies that data separately.
+
+Normal Android builds use Box86 on ARMv7, Box64 on ARM64, and the Glint AAC
+decoder. These projects retain their MIT notices. Additional permissive
+notices from Box components, the LLVM and Kotlin runtimes, the BSD-licensed emoji
+translation, and Unicode data accompany the APK. Use Full licenses to read
+the included terms. Third-party components retain their own licenses.
+
+Windows prefers Media Foundation and carries Glint as a fallback when the
+Windows AAC codec cannot initialize. Native i686 Linux uses Glint by default
+and runs the guest instructions directly. Its command-line renderer, streaming
+pipe protocol and C library can be used by independent clients.
+
+Optional comparison builds using Unicorn or FAAD2 remain GPLv2 distributions.
+They are explicitly selected, and are not the normal Android or native Linux
+builds. Keep their GPL/FAAD2 notices and corresponding source archives with
+those binaries. The experimental Linux x86_64/aarch64 Unicorn builds belong
+to this group even when their AAC decoder is Glint.
+
+Source and build instructions:
+https://github.com/tgeczy/panthera-speech
+
+Box86: https://github.com/ptitSeb/box86
+Box64: https://github.com/ptitSeb/box64
+Glint: https://github.com/CrispStrobe/glint
+Unicorn: https://github.com/unicorn-engine/unicorn
+FAAD2: https://github.com/knik0/faad2
+
+Android source bundles are produced by tools/package_android_sources.py.
+Linux CI archives include the host, public interface, notices and build source.
+
+Native Linux Glint builds link libstdc++ statically under GPLv3 with the GCC
+Runtime Library Exception 3.1. Its notice, license and exception accompany
+those binaries. This is a compiler runtime exception, not a change to
+Panthera or Glint source licensing.

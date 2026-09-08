@@ -15,7 +15,7 @@ note for note -- so joining reproduces the one behaviour known correct.
 """
 import time
 
-import pantheradriver
+from synthDrivers._panthera import pantheradriver
 
 #: A verse: prosodic sentence-enders and all, exactly the shape that used
 #: to stop the prose joiner after two "sentences".

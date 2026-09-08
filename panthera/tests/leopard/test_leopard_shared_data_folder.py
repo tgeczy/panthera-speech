@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.join(ROOT, "addon", "synthDrivers",
 @pytest.fixture
 def cfg(tmp_path, monkeypatch):
     """A throwaway NVDA configuration directory."""
-    import pantheraleopard as leopardtree
+    from synthDrivers._panthera import pantheraleopard as leopardtree
     monkeypatch.setattr(leopardtree, "config_base", lambda: str(tmp_path))
     # `find_tree` honours LEOPARD_TREE above everything, which is right for a
     # developer and wrong for a test about where the folder is.
@@ -37,7 +37,7 @@ def _plant(folder):
 
 
 def test_the_tree_is_moved_not_copied(cfg):
-    import pantheraleopard as leopardtree
+    from synthDrivers._panthera import pantheraleopard as leopardtree
     _plant(os.path.join(cfg, "leopardspeech-data"))
     assert leopardtree.migrate()
     assert not os.path.exists(os.path.join(cfg, "leopardspeech-data"))
@@ -52,7 +52,7 @@ def test_the_extractors_old_default_is_found_too(cfg):
     took the extractor at its word had a tree the add-on could not find and no
     way to tell why.
     """
-    import pantheraleopard as leopardtree
+    from synthDrivers._panthera import pantheraleopard as leopardtree
     _plant(os.path.join(cfg, "leopard-data"))
     assert leopardtree.migrate()
     assert leopardtree.is_tree(os.path.join(cfg, "macintalk", "leopard"))
@@ -72,7 +72,7 @@ def test_it_never_moves_on_top_of_an_existing_folder(cfg):
     onto an empty directory, but the assertion below is testing the platform
     as much as the code.
     """
-    import pantheraleopard as leopardtree
+    from synthDrivers._panthera import pantheraleopard as leopardtree
     _plant(os.path.join(cfg, "leopardspeech-data"))
     _plant(os.path.join(cfg, "macintalk", "leopard"))
     assert leopardtree.migrate() is None
@@ -86,7 +86,7 @@ def test_a_refused_move_changes_nothing(cfg, monkeypatch):
     Not an error to recover from -- the ordinary case of the engine being in
     use. Change nothing, and go on reading the old location.
     """
-    import pantheraleopard as leopardtree
+    from synthDrivers._panthera import pantheraleopard as leopardtree
     _plant(os.path.join(cfg, "leopardspeech-data"))
     monkeypatch.setattr(os, "rename", lambda *a, **k: (_ for _ in ()).throw(
         OSError(32, "The process cannot access the file")))
@@ -102,7 +102,7 @@ def test_the_breadcrumb_is_what_an_older_add_on_already_reads(cfg):
     writing the new path there, a user who rolls back -- or who has an older
     sibling add-on installed beside this one -- still finds the tree.
     """
-    import pantheraleopard as leopardtree
+    from synthDrivers._panthera import pantheraleopard as leopardtree
     _plant(os.path.join(cfg, "leopardspeech-data"))
     moved = leopardtree.migrate()
     pointer = os.path.join(cfg, "leopardspeech-data.txt")
@@ -112,7 +112,7 @@ def test_the_breadcrumb_is_what_an_older_add_on_already_reads(cfg):
 
 def test_a_pointer_the_user_wrote_is_never_overwritten(cfg):
     """Somebody keeping a 717 MB tree on another drive said so in that file."""
-    import pantheraleopard as leopardtree
+    from synthDrivers._panthera import pantheraleopard as leopardtree
     pointer = os.path.join(cfg, "leopardspeech-data.txt")
     with open(pointer, "w", encoding="utf-8") as f:
         f.write("D:\\my-own-leopard")
@@ -122,7 +122,7 @@ def test_a_pointer_the_user_wrote_is_never_overwritten(cfg):
 
 
 def test_migrating_twice_is_harmless(cfg):
-    import pantheraleopard as leopardtree
+    from synthDrivers._panthera import pantheraleopard as leopardtree
     _plant(os.path.join(cfg, "leopardspeech-data"))
     assert leopardtree.migrate()
     assert leopardtree.migrate() is None
@@ -130,6 +130,6 @@ def test_migrating_twice_is_harmless(cfg):
 
 
 def test_nothing_happens_on_a_fresh_install(cfg):
-    import pantheraleopard as leopardtree
+    from synthDrivers._panthera import pantheraleopard as leopardtree
     assert leopardtree.migrate() is None
     assert not os.path.exists(os.path.join(cfg, "macintalk"))

@@ -16,7 +16,7 @@ import pytest
 
 def test_the_driver_is_named_what_nvda_stores_settings_under():
     """A rename resets everybody's voice, rate and pitch.  Pin it."""
-    import snowleopardspeech
+    from synthDrivers import snowleopardspeech
     assert snowleopardspeech.SynthDriver.name == "snowleopardspeech"
 
 
@@ -29,9 +29,9 @@ def test_snow_leopard_is_its_own_folder_and_not_a_neighbours():
     threading, so a tree of either neighbour would get some way in before
     anything went visibly wrong.
     """
-    import pantheraleopard
-    import pantheralion
-    import pantherasnowleopard
+    from synthDrivers._panthera import pantheraleopard
+    from synthDrivers._panthera import pantheralion
+    from synthDrivers._panthera import pantherasnowleopard
     here = pantherasnowleopard.CONFIG_DIRNAME
     assert here.endswith("snowleopard")
     assert here not in (pantheraleopard.CONFIG_DIRNAME,
@@ -51,7 +51,7 @@ def test_the_runtime_is_required_and_the_abi_library_is_not(tmp_path,
     The two libraries share a version number and a file name and are not the
     same library, which is why this is worth a test rather than a comment.
     """
-    import pantherasnowleopard as sl
+    from synthDrivers._panthera import pantherasnowleopard as sl
     tree = tmp_path / "snowleopard"
     (tree / "Speech" / "Voices").mkdir(parents=True)
     monkeypatch.setattr(sl, "config_base", lambda: str(tmp_path))
@@ -80,8 +80,8 @@ def test_a_generation_with_no_data_is_not_in_the_list(tmp_path, monkeypatch):
     hidden ones included, so there is somewhere to find out why -- which is
     exactly what hiding used to cost.
     """
-    import pantherasnowleopard as sl
-    import snowleopardspeech
+    from synthDrivers._panthera import pantherasnowleopard as sl
+    from synthDrivers import snowleopardspeech
     monkeypatch.delenv("SNOWLEOPARD_TREE", raising=False)
     monkeypatch.setattr(sl, "config_base", lambda: str(tmp_path))
     assert sl.find_tree() is None
@@ -92,7 +92,7 @@ def test_a_generation_with_no_data_is_not_in_the_list(tmp_path, monkeypatch):
 
 def test_the_voice_list_is_the_twenty_four_that_speak(engine_tree):
     """2 concatenative, 3 MacinTalk Pro and 19 MacinTalk 3 -- as 10.5 and 10.7."""
-    import snowleopardspeech
+    from synthDrivers import snowleopardspeech
     _, _, voicesdir = snowleopardspeech.engine_paths(engine_tree)
     voices = snowleopardspeech.read_voices(voicesdir)
     engines = {}
@@ -196,7 +196,7 @@ def test_the_volume_table_covers_every_voice_we_offer(driver):
     Worth failing on anyway: a voice added later should be measured rather
     than left behind at the old level while everything around it got louder.
     """
-    import snowleopardspeech
+    from synthDrivers import snowleopardspeech
     missing = [entry[0] for entry in driver._voices
                if entry[0] not in snowleopardspeech.VOLUME_NORM]
     assert not missing, (
@@ -213,9 +213,9 @@ def test_the_levels_are_snow_leopards_and_not_a_neighbours():
     400 MB recording, so Leopard's factor asks for gain it does not have, and
     Lion's leaves nearly 2 dB of it unused.
     """
-    import lionspeech
-    import pantheradriver
-    import snowleopardspeech
+    from synthDrivers import lionspeech
+    from synthDrivers._panthera import pantheradriver
+    from synthDrivers import snowleopardspeech
     here = snowleopardspeech.VOLUME_NORM
     assert here != pantheradriver.VOLUME_NORM_LEOPARD, "Leopard's, copied"
     assert here != lionspeech.VOLUME_NORM, "Lion's, copied"

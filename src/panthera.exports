@@ -1,0 +1,16 @@
+PANTHERA_0 {
+    global:
+        panthera_init;
+        panthera_sample_rate;
+        panthera_voice_spec;
+        panthera_render;
+        panthera_speak_start;
+        panthera_pull;
+        panthera_stop;
+        panthera_finish;
+        panthera_set_number_style;
+        panthera_set_expand_abbreviations;
+        panthera_set_phrasing;
+        panthera_set_volume;
+    local: *;
+};

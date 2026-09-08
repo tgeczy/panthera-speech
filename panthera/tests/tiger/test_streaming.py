@@ -38,7 +38,7 @@ LONG_TEXT = ("The quick brown fox jumps over the lazy dog. "
 
 
 def _host(tree):
-    import tigerspeech
+    from synthDrivers import tigerspeech
     mt, sd, voices = tigerspeech.engine_paths(tree)
     return subprocess.Popen([tigerspeech.HOST_EXE, "--serve", mt, sd, voices],
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE)
@@ -154,7 +154,7 @@ def test_a_stale_cancel_does_not_kill_the_next_utterance(engine_tree):
     utterance.  Signalled before the request, the audio must arrive whole.
     """
     import ctypes
-    import tigerspeech
+    from synthDrivers import tigerspeech
     k32 = ctypes.windll.kernel32
     # chr(92) rather than a backslash escape: this file has been rewritten by
     # shell heredocs more than once, and the escape does not survive that --

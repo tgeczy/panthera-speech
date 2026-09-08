@@ -167,6 +167,15 @@ version stops mattering. To check a machine:
 tiger_host.exe --aac-check
 ```
 
+The streaming path — the AudioConverter side, which the Leopard, Snow Leopard
+and Lion engines decode through — ends each stream the same way now: the last
+packet is re-fed at the close, and arithmetic over the access units fed cuts
+everything past the stream's true end, so the duplicate can never reach the
+engine as payload. Setting `TIGER_SIM_WIN7=1` makes any machine's decoder
+behave like Windows 7's — the close withholds one frame — which is how that
+path is tested without a Windows 7 machine: broken under the simulation
+before, byte-identical to the unsimulated render after.
+
 It needs no engine, no voices and no arguments, and reports whether a decoder
 is present and what it offers.
 

@@ -30,47 +30,25 @@ export MSYS_NO_PATHCONV=1
 ROOT="$(cd "$(dirname "$0")" && pwd -W 2>/dev/null || cygpath -m "$(pwd)")"
 OUT="$ROOT/build"
 
-newest() { for p in "$@"; do [ -e "$p" ] && echo "$p"; done | sort -V | tail -1; }
+# One native builder is shared by NVDA and SAPI. It links the pinned Glint
+# fallback into both EXE and secure-screen DLL, with a static C++ runtime.
+python "$ROOT/tools/build_windows.py" --out "$OUT"
 
-MSVC="$(newest "C:/Program Files (x86)/Microsoft Visual Studio"/*/*/VC/Tools/MSVC/* \
-               "C:/Program Files/Microsoft Visual Studio"/*/*/VC/Tools/MSVC/*)"
-SDK="C:/Program Files (x86)/Windows Kits/10"
-SDKV="$(newest "$SDK/Include"/* | sed 's#.*/##')"
-
-[ -n "$MSVC" ] || { echo "no MSVC toolchain found"; exit 1; }
-[ -n "$SDKV" ] || { echo "no Windows SDK found"; exit 1; }
-echo "MSVC: $MSVC"
-echo "SDK:  $SDKV"
-
-mkdir -p "$OUT"
-
-INC="-I\"$MSVC/include\" -I\"$SDK/Include/$SDKV/ucrt\" -I\"$SDK/Include/$SDKV/um\" -I\"$SDK/Include/$SDKV/shared\""
-LIB="-LIBPATH:\"$MSVC/lib/x86\" -LIBPATH:\"$SDK/lib/$SDKV/ucrt/x86\" -LIBPATH:\"$SDK/lib/$SDKV/um/x86\""
-CL="$MSVC/bin/Hostx64/x86/cl.exe"
-
-# /MT for the same reason the sibling project uses it: a /MD build needs a
-# redistributable that is present on this machine and absent on a clean one.
-eval "\"$CL\" -nologo -O2 -MT -W3 $INC \"$ROOT/src/tiger_host.c\" \
-    -Fe\"$OUT/tiger_host.exe\" -Fo\"$OUT/\" \
-    -link $LIB winmm.lib ole32.lib mfuuid.lib -LARGEADDRESSAWARE" > "$OUT/build.log" 2>&1 || {
-        echo "build failed:"; tail -40 "$OUT/build.log"; exit 1; }
-
-echo "  -> build/tiger_host.exe"
-
-# Stage it into the add-on immediately.  A driver loads its own copy, not this
-# one, and a stale copy there presents as "the fix did not work" -- which cost
-# a confusing test failure once already.
+# Stage them into the add-on immediately.  A driver loads its own copy, not
+# this one, and a stale copy there presents as "the fix did not work" -- which
+# cost a confusing test failure once already.
 #
-# One line, now that Tiger and Leopard are one add-on: there used to be two,
-# staging the same bytes twice under two names.  Add a line here if a second
-# add-on ever joins.  Missing one is silent: the add-on simply keeps running
-# last month's loader.
+# One line per add-on, now that Tiger and Leopard are one: there used to be
+# two, staging the same bytes twice under two names.  Add a line here if a
+# second add-on ever joins.  Missing one is silent: the add-on simply keeps
+# running last month's loader.
 stage() {                          # <add-on folder> <_private folder> <name>
     dest="$ROOT/$1/addon/synthDrivers/$2/$3"
     [ -d "$ROOT/$1" ] || return 0  # not checked out; nothing to stage into
     mkdir -p "$(dirname "$dest")"
     cp "$OUT/tiger_host.exe" "$dest"
-    echo "  -> $1/addon/synthDrivers/$2/$3"
+    cp "$OUT/tiger_host.dll" "${dest%.exe}.dll"
+    echo "  -> $1/addon/synthDrivers/$2/$3 (+ .dll)"
 }
 
 stage panthera _panthera panthera_host.exe

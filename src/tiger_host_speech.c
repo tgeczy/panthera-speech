@@ -132,7 +132,8 @@ static int set_param(const speech_api *a, void *chan, int which, unsigned fx)
     }
     if (a->setinfo)
         return call_aligned3((void *)a->setinfo, chan,
-                             (void *)PARAMS[which].sel, &fx);
+                             (void *)PARAMS[which].sel,
+                             UC_IN(&fx, sizeof fx));
     return -231;                                /* siUnknownInfoType */
 }
 
@@ -141,19 +142,30 @@ static int get_param(const speech_api *a, void *chan, int which, unsigned *out)
 {
     if (!out) return 0;
     if (a->copyprop) {
-        const void *v = NULL;
+        gptr value = 0;
+        gptr *slot = (gptr *)UC_OUT(value);
+        const void *v;
         float f = 0.0f;
-        if (call_aligned3((void *)a->copyprop, chan,
-                          g_speech_key[PARAMS[which].key], &v) != 0 || !v)
-            return 0;
-        if (!sh_CFNumberGetValue(v, 5 /* kCFNumberFloat32Type */, &f))
-            return 0;
+        int ok = call_aligned3((void *)a->copyprop, chan,
+                              g_speech_key[PARAMS[which].key], slot) == 0;
+        UC_OUT_GET(slot, value);
+        v = GHOST(value);
+        if (!ok || !v) return 0;
+        ok = sh_CFNumberGetValue(v, 5 /* kCFNumberFloat32Type */, &f);
+        sh_CFRelease(v);
+        if (!ok) return 0;
         *out = (unsigned)(f * 65536.0f);
         return 1;
     }
-    if (a->getinfo)
-        return call_aligned3((void *)a->getinfo, chan,
-                             (void *)PARAMS[which].sel, out) == 0;
+    if (a->getinfo) {
+        /* out-parameter: the engine writes the value through the pointer, so
+         * under emulation it must be a guest slot, read back after. */
+        unsigned *slot = (unsigned *)UC_OUT(*out);
+        int ok = call_aligned3((void *)a->getinfo, chan,
+                               (void *)PARAMS[which].sel, slot) == 0;
+        UC_OUT_GET(slot, *out);
+        return ok;
+    }
     return 0;
 }
 
@@ -174,7 +186,7 @@ static int speak_text(const speech_api *a, void *chan,
                       const char *text, size_t len)
 {
     if (a->buffer)
-        return call_aligned4((void *)a->buffer, chan, (void *)text,
+        return call_aligned4((void *)a->buffer, chan, UC_IN_STR(text, len),
                              (void *)len, (void *)0);
     {
         /* Not freed: the engine keeps the text for the length of the

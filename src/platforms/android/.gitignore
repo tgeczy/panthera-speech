@@ -1,0 +1,21 @@
+# Gradle / AGP build output
+/build/
+/app/build/
+/app/.cxx/
+.gradle/
+.kotlin/
+hs_err_pid*.log
+local.properties
+*.iml
+.idea/
+
+# The native engine is prebuilt by build_jni_so.sh (from the one C TU + the
+# cross-built translator and decoder); it is reproducible, so it is not committed.
+/app/src/main/jniLibs/**/libpanthera.so
+/app/src/main/jniLibs/**/build.json
+
+# Keystores never go in the repo.
+signing.properties
+keystore.properties
+*.keystore
+*.jks

@@ -42,7 +42,15 @@ static const char *engine_symbol(void *addr);
  * there is one door here, rather than four call sites each remembering. */
 static void enter_engine(void (__cdecl *fn)(void *), void *arg)
 {
-    if (fn) call_aligned1((void *)fn, arg);
+    if (!fn) return;
+#ifdef TIGER_UC
+    if (t_running) {
+        unsigned a = GP(arg);
+        uc_call_nested_args((void *)fn, 1, &a);
+        return;
+    }
+#endif
+    call_aligned1((void *)fn, arg);
 }
 
 /* A block is an object whose fourth word is the function to call, and which
@@ -54,7 +62,7 @@ static void enter_engine(void (__cdecl *fn)(void *), void *arg)
 static void block_invoke(void *block)
 {
     if (!block) return;
-    enter_engine((void (__cdecl *)(void *))((void **)block)[3], block);
+    enter_engine((void (__cdecl *)(void *))GHOST(((gptr *)block)[3]), block);
 }
 
 /* `Block_copy` moves a stack block to the heap so it can outlive its scope.
@@ -77,26 +85,32 @@ static void block_invoke(void *block)
  * along with it.  Plain object captures are assigned without retain: there
  * is no Objective-C runtime here to retain with, and the engine's captures
  * are C++ pointers whose lifetimes its own code manages. */
-struct blk_descriptor {
-    unsigned long reserved, size;
-    void (__cdecl *copy)(void *, const void *);
-    void (__cdecl *dispose)(const void *);
-};
+/* Blocks are Darwin i386 objects even when the host is AArch64. */
+struct blk_descriptor { unsigned reserved, size; gptr copy, dispose; };
 struct blk_layout {
-    void *isa;
-    volatile long flags;
+    gptr isa;
+    volatile glong flags;
     int reserved;
-    void *invoke;
-    struct blk_descriptor *descriptor;
+    gptr invoke, descriptor;
 };
 struct blk_byref {
-    void *isa;
-    struct blk_byref *forwarding;
-    volatile long flags;
+    gptr isa, forwarding;
+    volatile glong flags;
     unsigned size;
-    void (__cdecl *keep)(struct blk_byref *, struct blk_byref *);
-    void (__cdecl *destroy)(struct blk_byref *);
+    gptr keep, destroy;
 };
+typedef char blk_layout_guest_width[(sizeof(struct blk_layout) == 20) ? 1 : -1];
+typedef char blk_descriptor_guest_width[(sizeof(struct blk_descriptor) == 16) ? 1 : -1];
+typedef char blk_byref_guest_width[(sizeof(struct blk_byref) == 24) ? 1 : -1];
+
+static void block_copy_helper(gptr fn, void *dst, const void *src)
+{
+#ifdef TIGER_UC
+    unsigned args[2] = { GP(dst), GP(src) };
+    if (t_running) { uc_call_nested_args(GHOST(fn), 2, args); return; }
+#endif
+    call_aligned2(GHOST(fn), dst, (void *)src);
+}
 
 #define BLK_REFCOUNT_MASK    0xffff
 #define BLK_NEEDS_FREE       (1 << 24)
@@ -115,12 +129,12 @@ static void * __cdecl sh_Block_copy(void *block)
         InterlockedIncrement(&src->flags);
         return src;
     }
-    dst = (struct blk_layout *)malloc(src->descriptor->size);
+    dst = (struct blk_layout *)GMEM_ALLOC(((struct blk_descriptor *)GHOST(src->descriptor))->size);
     if (!dst) return NULL;
-    memcpy(dst, src, src->descriptor->size);
+    memcpy(dst, src, ((struct blk_descriptor *)GHOST(src->descriptor))->size);
     dst->flags = (src->flags & ~BLK_REFCOUNT_MASK) | BLK_NEEDS_FREE | 1;
     if (src->flags & BLK_HAS_COPY_DISPOSE)
-        src->descriptor->copy(dst, src);
+        block_copy_helper(((struct blk_descriptor *)GHOST(src->descriptor))->copy, dst, src);
     return dst;
 }
 
@@ -132,8 +146,8 @@ static void __cdecl sh_Block_release(void *block)
     if (InterlockedDecrement(&blk->flags) & BLK_REFCOUNT_MASK)
         return;
     if (blk->flags & BLK_HAS_COPY_DISPOSE)
-        blk->descriptor->dispose(blk);
-    free(blk);
+        enter_engine((void (__cdecl *)(void *))GHOST(((struct blk_descriptor *)GHOST(blk->descriptor))->dispose), blk);
+    GMEM_FREE(blk);
 }
 
 static void __cdecl sh_Block_object_assign(void *destAddr, const void *object,
@@ -141,31 +155,32 @@ static void __cdecl sh_Block_object_assign(void *destAddr, const void *object,
 {
     switch (flags & 0x7f) {          /* BLOCK_BYREF_CALLER rides in bit 7 */
     case BLK_FIELD_IS_BYREF: {
-        struct blk_byref *src = ((struct blk_byref *)object)->forwarding;
+        struct blk_byref *src = (struct blk_byref *)GHOST(((struct blk_byref *)object)->forwarding);
         struct blk_byref *heap;
         if (src->flags & BLK_NEEDS_FREE) {
             InterlockedIncrement(&src->flags);
-            *(void **)destAddr = src;
+            /* destAddr is a variable inside the guest's block: four bytes. */
+            *(gptr *)destAddr = GP(src);
             break;
         }
-        heap = (struct blk_byref *)malloc(src->size);
-        if (!heap) { *(void **)destAddr = src; break; }
+        heap = (struct blk_byref *)GMEM_ALLOC(src->size);
+        if (!heap) { *(gptr *)destAddr = GP(src); break; }
         memcpy(heap, src, src->size);
-        heap->forwarding = heap;
+        heap->forwarding = GP(heap);
         heap->flags = (heap->flags & ~BLK_REFCOUNT_MASK) | BLK_NEEDS_FREE | 1;
         if (src->flags & BLK_HAS_COPY_DISPOSE)
-            heap->keep(heap, src);
+            block_copy_helper(heap->keep, heap, src);
         /* The stack copy forwards to the heap from now on, which is the
          * whole point of __block: everyone sees one variable. */
-        src->forwarding = heap;
-        *(void **)destAddr = heap;
+        src->forwarding = GP(heap);
+        *(gptr *)destAddr = GP(heap);
         break;
     }
     case BLK_FIELD_IS_BLOCK:
-        *(void **)destAddr = sh_Block_copy((void *)object);
+        *(gptr *)destAddr = GP(sh_Block_copy((void *)object));
         break;
     default:
-        *(void **)destAddr = (void *)object;
+        *(gptr *)destAddr = GP((void *)object);
         break;
     }
 }
@@ -174,12 +189,12 @@ static void __cdecl sh_Block_object_dispose(const void *object, int flags)
 {
     switch (flags & 0x7f) {
     case BLK_FIELD_IS_BYREF: {
-        struct blk_byref *b = ((struct blk_byref *)object)->forwarding;
+        struct blk_byref *b = (struct blk_byref *)GHOST(((struct blk_byref *)object)->forwarding);
         if (!(b->flags & BLK_NEEDS_FREE)) return;
         if (InterlockedDecrement(&b->flags) & BLK_REFCOUNT_MASK) return;
         if (b->flags & BLK_HAS_COPY_DISPOSE)
-            b->destroy(b);
-        free(b);
+            enter_engine((void (__cdecl *)(void *))GHOST(b->destroy), b);
+        GMEM_FREE(b);
         break;
     }
     case BLK_FIELD_IS_BLOCK:
@@ -205,7 +220,7 @@ static void __cdecl sh_dispatch_async(void *queue, void *block)
 /* `dispatch_once` with a stub predicate never ran the block at all, which is
  * the quietest possible way to leave a subsystem uninitialised.  The predicate
  * is a long the caller owns; anything non-zero means done. */
-static void __cdecl sh_dispatch_once(long *pred, void *block)
+static void __cdecl sh_dispatch_once(glong *pred, void *block)
 {
     if (!pred) { block_invoke(block); return; }
     if (*pred) return;
@@ -303,20 +318,23 @@ typedef struct {
  * at once rather than the total -- but 64 was under even that, and the failure
  * is an utterance with no worker: silence, and a channel left mid-speech
  * answering -231 to everything after it. */
-static dsource g_sources[256];
+GUEST_STATIC(dsource, g_sources, 256);
 static unsigned g_retire_seq;
 /* Sources created and reused this utterance, under TIGER_FLOAT_STATS.
  * 10.6 makes one per unit of work and cancels it again, so this is the
  * number that decides how big the table has to be. */
 static unsigned g_src_made, g_src_reused;
 static int g_nsources;
-static int g_dispatch_handles[64];
+/* The guest holds these as opaque ids -- and an opaque id is still a number
+ * that has to fit in the guest's 32 bits. */
+GUEST_STATIC(int, g_dispatch_handles, 64);
 static int g_ndispatch;
 
 static void *dispatch_handle(void)
 {
-    if (g_ndispatch >= (int)(sizeof(g_dispatch_handles) /
-                             sizeof(g_dispatch_handles[0])))
+    /* The macro's own count: sizeof stopped answering for this the moment it
+     * became a pointer to an array rather than the array. */
+    if (g_ndispatch >= (int)g_dispatch_handles_guest_count)
         return &g_dispatch_handles[0];
     return &g_dispatch_handles[g_ndispatch++];
 }
@@ -398,6 +416,9 @@ static DWORD WINAPI source_thread(LPVOID param)
     if (g_verbose)
         printf("  [gcd] source %p ended after %u firing(s)\n",
                (void *)s, s->fired);
+#ifdef TIGER_UC
+    uc_release_thread();
+#endif
     return 0;
 }
 
@@ -405,7 +426,7 @@ static void * __cdecl sh_dispatch_source_create(void *type, unsigned long handle
                                                 unsigned long mask, void *queue)
 {
     dsource *s = NULL;
-    int i, cap = (int)(sizeof(g_sources) / sizeof(g_sources[0]));
+    int i, cap = (int)g_sources_guest_count;
     int spin;
     (void)type; (void)handle; (void)mask; (void)queue;
     /* A retired slot first, and only one whose thread has really finished --
