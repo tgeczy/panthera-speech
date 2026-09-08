@@ -80,7 +80,7 @@ def main():
     aac_library = "${FAAD_OBJS}"
     if args.aac == "glint":
         aac_vendor = glint_experiment.prepare(args.aac_source, out, host)
-        aac_cmake = glint_experiment.cmake_library(aac_vendor)
+        aac_cmake = glint_experiment.cmake_library(aac_vendor) + glint_experiment.cmake_checks(aac_vendor)
         aac_library = "panthera_glint_decoder"
 
     if backend == "box86":
@@ -154,8 +154,9 @@ target_link_options(panthera PRIVATE "-Wl,--version-script={vendor.as_posix()}/p
              f"-DANDROID_ABI={abi}", "-DANDROID_PLATFORM=android-28", "-DCMAKE_BUILD_TYPE=Release",
              "-DANDROID_STL=c++_static", "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
              *options], env=env, stdout=log, stderr=subprocess.STDOUT)
+        checks = ["pcm16_check", "huffman_check"] if args.aac == "glint" else []
         run([args.cmake, "--build", out / "build", "--target", "panthera_engine_bench",
-             "panthera_engine_logcat_bench", "panthera_memory_bench", "panthera_native_bench", "panthera", "-j6"],
+             "panthera_engine_logcat_bench", "panthera_memory_bench", "panthera_native_bench", "panthera", *checks, "-j6"],
             env=env, stdout=log, stderr=subprocess.STDOUT)
     print(f"Built {backend} {PINS[backend]} for {abi}: {out / 'build'}")
 

@@ -11,13 +11,16 @@ Upstream: [CrispStrobe/glint](https://github.com/CrispStrobe/glint), pinned at
 The builder extracts only the AAC decoder files and license from the pinned Git
 archive. The source clone is left untouched. Its local modification caches cube
 roots of integer spectral magnitudes, retaining the original multiplication
-order and the original calculation for larger escape values.
+order and the original calculation for larger escape values, and adds an
+eight-bit Huffman prefix table with the original tree walk as fallback.
 
 The host bridge wraps raw AAC-LC access units in ADTS, validates the supported
 mono ASC/rate, checks the returned frame size, and retains shared priming and
 tail handling. It saves the caller's floating-point environment, uses the default
 environment while decoding, then restores the caller's state. This matters on
 native i386, where guest arithmetic and host arithmetic share a thread.
+PCM conversion uses the binary32 significand to implement exact nearest-even
+rounding and saturation without calling libm for every sample.
 
 ## Reproduce
 
@@ -41,6 +44,13 @@ including driver overhead, not acoustic onset.
 The Windows `fpcheck.exe` accepts a caller-supplied 22050 Hz mono ADTS AAC-LC
 file. It checks identical decoded PCM under all four rounding modes and verifies
 that the caller's rounding mode survives. No AAC test file is distributed.
+
+Both builders also produce `pcm16_check` and `huffman_check`; Windows registers
+them with CTest (`ctest --test-dir OUT/build -C Release --output-on-failure`).
+These checks require no engine or voice data. On Android, run the matching ABI's
+executables directly over ADB. They compare rounding boundaries, arbitrary
+float bit patterns, and Huffman consumption/overrun behavior against independent
+references; the existing audio oracles remain unchanged.
 
 Android produces `libpanthera.so` and the existing native benchmarks in the
 experiment's `build` directory. The existing debug-only
@@ -102,7 +112,7 @@ the unresolved Lion paragraph difference into a pass.
 ## Before adopting
 
 Resolve the remaining native Lion PCM difference and Box paragraph timing;
-recover ARMv7 performance; audit decoder bounds, reset state (including PNS),
+assess the remaining ARMv7 performance gap; audit decoder bounds, reset state (including PNS),
 and source provenance. Upstream generates normative AAC tables by extracting
 and comparing tables from vo-aacenc and FFmpeg; its MIT declaration alone is
 not a completed provenance review. Keep the current release license notices
@@ -113,3 +123,66 @@ and decoder defaults until the complete dependency selection is settled.
 `filterbank::imdct` uses nested sample/coefficient loops and a cosine per term
 (2048 by 1024 for a long AAC-LC window). It was not integrated or benchmarked;
 that implementation would need substantial optimization for this latency goal.
+
+## ARMv7 optimization measurements, later September 7
+
+Profiling eight alternating short Alex renders located a substantial cost in
+the original bridge's per-sample `lrint(double)` call. On S22 ARMv7, conversion
+took 162.7 ms of 318.0 ms in the AAC wrapper; on Watch 2, 222.5 of 865.1 ms.
+ARM64 conversion was only 5.2 of 87.8 ms. These are instrumented totals across
+2928 AAC access units, not per-utterance or acoustic timings. The nested decoder
+timers include its transform/dequantization stages and must not be added twice.
+
+Two retained changes:
+
+* Convert float PCM by its IEEE binary32 sign, exponent, and significand.
+  Multiplication by 2^15 becomes an exponent adjustment; discarded bits give
+  exact nearest-even rounding. Preserve saturation, signed-zero output, and
+  NaN/infinity rejection. No decoder precision or floating-point state handling
+  is relaxed.
+* Precompute the first eight Huffman bits. Longer codes resume at the same tree
+  node, and fewer than eight available bits use the original walk. This adds
+  15360 bytes of prefix tables across the twelve codebooks and avoids reading
+  past the available input.
+
+Matched runs rotated original Glint, optimized Glint, and FAAD2 through nine
+fresh processes per device/ABI (three per variant), eight renders each. Warm
+medians exclude the first two renders per process: nine samples per text and
+variant. Same Alex, rate, phrases, and first-pull definition as above.
+
+| Device / ABI | Text | Original Glint | Optimized Glint | FAAD2 |
+| --- | --- | ---: | ---: | ---: |
+| S22 ARMv7 | Seven | 20.7 ms | 15.6 ms | 10.5 ms |
+| S22 ARMv7 | Debug phrase | 51.1 ms | 36.4 ms | 31.4 ms |
+| Watch 2 ARMv7 | Seven | 52.5 ms | 42.3 ms | 38.6 ms |
+| Watch 2 ARMv7 | Debug phrase | 138.8 ms | 113.3 ms | 97.9 ms |
+| S22 ARM64 | Seven | 9.0 ms | 9.5 ms | 8.6 ms |
+| S22 ARM64 | Debug phrase | 30.0 ms | 21.1 ms | 26.6 ms |
+
+For the debug phrase, time inside AAC falls from 66 to 39 ms on S22 ARMv7,
+and 183 to 138 ms on Watch 2. Complete-render medians are respectively
+112.1 to 83.9 ms and 416.8 to 369.7 ms. ARM64 remains comparable to FAAD2:
+17 versus 16 ms AAC and 47.0 versus 44.5 ms complete; its first-pull ordering
+alone is not evidence that Glint is a faster decoder. Warm-up, scheduling, and
+thermal variation still affect these short measurements.
+
+Validation of fresh builds:
+
+* All 56 native Windows voice/text/rate configurations are byte-identical to
+  the previous Glint build; both builds repeat exactly. The existing native
+  Lion discrepancy against Media Foundation is therefore unchanged.
+* All eight native cancellation/recovery cases and four decoder rounding-mode
+  checks pass.
+* 1195698 finite float values in each of four rounding modes match the original
+  conversion, including all half-way PCM boundaries and adjacent floats;
+  non-finite inputs are rejected. Run on Windows, both S22 ABIs, and Watch 2.
+* 4800000 Huffman comparisons match the original tree walk's value, consumed
+  bits, and overrun flag, including truncated input and unaligned bit offsets.
+  Run on the same four environments. This is equivalence coverage, not a full
+  safety audit of the upstream AAC parser.
+* 72/72 fresh Android renders match the prior Glint PCM exactly, with native
+  signal-handler checks passing. All timed candidate renders also match it.
+* The complete Android audio/settings suite passes on Watch 2 and both S22
+  ABIs. The ARM64 pass does not resolve the previously observed intermittent
+  Lion timeline failure; neither optimization changes that contract. Original
+  APKs, ABIs, and exact preferences were restored after these temporary tests.

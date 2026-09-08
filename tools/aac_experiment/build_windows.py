@@ -29,7 +29,7 @@ def main():
 cmake_minimum_required(VERSION 3.22)
 project(panthera_aac_experiment LANGUAGES C CXX)
 set(CMAKE_MSVC_RUNTIME_LIBRARY MultiThreaded)
-''' + glint.cmake_library(vendor) + '''
+''' + glint.cmake_library(vendor) + glint.cmake_checks(vendor) + '''
 add_executable(tiger_host host/tiger_host.c)
 target_compile_definitions(tiger_host PRIVATE TIGER_AAC_GLINT)
 target_link_libraries(tiger_host PRIVATE panthera_glint_decoder winmm ole32 mfuuid)

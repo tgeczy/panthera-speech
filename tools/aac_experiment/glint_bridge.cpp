@@ -1,4 +1,5 @@
 #include "aac_decoder.hpp"
+#include "pcm16.h"
 #include <new>
 #include <cmath>
 #include <cstdint>
@@ -32,11 +33,7 @@ extern "C" int pt_glint_decode(void *p, const unsigned char *data, int len,
         int n = static_cast<glint::aac::AacDecoder *>(p)->decode_frame(data, len, pcm, &info);
         if (n != 1024 || info.sample_rate != (int)rate ||
             info.channels != (int)channels || info.frame_bytes != len) return -1;
-        for (int i = 0; i < n * info.channels; ++i) {
-            double x = pcm[i] * 32768.0;
-            if (!std::isfinite(x)) return -2;
-            out[i] = x >= 32767 ? 32767 : x <= -32768 ? -32768 : (short)std::lrint(x);
-        }
+        if (!pt_pcm16(pcm, out, n * info.channels)) return -2;
         return n * info.channels;
     } catch (...) { return -3; }
 }
