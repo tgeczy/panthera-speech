@@ -1,205 +1,105 @@
-# Android translation experiments
+# Android translation runtime and comparison harnesses
 
-Research harnesses, **not a shipping emulator backend**. They use Panthera's
-existing public synthesis API and locally extracted engine paths. No engine,
-voice data, generated audio, or third-party source belongs in this directory.
+The normal Android build uses the pinned Box86/Box64 translators with Glint.
+`tools/build_android.py` calls this shared builder, then stages each JNI library
+and its dependency/hash manifest. Gradle verifies both ABIs and packages the
+selected dependency notices. No engine, voice data, generated audio, or
+third-party implementation belongs in this directory.
 
-## Experimental Android app integration
+## Build
 
-The builder also produces `OUT/build/libpanthera.so`, with a static C++ runtime,
-16 KB ELF alignment, and only the JNI entry points exported. This is an isolated
-output: it does not replace the normal Unicorn library or install an APK.
+On the Windows development setup, use NDK 27.2, CMake 3.22.1, Git Bash and
+Python 3. The normal entry points are:
 
-For a debug comparison, create an ignored directory containing
-`jniLibs/arm64-v8a/libpanthera.so` from Box64 and
-`jniLibs/armeabi-v7a/libpanthera.so` from Box86. Put both translators' LICENSE
-files in its sibling `assets` directory as `box64-LICENSE.txt` and
-`box86-LICENSE.txt`. Pass the absolute `jniLibs` path to Gradle:
-
-```powershell
-.\gradlew.bat -PpantheraExperimentalJni=C:/path/to/experiment/jniLibs assembleDebug assembleDebugAndroidTest
+```sh
+./build_jni_so.sh armeabi-v7a
+./build_jni_so.sh arm64-v8a
 ```
 
-The override rejects release tasks. Normal builds retain the normal JNI inputs.
-Use the device runner documented in `tools/fixtures/android-latency.md`, with
-an explicit serial. The installed debug app can differ from the default build;
-record which backend each measurement actually uses.
+The builder fetches official upstream repositories when local clones are not
+provided. `BOX86_SOURCE`, `BOX64_SOURCE` and `GLINT_SOURCE` select existing
+clones; only their pinned commits are exported, never uncommitted changes.
+Builds target Android API 26. Linux launcher helpers outside Panthera's guest
+interface return unsupported on Android versions lacking their APIs. Each
+build has an isolated directory under `build/android-native` and a build log.
 
-Box runs guest execution inline. `TIGER_INLINE_GUEST` selects a real yield in
-the shared host instead of the 1 ms sleep intended for Unicorn's separate TCG
-thread. In one controlled phone comparison this reduced median first PCM for
-Leopard Alex's Seven from 26.7 to 7.6 ms and the phrase from 41.7 to 17.7 ms,
-with all samples unchanged. The corresponding watch change was small.
-
-`android_bench.py` repeats the standalone process, compares each render with
-eight existing local PCM references, and writes a JSON report. Its optional
-`--signal-check` verifies that a native thread's SIGILL handler survives Box
-initialization. The experimental signal dispatcher retains prior native
-handlers outside guest execution. This test does not establish full Android
-runtime compatibility: signal registration, fault handling, mapping lifetime,
-and code-cache invalidation still need review.
-
-The experimental APK passed the watch's complete audio suite. The phone suite
-exposed a Lion paragraph length variation (527289 frames instead of 527288).
-Repeated standalone controls retained the paragraph breath, but timing changes
-can alter the collected timeline; slowing callback pacing removes the measured
-length variation, whereas precise rounding alone does not. This is unresolved,
-and the short-reference matches must not be reported as full audio correctness.
-Generated PCM and detailed diagnostic logs stay outside Git.
-
-The release gate remains audible, reliable replacement speech during rapid
-navigation: the requested target is 100–200 ms on the watch and 50–100 ms on
-phones. First PCM from this standalone harness does not establish that gate.
-
-## September 7, 2026: Pixel Watch 2 (ARMv7)
-
-Box86 commit `39d3ed203323000c11f47b780f7468fa24a7185d`, NDK 27.2.12479018,
-Android API 28, Release, ARM dynarec enabled. The harness uses Leopard Alex,
-387 words/minute, volume 90, phrase breaks `fewest`. Eight renders alternate
-`Seven` and `Restart with debug logging enabled.` within one process.
-
-| Warm input | Unicorn first PCM | Box86 first PCM | Unicorn complete | Box86 complete |
-| --- | ---: | ---: | ---: | ---: |
-| Seven | 412–418 ms | 44 ms | 552–558 ms | 85–91 ms |
-| Restart with debug logging enabled. | 1,426–1,454 ms | 99–106 ms | 2,438–2,481 ms | 331–342 ms |
-
-Box86's first, cold `Seven` took 214 ms to first PCM, after 358 ms engine
-initialization. All eight renders matched the successful Unicorn run byte for
-byte: 6,026 and 22,077 frames respectively. SHA-256 of the PCM:
-
-- Seven: `81df35191cd5b567ca727c54793e4341c6eb066809089baa71d053baf810cb2f`
-- Phrase: `7961f85dfe049671fadacb85dfc3f64c471873f23ac592f266d8e3c59ba128d3`
-
-The first standalone Unicorn comparison crashed in native code (exit 139);
-the next completed. That failure remains undiagnosed. These are small samples
-from one device, not a broad correctness or reliability claim. The standalone
-process also cannot open the system SQLite library; both sides logged that
-limitation. Android service playback and interruption were not exercised here.
-
-The preceding memory benchmark runs the same 99-byte i386 blob from
-`android/harness/src/workload.c` through both translators. One million steps
-took approximately 840 ms under Unicorn, 140 ms under Box86, and 127 ms as
-native ARM code. All returned `0xd7d42e80`. This is a dependent-memory-access
-microbenchmark; its speedup must not be generalized to arbitrary engine code.
-
-## Files and experimental limitations
-
-- `engine_bench.c`: identical public-API driver for either translator. Accepts
-  engine, dictionary, voice bundle, and output prefix; writes eight raw PCM files.
-- `memory_box86.c`, `memory_box64.c`, and `memory_native.c`: synthetic drivers.
-- `box86_adapter.c` and `box64_adapter.c`: temporary implementations of the narrow
-  Unicorn API subset Panthera currently calls. The original shim dispatch remains
-  in use. Guest and host mappings must be identical.
-
-## Building and running
-
-Cancellation remains a separate release blocker. A quiet standalone Box86 run
-on the watch, interrupting a roughly 2,000-character paragraph after first PCM,
-spent 22.5 seconds waiting to acquire an MP critical region held by a synthesis
-worker. The replacement then produced first PCM in 63 ms and matched the normal
-6,026-frame Seven reference exactly. Repeating with lock tracing located the
-wait inside the stop call, rather than emulator initialization or the final
-37 ms callback settle. This is a failed responsiveness result, despite correct
-replacement PCM and successful process exit. The app still needs a proven
-cancellation strategy; faster ordinary rendering does not establish one.
-
-On this Windows development setup, with NDK 27.2, CMake 3.22.1, Git Bash, Python
-3.13, and the existing FAAD2 objects already built:
+For a standalone comparison without changing staged app libraries:
 
 ```powershell
-py -3 tools/translation_experiment/build.py --backend box86 --source build/research/box86 --out build/translation-box86
-py -3 tools/translation_experiment/build.py --backend box64 --source build/research/box64 --out build/translation-box64
+py -3 tools/translation_experiment/build.py --backend box86 --source build/research/box86 --out build/translation-box86 --aac glint --aac-source build/research/glint
+py -3 tools/translation_experiment/build.py --backend box64 --source build/research/box64 --out build/translation-box64 --aac glint --aac-source build/research/glint
 ```
 
-For an explicit Glint AAC comparison, add `--aac glint --aac-source PATH`.
-See the [AAC experiment](../aac_experiment/README.md) for the pinned source,
-audio comparisons, and remaining limitations. FAAD2 remains the default.
+The standalone builder retains FAAD2 as its comparison default; the normal
+builder explicitly selects Glint. See the [decoder review](../aac_experiment/README.md).
+The pins are Box86 `39d3ed203323000c11f47b780f7468fa24a7185d`, Box64
+`36d1cd790a6992cf188ef0ad5c5536d811c96d0c`, and the Glint revision recorded
+in `tools/aac_experiment/glint.py`.
 
-`--source` is a local clone of the official translator repository containing
-the pinned commit. The script exports that exact commit to a new directory,
-applies the compatibility changes, copies the host sources, and builds there.
-It changes neither the supplied clone nor the production build. Compiler output
-is in `OUT/build.log`. Rebuild an existing output with `cmake --build OUT/build`.
-Box64 is pinned to `36d1cd790a6992cf188ef0ad5c5536d811c96d0c`.
+## Host interface and runtime checks
 
-`OUT/build/panthera_engine_bench` takes four arguments: the MacinTalk image,
-SpeechDictionary image, voice bundle, and writable PCM output prefix. It writes
-eight files suffixed `.0` through `.7`. Run the same driver linked against
-Unicorn for a controlled comparison; require both successful exit and matching
-PCM, not just matching duration. The standalone build uses `TIGER_SHARED` to
-retain stderr rather than start the app's log-pump thread.
+`box86_adapter.c` and `box64_adapter.c` implement Panthera's narrow synchronous,
+identity-mapped guest interface. `src/tiger_box_api.h` declares it independently;
+the retained `uc_*` names let the existing host share its dispatch code, but
+this is not a general Unicorn API or binary-compatible replacement. Normal
+Box builds do not include or link Unicorn.
 
-ADB commands must name the device serial. On these debug installations,
-`run-as` cannot execute from `/data/local/tmp`; copy the executable into the
-app's private `files` directory and run it there. Engine paths refer to the
-user's existing private data tree. Do not add those data files or generated PCM
-to Git. These standalone runs do not change Android preferences or install an APK.
+Box executes inline. `TIGER_INLINE_GUEST` selects a real yield instead of the
+sleep needed for Unicorn's separate TCG worker. The Android app retires an
+interrupted private worker; it does not wait for an engine's potentially long
+stop/reuse path. See [worker lifecycle](../../docs/android-engine-workers.md).
 
-## Initial Nothing Phone 3 result (ARM64)
+Mapping and translation caches are process-global. `box_memory.h` records
+mapping lifetimes, makes per-thread mapping replay idempotent, and invalidates
+translated code before unmapping or writing it. `box_signals.h` dispatches
+faults according to whether the thread is executing the guest, preserving the
+prior native handler's payload, mask and reset disposition. This is the
+embedding's supported signal arrangement, not general signal interposition.
 
-The first Box64 run that completed the engine adapter produced warm first PCM
-in 22–27 ms for Seven and 35–44 ms for the phrase, with completion in 52–58 ms
-and 159–167 ms. All eight alternating renders match the existing ARM64 PCM
-oracles exactly. This is not yet a same-harness timing comparison with Unicorn
-on that device, nor an app playback test.
+`panthera_runtime_check rewrite`, `remap`, and `signals` use synthetic input.
+Before the adapter corrections, both ABIs crashed on translated-code writes,
+executed stale code after address reuse, and lost the native signal mask.
+All six corrected checks pass on Nothing Phone 3 and Pixel Watch 2. The same
+checks pass from the normal API 26 builds. They require no Apple data.
 
-The initial adapter encountered a host-context startup failure with the app's
-log-pump thread active. The CLI's native `mmap`/`munmap` interposition routed
-host allocations into Box bookkeeping during initialization. Excluding that
-interposition resolves the reproduced failure: ten fresh process starts with
-the log pump enabled all completed, and all eighty PCM files matched Unicorn.
-The adapter also initializes memory bookkeeping before selecting 32-bit guest
-mode, so it does not reserve all native addresses above 4 GB. Android's runtime
-and native threads retain their normal address space.
+`panthera_engine_bench` takes the MacinTalk image, SpeechDictionary image,
+voice bundle, and PCM output prefix. It renders eight alternating inputs.
+`panthera_engine_logcat_bench` also exercises the JNI stderr-pump startup order.
+`android_bench.py` compares renders against local references and records timing.
+`memory_box86.c`, `memory_box64.c` and `memory_native.c` are synthetic memory
+workloads; their speedup is not a general engine performance claim.
 
-`OUT/build/panthera_engine_logcat_bench` exercises this startup order with
-`TIGER_JNI` and the same arguments as the stderr benchmark. These remain
-standalone tests; signal ownership, mapping lifetime and app integration still
-need verification. Box64's optional Linux i386 wrappers
-are not used: Panthera supplies its own 32-bit host bridge to the instruction
-translator. That distinction is experimental and needs broader coverage.
+Always select an ADB serial. On these debug installations, copy the standalone
+executable to the app's private files directory and run it with `run-as`.
+Keep extracted data, PCM and diagnostic logs outside Git. Standalone checks
+neither install an app nor change preferences.
 
-A fresh build from the pinned-source script reproduced exact PCM on both
-devices. A subsequent same-driver ARM64 comparison measured warm Leopard Seven
-at 23–30 ms first PCM under Box64 versus 79–82 ms under Unicorn, and the phrase
-at 44–48 ms versus 151–156 ms. Full renders took 59–61 / 173–175 ms under Box64
-and 109–117 / 283–287 ms under Unicorn. The sixteen additional Snow Leopard and
-Lion renders also matched their corresponding Unicorn output byte for byte.
-These samples cover two texts; they are not complete voice or generation suites.
+## Validation and limits
 
-## Cancellation remains unresolved
+The earlier paragraph loss was a host timeline bug: consecutive player starts
+at sample time zero shared an epoch and overwrote a slice. Each callback now
+carries its player epoch. Native paragraph samples remain exact; the Android
+paragraph oracle permits up to four padding frames and still requires the
+breath. Short AAC references use the appropriate decoder's sample oracle.
 
-Pass `cancel` as a fifth argument to `panthera_engine_bench` to interrupt a
-roughly 2,000-character paragraph after its first PCM, call `panthera_finish`,
-then render the normal comparison input. This deliberately tests reuse of the
-same engine rather than replacing its process.
+The normal APK passes the audio/settings suite on Nothing Phone 3 (ARM64) and
+Pixel Watch 2 (ARMv7): all generations, sliders, volume/mute/restore, preview
+and service agreement, reference WAVs, playback and stop/restart. Matched
+standalone adapter comparisons preserved all 48 Alex renders per device. Warm
+phrase first PCM was 20.0 ms before / 20.3 ms after on the phone, and 120.6 /
+122.2 ms on the watch. These small samples measure synthesis, not acoustic
+latency. Rapid-navigation logs must be examined separately; a completed final
+request does not prove every interrupted request reached playback.
 
-On the watch, the first six Box86 cancellation cycles took about 23.2–23.5
-**seconds** in `panthera_finish`. The experiment was stopped during the next
-cycle (exit 143); it is not a passing interruption test. The replacement renders
-returned the expected frame counts, but their PCM was not yet checked in this
-run. The ARM64 cancellation case did not run because the watch test was stopped
-first. The faster translator therefore does not by itself establish a usable
-stop/reuse path. Worker replacement or a diagnosed cancellation fix remains
-necessary. The standalone `TIGER_SHARED` harness retains verbose host diagnostics;
-control that difference before comparing cancellation times with the APK.
+The watch remains slower than phones, especially during repeated Alex
+interruptions. API 26 compilation and 16 KB ELF alignment are build checks;
+they do not substitute for testing an Android 8 or 16 KB-page device. Box64
+uses the runtime page size rather than assuming 4 KB.
 
-The adapters do **not** implement general Unicorn memory protection or fault
-hooks. Mapping invalidation, thread teardown, nested state restoration, all
-engine generations, longer text, and interruption need further validation.
-It is an experiment to establish performance headroom, not a drop-in library.
-The existing production build still uses Unicorn.
+For isolated debug APK inputs, `-PpantheraExperimentalJni=PATH` overrides the
+JNI directory and rejects release tasks. `PANTHERA_RUNTIME=unicorn` plus
+`-PpantheraLegacyUnicorn=true` retains the older GPL configuration.
 
-Box86 and Box64 source are MIT licensed; retain their copyright/license when
-incorporating them. See [Box86](https://github.com/ptitSeb/box86) and
-[Box64](https://github.com/ptitSeb/box64). The current FAAD2 decoder is still
-GPLv2; a translator change alone does not remove it from the distribution.
-FEX remains another ARM64 candidate. Nothing measured here establishes final
-phone playback performance or fixes the separate amd64 Linux volume issue.
-
-UTM uses QEMU for cross-architecture emulation; its hardware virtualization
-requires matching guest and host architectures. Its iOS SE edition lacks JIT.
-See [UTM architecture](https://github.com/utmapp/UTM/blob/main/Documentation/Architecture.md)
-and [iOS documentation](https://docs.getutm.app/installation/ios/). Panthera's
-Unicorn build already enables JIT and optimization; this experiment changes the
-translator and memory-access strategy rather than merely enabling compilation.
+Box and Glint retain their MIT licenses, with separate permissive component
+and compiler runtime notices. Optional Unicorn/FAAD2 builds retain their GPL
+requirements. See [distribution licensing](../../licenses/DISTRIBUTION.txt).

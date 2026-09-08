@@ -117,4 +117,3 @@ static int aac_check(void)
             aac_backend_name());
     return 0;
 }
-

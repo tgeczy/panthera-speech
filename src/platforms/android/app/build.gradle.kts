@@ -1,3 +1,6 @@
+import groovy.json.JsonSlurper
+import java.security.MessageDigest
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -5,6 +8,41 @@ plugins {
 
 // Isolated debug research artifacts, never the release's prebuilt libraries.
 val experimentalJni = providers.gradleProperty("pantheraExperimentalJni").orNull
+val legacyUnicorn = providers.gradleProperty("pantheraLegacyUnicorn").orNull == "true"
+val nativeNotices = layout.buildDirectory.dir("generated/pantheraLicenses")
+val stageNativeNotices = tasks.register<Sync>("stageNativeNotices") {
+    from(rootProject.file("../../../licenses")) {
+        if (experimentalJni == null && !legacyUnicorn) {
+            include("DISTRIBUTION.txt", "Panthera-MIT.txt", "Glint-MIT.txt",
+                "box86-LICENSE.txt", "box64-LICENSE.txt", "Box-component-notices.txt",
+                "Emoji-BSD.txt", "Unicode.txt", "LLVM-runtime-notices.txt",
+                "Kotlin-LICENSE.txt", "Kotlin-NOTICE.txt")
+        }
+    }
+    into(nativeNotices)
+}
+val verifyNativeBuild = tasks.register("verifyNativeBuild") {
+    doLast {
+        if (experimentalJni == null && !legacyUnicorn) {
+            for ((abi, runtime) in listOf("armeabi-v7a" to "box86", "arm64-v8a" to "box64")) {
+                val dir = file("src/main/jniLibs/$abi")
+                val metadata = dir.resolve("build.json")
+                check(metadata.isFile) { "Build the $abi runtime with build_jni_so.sh first" }
+                val info = JsonSlurper().parse(metadata) as Map<*, *>
+                val library = dir.resolve("libpanthera.so")
+                check(library.isFile && info["runtime"] == runtime && info["aac"] == "glint" && info["api"] == 26) {
+                    "The normal APK requires Box + Glint for $abi at API 26"
+                }
+                val hash = MessageDigest.getInstance("SHA-256").digest(library.readBytes())
+                    .joinToString("") { "%02x".format(it.toInt() and 255) }
+                check(info["sha256"] == hash) { "$abi library changed after its recorded build" }
+            }
+        }
+    }
+}
+tasks.matching { it.name == "preBuild" }.configureEach {
+    dependsOn(stageNativeNotices, verifyNativeBuild)
+}
 if (experimentalJni != null) {
     gradle.taskGraph.whenReady {
         check(allTasks.none { it.name.contains("Release", ignoreCase = true) }) {
@@ -35,7 +73,7 @@ android {
 
     // Kotlin sources live under src/main/kotlin.
     sourceSets["main"].java.srcDirs("src/main/kotlin")
-    sourceSets["main"].assets.srcDir(rootProject.file("../../../licenses"))
+    sourceSets["main"].assets.srcDir(nativeNotices)
     if (experimentalJni != null) {
         sourceSets["main"].jniLibs.setSrcDirs(listOf(file(experimentalJni)))
         sourceSets["debug"].assets.srcDir(file("$experimentalJni/../assets"))

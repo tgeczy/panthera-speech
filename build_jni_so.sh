@@ -1,21 +1,21 @@
 #!/bin/sh
-# Build libpanthera.so for the Android app: the engine (tiger_host.c, one TU,
-# TIGER_UC + TIGER_NO_AAC + TIGER_JNI) plus the JNI bridge, linked with the
-# cross-built Unicorn into a shared library, dropped into the app's jniLibs so
-# Gradle just packages it.
-#
-# Prebuilding the .so this way -- rather than driving CMake from Gradle -- keeps
-# the APK build free of the Cygwin/QEMU-configure dance Unicorn's own CMake
-# needs (see android/harness/build_unicorn_cyg.sh); Gradle never touches the
-# NDK toolchain, it just bundles the finished .so.
-#
+# Build and stage Box + Glint for Android, then let Gradle package the library.
+# The pinned-source builder also records the ABI, dependency commits and hash.
 #   ./build_jni_so.sh armeabi-v7a
 #   ./build_jni_so.sh arm64-v8a
+# PANTHERA_RUNTIME=unicorn selects the older GPL comparison pipeline below.
 set -e
 export MSYS2_ARG_CONV_EXCL="*"
 export MSYS_NO_PATHCONV=1
 
 ROOT="$(cd "$(dirname "$0")" && pwd -W 2>/dev/null || pwd)"
+# Normal builds use the reviewed, pinned Box translator and Glint decoder.
+# Keep the former GPL pipeline explicit for comparisons and older artifacts.
+RUNTIME="${PANTHERA_RUNTIME:-box}"
+if [ "$RUNTIME" = box ]; then
+    exec python "$ROOT/tools/build_android.py" --abi "${1:-armeabi-v7a}"
+fi
+[ "$RUNTIME" = unicorn ] || { echo "unknown PANTHERA_RUNTIME: $RUNTIME"; exit 1; }
 # Which ABI.  Both are shipped: watches and budget phones are 32-bit for years
 # yet, and ARMv9 phones dropped AArch32 in the silicon, so neither one covers
 # the field.  ./build_jni_so.sh [armeabi-v7a|arm64-v8a]

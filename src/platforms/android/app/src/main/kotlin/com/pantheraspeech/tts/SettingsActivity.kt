@@ -283,11 +283,17 @@ class SettingsActivity : Activity() {
                 android.app.AlertDialog.Builder(this@SettingsActivity)
                     .setTitle("Licenses and source").setMessage(notice)
                     .setPositiveButton("Close", null)
-                    .setNeutralButton("GPLv2 license") { _, _ ->
-                        val license = assets.open("GPL-2.0.txt").bufferedReader().use { it.readText() }
+                    .setNeutralButton("Full licenses") { _, _ ->
+                        val files = assets.list("").orEmpty()
+                            .filter { it.endsWith(".txt") && it != "DISTRIBUTION.txt" }.sorted()
                         android.app.AlertDialog.Builder(this@SettingsActivity)
-                            .setTitle("GNU General Public License version 2")
-                            .setMessage(license).setPositiveButton("Close", null).show()
+                            .setTitle("Full licenses")
+                            .setItems(files.map { it.removeSuffix(".txt").replace('-', ' ') }.toTypedArray()) { _, which ->
+                                val license = assets.open(files[which]).bufferedReader().use { it.readText() }
+                                android.app.AlertDialog.Builder(this@SettingsActivity)
+                                    .setTitle(files[which].removeSuffix(".txt").replace('-', ' '))
+                                    .setMessage(license).setPositiveButton("Close", null).show()
+                            }.setNegativeButton("Close", null).show()
                     }.show()
             }
         })

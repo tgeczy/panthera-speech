@@ -19,19 +19,14 @@
 #
 # On a 64-bit distribution the i686 build needs the 32-bit toolchain and libs:
 #
-#   Debian/Ubuntu:  apt-get install gcc-multilib libfaad-dev:i386
-#   Fedora:         dnf install glibc-devel.i686 libstdc++-devel.i686 faad2-devel.i686
+#   Debian/Ubuntu:  apt-get install g++-multilib python3 git
+#   Fedora:         dnf install glibc-devel.i686 libstdc++-devel.i686 gcc-c++ python3 git
 #
-# AAC decoder.  FAAD2 is the default.  The experimental MIT decoder (Glint,
-# see tools/aac_experiment/README.md) is selected with
-#
-#   AAC=glint GLINT_SOURCE=/path/to/glint-clone ./build_linux.sh i686
-#
-# which needs python3, a C++17 compiler for the target (g++-multilib on a
-# 64-bit Debian/Ubuntu) and a local clone of the pinned Glint repository.
-# Nothing of Glint is committed here: the pinned decoder is extracted from
-# that clone into the build directory at build time, exactly as the Windows
-# experiment does.
+# Glint is the normal AAC decoder. It needs Python 3 and a C++17 target
+# compiler (g++-multilib on 64-bit Debian/Ubuntu). The builder exports the
+# pinned decoder and applies the shared patches in an ignored build directory.
+# GLINT_SOURCE may name an existing official clone for an offline build.
+# AAC=faad2 retains the older GPL comparison build and its output directory.
 #
 # Nothing of Apple's is fetched, built or shipped by this script.  The engine
 # data comes from the user's own Macintosh, exactly as everywhere else.
@@ -41,9 +36,8 @@ ARCH="${1:-i686}"
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 CC="${CC:-cc}"
 CXX="${CXX:-c++}"
-AAC="${AAC:-faad2}"
-# The default decoder builds where it always has; another decoder gets its own
-# directory, so the two can be compared side by side.
+AAC="${AAC:-glint}"
+# Retain the existing decoder-specific directories for side-by-side comparisons.
 OUT="$ROOT/build/linux-$ARCH"
 [ "$AAC" = faad2 ] || OUT="$OUT-$AAC"
 mkdir -p "$OUT"
@@ -85,16 +79,12 @@ case "$ARCH" in
   *) echo "unknown arch '$ARCH' (i686, x86_64 or aarch64)"; exit 1 ;;
 esac
 
-# The host source.  Normally the checked-in tree; the Glint build compiles a
-# staged copy of it instead, so the backend include can be patched in without
-# touching src/.
+# The Glint build stages host and pinned decoder sources together.
 HOST_SRC="$ROOT/src/tiger_host.c"
 
 case "$AAC" in
   faad2)
-    # AAC: FAAD2 in-process, which is the portable backend and the one Android
-    # already ships.  Media Foundation is Windows-only and is what the selector
-    # falls back to when nothing else is named, so naming one is not optional.
+    # Optional GPL decoder, retained for controlled comparisons.
     if [ -n "$FAAD2_DIR" ]; then
         CFLAGS="$CFLAGS -DTIGER_AAC_FAAD -I$FAAD2_DIR/include"
         LDFLAGS="$FAAD2_DIR/libfaad/.libs/libfaad.a $LDFLAGS"
@@ -113,12 +103,14 @@ case "$AAC" in
     fi
     ;;
   glint)
-    # The experimental MIT decoder.  tools/aac_experiment/glint.py extracts
-    # the pinned decoder from a local clone into the build directory and
-    # patches a *copy* of src/ to include the Glint backend, exactly as the
-    # Windows experiment builds it.  The clone and the checked-in sources are
-    # both left as they were.
-    GLINT_SOURCE="${GLINT_SOURCE:-$ROOT/build/research/glint}"
+    # Export only the pinned decoder sources and apply the shared patches.
+    if [ -z "${GLINT_SOURCE:-}" ]; then
+        GLINT_SOURCE="$ROOT/build/dependencies/glint-source"
+        if [ ! -d "$GLINT_SOURCE" ]; then
+            mkdir -p "$ROOT/build/dependencies"
+            git clone --no-checkout https://github.com/CrispStrobe/glint.git "$GLINT_SOURCE"
+        fi
+    fi
     [ -d "$GLINT_SOURCE/.git" ] || { echo "no Glint clone at $GLINT_SOURCE (set GLINT_SOURCE)"; exit 1; }
     STAGE="$OUT/glint"
     rm -rf "$STAGE"
@@ -170,6 +162,19 @@ echo "   -> $OUT/libpanthera.so.0 (+ include/panthera.h)"
 # for CI in particular: no Apple or Berkeley data may ever go near a build
 # server, so the checks that can run there are exactly the ones that carry
 # their own inputs -- the number rules, the regex engine and the AAC framing.
+mkdir -p "$OUT/licenses"
+cp "$ROOT/licenses/Panthera-MIT.txt" "$ROOT/licenses/DISTRIBUTION.txt" "$OUT/licenses/"
+if [ "$AAC" = glint ]; then
+    cp "$STAGE/glint/LICENSE" "$OUT/licenses/Glint-MIT.txt"
+    cp "$ROOT/licenses/GCC-runtime-exception.txt" "$ROOT/licenses/GCC-GPL-3.0.txt" \
+       "$ROOT/licenses/libstdc++-notice.txt" "$OUT/licenses/"
+else
+    cp "$ROOT/licenses/FAAD2-COPYING.txt" "$ROOT/licenses/GPL-2.0.txt" "$OUT/licenses/"
+fi
+if [ "$ARCH" != i686 ]; then
+    cp "$ROOT/licenses/GPL-2.0.txt" "$OUT/licenses/"
+fi
+
 echo "== self-tests =="
 "$OUT/tiger_host" --numbers-check
 "$OUT/tiger_host" --regex-check | tail -3

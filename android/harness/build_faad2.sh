@@ -1,5 +1,6 @@
 #!/bin/sh
-# Fetch and cross-compile FAAD2 for the Android build, so the AAC voices decode
+# Fetch and cross-compile FAAD2 for the optional Android comparison build.
+# AAC voices decode
 # in this process instead of over Binder.
 #
 # Why at all: Vicki and Alex share the `meow` engine, whose sample bank is AAC.
@@ -15,9 +16,8 @@
 # build_unicorn_cyg.sh): the source is fetched at a pinned tag and gitignored,
 # so this repository carries no third-party tree it would then have to maintain.
 #
-# Licence: FAAD2 is GPLv2, and the APK is GPLv2 already because of Unicorn, so
-# the two agree.  That is the whole reason this is FAAD2 and not one of the
-# permissive decoders with a patent grant nobody can read.
+# Licence: this optional FAAD2 comparison build is GPLv2. Normal Android
+# builds use Box + Glint; see licenses/DISTRIBUTION.txt for each configuration.
 #
 #   ./build_faad2.sh          # objects land in android/harness/faad2-obj
 set -e

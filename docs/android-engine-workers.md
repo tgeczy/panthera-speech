@@ -7,13 +7,18 @@ TTS service and its clients stay connected when the generation changes.
 Returning to a generation reuses its worker; a dead worker is rebound on the
 next request.
 
-The Android distribution is GPLv2; **Licenses and source** in Setup displays
-the notice and full license. After committing the sources used to build the
-APK, run `python tools/package_android_sources.py`. Distribute the resulting
-`build/panthera-android-sources.tar.gz` alongside that APK. It includes Panthera's
-build scripts and the exact tracked Unicorn/FAAD2 source checkouts, with commit
-identifiers and archive checksums. It excludes ignored engine data and build
-products. Windows NVDA and SAPI distributions remain MIT.
+The normal Android build uses the pinned Box86/Box64 translators and Glint
+AAC decoder. Build both ABIs with `build_jni_so.sh`; Gradle checks the staged
+libraries against their build manifests. **Licenses and source** in Setup
+opens the distribution notice and the full bundled component licenses.
+
+After committing the APK sources, run `python tools/package_android_sources.py`
+with the dependency clone paths used by the build. Distribute the resulting
+`build/panthera-android-sources.tar.gz` alongside the APK. It includes Panthera's
+build scripts, exact pinned upstream sources, commit identifiers and checksums.
+Ignored engine data and build products are excluded. An explicit
+`PANTHERA_RUNTIME=unicorn` build and Gradle `-PpantheraLegacyUnicorn=true` retain
+the earlier GPL comparison configuration; package its sources with `--legacy`.
 
 The app process owns preferences. Workers receive a settings snapshot for each
 utterance, rather than reading a separate process's SharedPreferences cache.

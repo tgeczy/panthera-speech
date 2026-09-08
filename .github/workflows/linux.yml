@@ -19,37 +19,6 @@ on:
   workflow_dispatch:
 
 jobs:
-  glint:
-    name: i686-glint-experimental
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install the native C++ toolchain
-        run: sudo apt-get update && sudo apt-get install -y g++-multilib
-      - name: Fetch the pinned decoder source
-        run: |
-          pin="$(python3 -c 'import sys; sys.path.insert(0,"tools/aac_experiment"); import glint; print(glint.PIN)')"
-          git init build/research/glint
-          git -C build/research/glint fetch --depth 1 https://github.com/CrispStrobe/glint.git "$pin"
-          git -C build/research/glint checkout --detach FETCH_HEAD
-      - name: Build and check without engine data
-        env:
-          AAC: glint
-        run: |
-          sh build_linux.sh i686
-          out="$PWD/build/linux-i686-glint"
-          "$out/tiger_host" --libc-check
-          "$out/tiger_host" --capabilities | python3 -m json.tool
-          g++ -m32 -msse2 -mfpmath=sse -O2 -std=c++17 \
-            tools/aac_experiment/pcm16_check.cpp -o "$out/pcm16_check"
-          g++ -m32 -msse2 -mfpmath=sse -O2 -std=c++17 \
-            -I"$out/glint/glint/src" tools/aac_experiment/huffman_check.cpp -o "$out/huffman_check"
-          "$out/pcm16_check"
-          "$out/huffman_check"
-          cc -m32 tools/native_library_check.c -I"$out/include" \
-            -L"$out" -lpanthera -Wl,-rpath,"$out" -o "$out/library_check"
-          "$out/library_check" --check
-
   build:
     # Match the supported runtime baseline. ubuntu-latest pulled in GLIBC_2.38
     # symbols, so an otherwise passing archive could not load on Ubuntu 22.04.
@@ -61,12 +30,22 @@ jobs:
           # The one that matters: i386 guest on an x86 host is a native call,
           # so there is no emulator in the path at all.
           - arch: i686
+            aac: glint
+            suffix: -glint
+            packages: g++-multilib
+          - arch: i686
+            aac: faad2
+            suffix: ""
             packages: gcc-multilib libfaad-dev
           # Correct, and slower than the Wine setup it would replace, because
           # the guest has to be emulated.  Built so it cannot rot.
           - arch: x86_64
+            aac: faad2
+            suffix: ""
             packages: libfaad-dev
-    name: ${{ matrix.arch }}
+    name: ${{ matrix.arch }}-${{ matrix.aac }}
+    env:
+      AAC: ${{ matrix.aac }}
     steps:
       - uses: actions/checkout@v4
 
@@ -79,7 +58,7 @@ jobs:
           # only the i686 build wants it.  Not fatal if the archive does not
           # carry it: the build then says so and leaves the AAC voices out
           # rather than failing.
-          if [ "${{ matrix.arch }}" = "i686" ]; then
+          if [ "${{ matrix.arch }}-${{ matrix.aac }}" = "i686-faad2" ]; then
             sudo apt-get install -y libfaad-dev:i386 || true
           fi
 
@@ -99,9 +78,20 @@ jobs:
           chmod +x build_linux.sh
           ./build_linux.sh ${{ matrix.arch }}
 
+      - name: Check decoder rounding and Huffman lookup
+        if: matrix.aac == 'glint'
+        run: |
+          out="$PWD/build/linux-${{ matrix.arch }}${{ matrix.suffix }}"
+          g++ -m32 -msse2 -mfpmath=sse -O2 -std=c++17 \
+            tools/aac_experiment/pcm16_check.cpp -o "$out/pcm16_check"
+          g++ -m32 -msse2 -mfpmath=sse -O2 -std=c++17 \
+            -I"$out/glint/glint/src" tools/aac_experiment/huffman_check.cpp -o "$out/huffman_check"
+          "$out/pcm16_check"
+          "$out/huffman_check"
+
       - name: Link an external client to the public synthesis library
         run: |
-          out="$PWD/build/linux-${{ matrix.arch }}"
+          out="$PWD/build/linux-${{ matrix.arch }}${{ matrix.suffix }}"
           flags=""
           if [ "${{ matrix.arch }}" = "i686" ]; then flags="-m32"; fi
           cc $flags -I"$out/include" tools/native_library_check.c \
@@ -115,44 +105,48 @@ jobs:
       # engine data whatsoever.
       - name: The number rules still agree with the Python they came from
         run: |
-          python3 tools/numbers_oracle.py build/linux-${{ matrix.arch }}/tiger_host
-          python3 tools/native_cli_args_check.py build/linux-${{ matrix.arch }}/tiger_host
+          python3 tools/numbers_oracle.py build/linux-${{ matrix.arch }}${{ matrix.suffix }}/tiger_host
+          python3 tools/native_cli_args_check.py build/linux-${{ matrix.arch }}${{ matrix.suffix }}/tiger_host
 
       - name: Volume agrees with NVDA and capabilities are machine-readable
         run: |
-          python3 tools/volume_oracle.py build/linux-${{ matrix.arch }}/tiger_host
+          python3 tools/volume_oracle.py build/linux-${{ matrix.arch }}${{ matrix.suffix }}/tiger_host
           python3 tools/android_abbreviation_oracle.py
-          build/linux-${{ matrix.arch }}/tiger_host --capabilities | python3 -m json.tool
-          build/linux-${{ matrix.arch }}/tiger_host --libc-check
+          build/linux-${{ matrix.arch }}${{ matrix.suffix }}/tiger_host --capabilities | python3 -m json.tool
+          build/linux-${{ matrix.arch }}${{ matrix.suffix }}/tiger_host --libc-check
 
       - name: Generated linear algebra and SQLite ABI oracles
         run: |
           python3 -m venv /tmp/panthera-tests
           /tmp/panthera-tests/bin/pip install numpy pytest
-          export PANTHERA_TEST_HOST="$PWD/build/linux-${{ matrix.arch }}/tiger_host"
+          export PANTHERA_TEST_HOST="$PWD/build/linux-${{ matrix.arch }}${{ matrix.suffix }}/tiger_host"
           export PANTHERA_TEST_UC_HOST="$PANTHERA_TEST_HOST"
           /tmp/panthera-tests/bin/python -m pytest -q \
             panthera/tests/test_linalg.py panthera/tests/test_sqlite_abi.py
 
       - name: Package the executable, library and public header
         run: |
-          out="build/linux-${{ matrix.arch }}"
+          out="build/linux-${{ matrix.arch }}${{ matrix.suffix }}"
           cp docs/linux-native.md "$out/README.md"
           cp tools/native_library_check.c "$out/"
           mkdir -p "$out/licenses" "$out/sources"
-          cp licenses/* "$out/licenses/"
           git archive --format=tar.gz -o "$PWD/$out/sources/panthera.tar.gz" HEAD \
-            src build_linux.sh LICENSE licenses docs/linux-native.md tools/native_library_check.c tools/native_divide_check.c
+            src build_linux.sh LICENSE licenses docs/linux-native.md tools/native_library_check.c tools/native_divide_check.c tools/aac_experiment
+          if [ "${{ matrix.aac }}" = "glint" ]; then
+            pin="$(python3 -c 'import sys; sys.path.insert(0,"tools/aac_experiment"); import glint; print(glint.PIN)')"
+            git -C build/dependencies/glint-source archive --format=tar.gz \
+              -o "$PWD/$out/sources/glint.tar.gz" "$pin"
+          fi
           if [ "${{ matrix.arch }}" != "i686" ]; then
             cp unicorn-src/COPYING "$out/licenses/Unicorn-GPL-2.0.txt"
             git -C unicorn-src archive --format=tar.gz \
               -o "$PWD/$out/sources/unicorn-2.1.4.tar.gz" HEAD
           fi
-          tar -czf "build/panthera-linux-${{ matrix.arch }}.tar.gz" -C "$out" \
+          tar -czf "build/panthera-linux-${{ matrix.arch }}-${{ matrix.aac }}.tar.gz" -C "$out" \
             tiger_host libpanthera.so libpanthera.so.0 include README.md native_library_check.c licenses sources
 
       - uses: actions/upload-artifact@v4
         with:
-          name: tiger_host-linux-${{ matrix.arch }}
-          path: build/panthera-linux-${{ matrix.arch }}.tar.gz
+          name: panthera-linux-${{ matrix.arch }}-${{ matrix.aac }}
+          path: build/panthera-linux-${{ matrix.arch }}-${{ matrix.aac }}.tar.gz
           if-no-files-found: error

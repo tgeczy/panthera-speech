@@ -11,18 +11,18 @@ Panthera's host protocol.
 
 ## Build and check AAC
 
-CI binaries target Ubuntu 22.04 / glibc 2.35 and newer, with matching FAAD2
-runtime libraries. Older distributions should build from source locally.
+CI binaries target Ubuntu 22.04 / glibc 2.35 and newer, with the matching 32-bit glibc
+runtime for i686. Older distributions should build from source locally.
 
 On Ubuntu/Debian x86-64:
 
 ```sh
 sudo dpkg --add-architecture i386
 sudo apt-get update
-sudo apt-get install gcc-multilib libfaad-dev:i386 libsqlite3-0:i386
+sudo apt-get install g++-multilib python3 git libsqlite3-0:i386
 ./build_linux.sh i686
-./build/linux-i686/tiger_host --capabilities
-./build/linux-i686/tiger_host --aac-check
+./build/linux-i686-glint/tiger_host --capabilities
+./build/linux-i686-glint/tiger_host --aac-check
 ```
 
 `--capabilities` prints JSON to stdout, including `guest_execution`,
@@ -32,13 +32,15 @@ and initializes, or 2 when unavailable. This checks codec initialization;
 a render of Vicki or Alex additionally tests the user's actual AAC bank.
 Fred and other formant voices do not require AAC.
 
-The Linux build links FAAD2 when present at build time. For a dynamically
-linked build, the runtime machine needs the matching 32-bit FAAD2 library
-(Ubuntu 22.04: `libfaad2:i386`). If the executable cannot even start, use
-`ldd build/linux-i686/tiger_host` to find missing runtime libraries. A codec
-installed only for x86-64 cannot satisfy a 32-bit host. A build made without
-AAC support must be rebuilt after installing the development package.
-SQLite is loaded separately at runtime for Leopard phrasing dictionaries.
+The default build fetches a pinned Glint source revision and builds the decoder
+into the host. It needs no system AAC codec package. Set `GLINT_SOURCE` to an
+existing official clone for offline builds. SQLite is loaded separately at
+runtime for Leopard phrasing dictionaries (`libsqlite3-0:i386` on Ubuntu).
+
+`AAC=faad2 ./build_linux.sh i686` retains the GPL comparison configuration in
+`build/linux-i686`. That configuration needs the matching FAAD2 development
+and runtime libraries; it can also build without AAC if none is found. Use
+`ldd` on the executable to diagnose missing runtime dependencies.
 
 ## Render a WAV from the command line
 
@@ -47,12 +49,12 @@ SQLite is loaded separately at runtime for Leopard phrasing dictionaries.
 bundle. Text arguments, input files, and stdin use UTF-8:
 
 ```sh
-./build/linux-i686/tiger_host --render \
+./build/linux-i686-glint/tiger_host --render \
   --tree /path/to/speech-tiger/x86 --voice Fred \
   --text 'Hello there.' --rate 180 --volume 80 --output speech.wav
 
 printf '%s\n' 'There are 1234567 people.' | \
-  ./build/linux-i686/tiger_host --render \
+  ./build/linux-i686-glint/tiger_host --render \
   --tree /path/to/speech-tiger/x86 --numbers words --output - > speech.wav
 ```
 
@@ -83,7 +85,7 @@ under emulation; native i686 took about 51 ms. Leopard Vicki took about 536 ms
 and 108 ms respectively. These are synthesis/protocol measurements, not audio
 device latency guarantees.
 
-To build amd64, install the 64-bit FAAD2 development package and build Unicorn
+To build amd64, install a native C++ toolchain and build Unicorn
 2.1.4 with its x86 target and position-independent code:
 
 ```sh
@@ -112,13 +114,14 @@ needs the most thoroughly exercised path.
 The same build produces `libpanthera.so.0`, its `libpanthera.so` link, and
 `include/panthera.h`. CI archives contain these alongside the executable,
 this document, and an example C client. No engine or voice data is packaged.
-Linux binaries are distributed under GPLv2. Archives include the distribution
-notice, GPLv2, Panthera's original MIT license and source; amd64 archives also
-include the statically linked Unicorn 2.1.4 source. Windows NVDA/SAPI retain
-their MIT distribution license.
+The normal native i686 build uses Panthera and Glint under MIT, with compiler
+runtime notices alongside them. Builds using FAAD2 or Unicorn retain GPL
+requirements; this includes the amd64 and AArch64 Linux configurations.
+Archives include the applicable notices and source. See
+[distribution licensing](../licenses/DISTRIBUTION.txt).
 
 ```sh
-out="$PWD/build/linux-i686"
+out="$PWD/build/linux-i686-glint"
 cc -m32 -I"$out/include" tools/native_library_check.c \
   -L"$out" -Wl,-rpath,"$out" -lpanthera -o library_check
 ./library_check --check                         # no engine data needed
@@ -209,7 +212,7 @@ AAC=glint GLINT_SOURCE=/path/to/glint-clone sh build_linux.sh i686
 
 This requires a C++17 multilib toolchain and the pinned official source clone
 described in [the AAC experiment](../tools/aac_experiment/README.md). It builds
-into `build/linux-i686-glint`, separately from the default codec, and has its
+into `build/linux-i686-glint-glint`, separately from the default codec, and has its
 own Linux CI job. Dependency promotion and release packaging remain separate
 from this experimental build.
 

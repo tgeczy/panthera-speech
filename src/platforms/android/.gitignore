@@ -10,8 +10,9 @@ local.properties
 .idea/
 
 # The native engine is prebuilt by build_jni_so.sh (from the one C TU + the
-# cross-built Unicorn); it is reproducible, so it is not committed.
+# cross-built translator and decoder); it is reproducible, so it is not committed.
 /app/src/main/jniLibs/**/libpanthera.so
+/app/src/main/jniLibs/**/build.json
 
 # Keystores never go in the repo.
 keystore.properties

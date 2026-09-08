@@ -270,11 +270,14 @@ CPU emulator. Different host, different era, its own repository.
 Panthera's own source is **MIT** — see [LICENSE](LICENSE). Windows NVDA and
 SAPI builds remain MIT; they do not link Unicorn or FAAD2.
 
-The **Android and Linux distributions are GPLv2**. Android links Unicorn
-and FAAD2; amd64 Linux links Unicorn, and Linux AAC builds use FAAD2.
-Their dependency notices and corresponding source accompany the binaries.
-See [distribution licensing](licenses/DISTRIBUTION.txt) and the
-[GPLv2 license](licenses/GPL-2.0.txt).
+Normal **Android builds use Box86/Box64 and Glint**; native **i686 Linux uses
+Glint**. These dependencies are MIT licensed, with the additional component
+and compiler runtime notices supplied alongside the binaries. Windows includes
+Glint as a fallback when the system AAC decoder is unavailable.
+
+Optional Unicorn or FAAD2 builds retain GPL distribution requirements. In
+particular, x86-64 and AArch64 Linux still use Unicorn. See
+[distribution licensing](licenses/DISTRIBUTION.txt) for each configuration.
 
 These licenses do not cover Apple's engine or voice data, which is not
 distributed here.

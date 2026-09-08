@@ -11,9 +11,8 @@ package com.pantheraspeech.tts
  *
  * Ported from doubledroid, unchanged but for the package and these comments,
  * and kept under its own BSD-3-Clause licence and David Sexton's copyright.
- * That provenance is also what makes it usable here: the tables are generated
- * from Unicode's own emoji-test.txt, not from eSpeak's emoji dictionary, so no
- * GPLv3 data is being pulled into an APK that is GPLv2 because of Unicorn.
+ * The tables are generated from Unicode's own emoji-test.txt. Both the BSD
+ * notice and Unicode's data licence accompany the Android distribution.
  *
  * Emoji sit outside the BMP, and flags, skin tones and ZWJ sequences span
  * several code points, so this walks Unicode code points rather than UTF-16
