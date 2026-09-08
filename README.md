@@ -275,8 +275,11 @@ Glint**. These dependencies are MIT licensed, with the additional component
 and compiler runtime notices supplied alongside the binaries. Windows includes
 Glint as a fallback when the system AAC decoder is unavailable.
 
-Optional Unicorn or FAAD2 builds retain GPL distribution requirements. In
-particular, x86-64 and AArch64 Linux still use Unicorn. See
+Native **aarch64 Linux uses Box64 and Glint**, as the phones do, and is MIT
+too; it is built and self-tested on ARM hardware in CI but has not yet been
+listened to on an ARM Linux machine. Optional Unicorn or FAAD2 builds retain
+GPL distribution requirements; in particular, x86-64 Linux still uses
+Unicorn. See
 [distribution licensing](licenses/DISTRIBUTION.txt) for each configuration.
 
 These licenses do not cover Apple's engine or voice data, which is not

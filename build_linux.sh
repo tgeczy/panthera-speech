@@ -15,7 +15,7 @@
 #
 #   ./build_linux.sh              # i686, native, no Unicorn
 #   ./build_linux.sh x86_64       # needs Unicorn
-#   ./build_linux.sh aarch64      # needs Unicorn
+#   ./build_linux.sh aarch64      # Box64 + Glint, like the phones (PANTHERA_RUNTIME=unicorn for the old GPL build)
 #
 # On a 64-bit distribution the i686 build needs the 32-bit toolchain and libs:
 #
@@ -69,7 +69,25 @@ case "$ARCH" in
     # because gcc and clang keep the sixteen-byte stack boundary that Mach-O
     # wants and MSVC does not.  See tiger_host_shims.c.
     ;;
-  x86_64|aarch64)
+  aarch64)
+    # 64-bit ARM: the guest is i386 and the processor is not, so a translator
+    # sits between them.  The normal build is Box64, the same pinned
+    # translator the Android phones run and were validated with, wired to
+    # Panthera's own 32-bit bridge, with Glint for AAC -- all MIT.  It is
+    # built and self-tested on ARM hardware in CI; at the time of writing
+    # nobody has listened to it on an ARM Linux machine.  The older Unicorn
+    # build (GPL, slower) remains available with PANTHERA_RUNTIME=unicorn.
+    if [ "${PANTHERA_RUNTIME:-box64}" = box64 ]; then
+        [ "$AAC" = glint ] || { echo "the Box64 build uses Glint (AAC=glint)"; exit 1; }
+        exec python3 "$ROOT/tools/build_linux_box64.py" --out "$OUT"             ${GLINT_SOURCE:+--glint-source "$GLINT_SOURCE"} ${BOX64_SOURCE:+--box-source "$BOX64_SOURCE"}
+    fi
+    CFLAGS="$CFLAGS -DTIGER_UC"
+    UC="${UNICORN_DIR:-$ROOT/android/harness/unicorn}"
+    [ -d "$UC/include" ] || { echo "no Unicorn at $UC (set UNICORN_DIR)"; exit 1; }
+    CFLAGS="$CFLAGS -I$UC/include"
+    LDFLAGS="${UNICORN_LIBRARY:-$UC/build/libunicorn.a} $LDFLAGS"
+    ;;
+  x86_64)
     CFLAGS="$CFLAGS -DTIGER_UC"
     UC="${UNICORN_DIR:-$ROOT/android/harness/unicorn}"
     [ -d "$UC/include" ] || { echo "no Unicorn at $UC (set UNICORN_DIR)"; exit 1; }

@@ -68,57 +68,17 @@ def wrapper_command(vendor, backend):
     shutil.copy2(HERE / "wrapper_args.py", vendor)
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--backend", choices=PINS, required=True)
-    parser.add_argument("--source", type=Path, required=True,
-                        help="Local official Box86/Box64 Git clone containing the pinned commit")
-    parser.add_argument("--out", type=Path, required=True, help="New experiment directory")
-    parser.add_argument("--aac", choices=["faad", "glint"], default="faad")
-    parser.add_argument("--aac-source", type=Path, help="Official Glint clone; required with --aac glint")
-    parser.add_argument("--api", type=int, default=26, help="Android minimum API (matches the app by default)")
-    parser.add_argument("--ndk", type=Path, default=Path("C:/Android/sdk/ndk/27.2.12479018"))
-    parser.add_argument("--cmake", type=Path, default=Path("C:/Android/sdk/cmake/3.22.1/bin/cmake.exe"))
-    args = parser.parse_args()
-    out = args.out.resolve()
-    if out.exists():
-        parser.error("--out must be new; rebuild an existing experiment with cmake --build OUT/build")
-    backend = args.backend
-    abi = "armeabi-v7a" if backend == "box86" else "arm64-v8a"
-    faad = ROOT / "android/harness" / f"faad2-obj-{abi}"
-    if args.aac == "faad" and not list(faad.glob("*.o")):
-        parser.error(f"Build the existing FAAD2 objects first: {faad}")
-    if (args.aac == "glint") != (args.aac_source is not None):
-        parser.error("--aac glint and --aac-source must be supplied together")
-    archive = subprocess.check_output(["git", "-C", str(args.source), "archive", PINS[backend]])
-    out.mkdir(parents=True)
+def vendor_translator(backend, source, out):
+    """Export the pinned translator into out/translator and apply Panthera's
+    patches.  -> (vendor, objects, options): the directory, the CMake targets
+    the host links, and the CMake options the translator is configured with.
+    Shared by the Android builder and the native Linux aarch64 builder, so
+    there is one patch list and not two that drift."""
+    archive = subprocess.check_output(["git", "-C", str(source), "archive", PINS[backend]])
     vendor = out / "translator"
     vendor.mkdir()
     with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
         tar.extractall(vendor, filter="data")
-    host = out / "host"
-    host.mkdir()
-    for path in (ROOT / "src").iterdir():
-        if path.is_file():
-            shutil.copy2(path, host / path.name)
-    # Keep the loader and argument dispatch unchanged. Only replace the emitted
-    # guest bridge record, whose layout is specific to the chosen translator.
-    seam = host / "tiger_host_uc.c"
-    source = seam.read_text(encoding="utf8")
-    start = source.index("    unsigned char b[UC_TRAMP_STRIDE];")
-    end = source.index("\n}", start)
-    source = (source[:start] + f"    extern void {backend}_write_slot(uc_engine*, unsigned, int);\n"
-              f"    {backend}_write_slot(t_uc,g_uc_tramp+(unsigned)idx*UC_TRAMP_STRIDE,fp);" + source[end:])
-    if backend == "box64":
-        source = source.replace("#define UC_TRAMP_STRIDE 16u", "#define UC_TRAMP_STRIDE 32u")
-    seam.write_text(source, encoding="utf8")
-    aac_cmake = ""
-    aac_library = "${FAAD_OBJS}"
-    if args.aac == "glint":
-        aac_vendor = glint_experiment.prepare(args.aac_source, out, host)
-        aac_cmake = glint_experiment.cmake_library(aac_vendor) + glint_experiment.cmake_checks(aac_vendor)
-        aac_library = "panthera_glint_decoder"
-
     if backend == "box86":
         for path in (vendor / "src").rglob("*.c"):
             old = path.read_bytes()
@@ -158,6 +118,62 @@ def main():
     replace(vendor / "CMakeLists.txt", "$(git rev-parse --short HEAD)", PINS[backend][:7])
     for filename in (f"{backend}_adapter.c", f"memory_{backend}.c", "engine_bench.c", "memory_native.c", "box_signals.h", "box_memory.h", "runtime_check.c"):
         shutil.copy2(HERE / filename, vendor / filename)
+    return vendor, objects, options
+
+
+def stage_host(out, backend):
+    """Copy src/ into out/host and swap in the translator's bridge record."""
+    host = out / "host"
+    host.mkdir()
+    for path in (ROOT / "src").iterdir():
+        if path.is_file():
+            shutil.copy2(path, host / path.name)
+    # Keep the loader and argument dispatch unchanged. Only replace the emitted
+    # guest bridge record, whose layout is specific to the chosen translator.
+    seam = host / "tiger_host_uc.c"
+    source = seam.read_text(encoding="utf8")
+    start = source.index("    unsigned char b[UC_TRAMP_STRIDE];")
+    end = source.index("\n}", start)
+    source = (source[:start] + f"    extern void {backend}_write_slot(uc_engine*, unsigned, int);\n"
+              f"    {backend}_write_slot(t_uc,g_uc_tramp+(unsigned)idx*UC_TRAMP_STRIDE,fp);" + source[end:])
+    if backend == "box64":
+        source = source.replace("#define UC_TRAMP_STRIDE 16u", "#define UC_TRAMP_STRIDE 32u")
+    seam.write_text(source, encoding="utf8")
+    return host
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--backend", choices=PINS, required=True)
+    parser.add_argument("--source", type=Path, required=True,
+                        help="Local official Box86/Box64 Git clone containing the pinned commit")
+    parser.add_argument("--out", type=Path, required=True, help="New experiment directory")
+    parser.add_argument("--aac", choices=["faad", "glint"], default="faad")
+    parser.add_argument("--aac-source", type=Path, help="Official Glint clone; required with --aac glint")
+    parser.add_argument("--api", type=int, default=26, help="Android minimum API (matches the app by default)")
+    parser.add_argument("--ndk", type=Path, default=Path("C:/Android/sdk/ndk/27.2.12479018"))
+    parser.add_argument("--cmake", type=Path, default=Path("C:/Android/sdk/cmake/3.22.1/bin/cmake.exe"))
+    args = parser.parse_args()
+    out = args.out.resolve()
+    if out.exists():
+        parser.error("--out must be new; rebuild an existing experiment with cmake --build OUT/build")
+    backend = args.backend
+    abi = "armeabi-v7a" if backend == "box86" else "arm64-v8a"
+    faad = ROOT / "android/harness" / f"faad2-obj-{abi}"
+    if args.aac == "faad" and not list(faad.glob("*.o")):
+        parser.error(f"Build the existing FAAD2 objects first: {faad}")
+    if (args.aac == "glint") != (args.aac_source is not None):
+        parser.error("--aac glint and --aac-source must be supplied together")
+    out.mkdir(parents=True)
+    vendor, objects, options = vendor_translator(backend, args.source, out)
+    host = stage_host(out, backend)
+    aac_cmake = ""
+    aac_library = "${FAAD_OBJS}"
+    if args.aac == "glint":
+        aac_vendor = glint_experiment.prepare(args.aac_source, out, host)
+        aac_cmake = glint_experiment.cmake_library(aac_vendor) + glint_experiment.cmake_checks(aac_vendor)
+        aac_library = "panthera_glint_decoder"
+
     (vendor / "panthera_jni.map").write_text(
         "{ global: Java_com_pantheraspeech_tts_PantheraNative_*; local: *; };\n", encoding="utf8")
     faad_include = ('"' + (ROOT / "android/harness/faad2/include").as_posix() + '"') if args.aac == "faad" else ""

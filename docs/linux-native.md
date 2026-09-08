@@ -9,6 +9,21 @@ engine and voice data; none is included in the build.
 Other projects may provide Speech Dispatcher integrations; they can use
 Panthera's host protocol.
 
+## 64-bit ARM
+
+`./build_linux.sh aarch64` builds the host for AArch64 Linux on the pinned
+Box64 translator the Android phones run, with Panthera's own 32-bit bridge and
+Glint for AAC, all MIT. It needs `g++`, `cmake`, `python3` and `git`; the
+translator and decoder are exported from clones at their pinned commits, fetched
+into `build/dependencies` when absent. The output lands in
+`build/linux-aarch64-glint` with the same files as the i686 build.
+
+Scope, stated plainly: CI builds this on ARM hardware and runs the checks that
+push i386 code through the translator, so the bridge is exercised, but nobody
+has yet listened to it on an ARM Linux machine. The same translator and the
+same host were validated by ear on ARM64 phones. `PANTHERA_RUNTIME=unicorn`
+selects the older GPL Unicorn build instead.
+
 ## Build and check AAC
 
 CI binaries target Ubuntu 22.04 / glibc 2.35 and newer, with the matching 32-bit glibc
@@ -116,7 +131,8 @@ The same build produces `libpanthera.so.0`, its `libpanthera.so` link, and
 this document, and an example C client. No engine or voice data is packaged.
 The normal native i686 build uses Panthera and Glint under MIT, with compiler
 runtime notices alongside them. Builds using FAAD2 or Unicorn retain GPL
-requirements; this includes the amd64 and AArch64 Linux configurations.
+requirements; this includes the amd64 Linux configuration, and an AArch64 one
+built with `PANTHERA_RUNTIME=unicorn` instead of the normal Box64 build.
 Archives include the applicable notices and source. See
 [distribution licensing](../licenses/DISTRIBUTION.txt).
 

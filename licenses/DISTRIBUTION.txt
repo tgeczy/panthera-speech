@@ -14,14 +14,17 @@ the included terms. Third-party components retain their own licenses.
 
 Windows prefers Media Foundation and carries Glint as a fallback when the
 Windows AAC codec cannot initialize. Native i686 Linux uses Glint by default
-and runs the guest instructions directly. Its command-line renderer, streaming
-pipe protocol and C library can be used by independent clients.
+and runs the guest instructions directly. 64-bit ARM Linux runs them through
+Box64, as the Android phones do, with Glint; that build is MIT as well. The
+command-line renderer, streaming pipe protocol and C library can be used by
+independent clients.
 
 Optional comparison builds using Unicorn or FAAD2 remain GPLv2 distributions.
 They are explicitly selected, and are not the normal Android or native Linux
 builds. Keep their GPL/FAAD2 notices and corresponding source archives with
-those binaries. The experimental Linux x86_64/aarch64 Unicorn builds belong
-to this group even when their AAC decoder is Glint.
+those binaries. The experimental Linux x86_64 Unicorn build belongs to this
+group even when its AAC decoder is Glint, as does an aarch64 build made with
+PANTHERA_RUNTIME=unicorn instead of the normal Box64 one.
 
 Source and build instructions:
 https://github.com/tgeczy/panthera-speech

@@ -22,7 +22,7 @@ jobs:
   build:
     # Match the supported runtime baseline. ubuntu-latest pulled in GLIBC_2.38
     # symbols, so an otherwise passing archive could not load on Ubuntu 22.04.
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.runner || 'ubuntu-22.04' }}
     strategy:
       fail-fast: false
       matrix:
@@ -43,6 +43,16 @@ jobs:
             aac: faad2
             suffix: ""
             packages: libfaad-dev
+          # 64-bit ARM, built and self-tested on ARM hardware: the guest runs
+          # through the pinned Box64 translator the phones use, so the checks
+          # that push i386 code through the bridge here are a real, if small,
+          # test of that layer on Linux.  Nobody has listened to it on an ARM
+          # Linux machine yet; the release notes say so.
+          - arch: aarch64
+            aac: glint
+            suffix: -glint
+            packages: g++ cmake python3
+            runner: ubuntu-22.04-arm
     name: ${{ matrix.arch }}-${{ matrix.aac }}
     env:
       AAC: ${{ matrix.aac }}
@@ -51,7 +61,9 @@ jobs:
 
       - name: Install the toolchain
         run: |
-          sudo dpkg --add-architecture i386
+          # Only the i686 build wants 32-bit packages; asking an ARM mirror
+          # for the i386 architecture fails apt-get update outright.
+          if [ "${{ matrix.arch }}" = i686 ]; then sudo dpkg --add-architecture i386; fi
           sudo apt-get update
           sudo apt-get install -y python3-venv ${{ matrix.packages }}
           # The 32-bit FAAD2 is a separate package from the 64-bit one, and
@@ -63,7 +75,7 @@ jobs:
           fi
 
       - name: Fetch and build Unicorn
-        if: matrix.arch != 'i686'
+        if: matrix.arch == 'x86_64'
         run: |
           git clone --depth 1 --branch 2.1.4 \
             https://github.com/unicorn-engine/unicorn.git unicorn-src
@@ -82,10 +94,13 @@ jobs:
         if: matrix.aac == 'glint'
         run: |
           out="$PWD/build/linux-${{ matrix.arch }}${{ matrix.suffix }}"
-          g++ -m32 -msse2 -mfpmath=sse -O2 -std=c++17 \
-            tools/aac_experiment/pcm16_check.cpp -o "$out/pcm16_check"
-          g++ -m32 -msse2 -mfpmath=sse -O2 -std=c++17 \
-            -I"$out/glint/glint/src" tools/aac_experiment/huffman_check.cpp -o "$out/huffman_check"
+          # The aarch64 builder compiles these itself; i686 needs the SSE flags.
+          if [ "${{ matrix.arch }}" = i686 ]; then
+            g++ -m32 -msse2 -mfpmath=sse -O2 -std=c++17 \
+              tools/aac_experiment/pcm16_check.cpp -o "$out/pcm16_check"
+            g++ -m32 -msse2 -mfpmath=sse -O2 -std=c++17 \
+              -I"$out/glint/glint/src" tools/aac_experiment/huffman_check.cpp -o "$out/huffman_check"
+          fi
           "$out/pcm16_check"
           "$out/huffman_check"
 
@@ -131,16 +146,22 @@ jobs:
           cp tools/native_library_check.c "$out/"
           mkdir -p "$out/licenses" "$out/sources"
           git archive --format=tar.gz -o "$PWD/$out/sources/panthera.tar.gz" HEAD \
-            src build_linux.sh LICENSE licenses docs/linux-native.md tools/native_library_check.c tools/native_divide_check.c tools/aac_experiment
+            src build_linux.sh LICENSE licenses docs/linux-native.md tools/native_library_check.c tools/native_divide_check.c tools/aac_experiment \
+            tools/build_linux_box64.py tools/translation_experiment
           if [ "${{ matrix.aac }}" = "glint" ]; then
             pin="$(python3 -c 'import sys; sys.path.insert(0,"tools/aac_experiment"); import glint; print(glint.PIN)')"
             git -C build/dependencies/glint-source archive --format=tar.gz \
               -o "$PWD/$out/sources/glint.tar.gz" "$pin"
           fi
-          if [ "${{ matrix.arch }}" != "i686" ]; then
+          if [ "${{ matrix.arch }}" = "x86_64" ]; then
             cp unicorn-src/COPYING "$out/licenses/Unicorn-GPL-2.0.txt"
             git -C unicorn-src archive --format=tar.gz \
               -o "$PWD/$out/sources/unicorn-2.1.4.tar.gz" HEAD
+          fi
+          if [ "${{ matrix.arch }}" = "aarch64" ]; then
+            pin="$(python3 -c 'import sys; sys.path.insert(0,"tools/translation_experiment"); import build; print(build.PINS["box64"])')"
+            git -C build/dependencies/box64-source archive --format=tar.gz \
+              -o "$PWD/$out/sources/box64.tar.gz" "$pin"
           fi
           tar -czf "build/panthera-linux-${{ matrix.arch }}-${{ matrix.aac }}.tar.gz" -C "$out" \
             tiger_host libpanthera.so libpanthera.so.0 include README.md native_library_check.c licenses sources
