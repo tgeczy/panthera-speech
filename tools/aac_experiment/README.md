@@ -123,6 +123,67 @@ and comparing tables from vo-aacenc and FFmpeg; its MIT declaration alone is
 not a completed provenance review. Keep the current release license notices
 and decoder defaults until the complete dependency selection is settled.
 
+### Decoder audit, later September 7
+
+The pinned decoder was read end to end for bounds, reset state and provenance,
+and what Apple's banks actually exercise was measured rather than assumed:
+41,662 access units (24,308 distinct) fed through a counting copy of the
+parser, from Tiger, Leopard, Snow Leopard and Lion, Vicki and Alex, at 180
+and 387 wpm. The counting copy, its records and results live under
+`build/research/aac-census/` and are not committed.
+
+What the banks use: mono SCE only; all four window sequences, including
+EIGHT_SHORT with grouping; **sine windows only, never KBD**; TNS in a third to
+a half of units (order up to 12, length up to 27 bands, so both the long and
+the short-window TNS paths are live); spectral codebooks 1 through 11, with
+book-11 escape prefixes up to 8 bits; `max_sfb` exactly at the 22050 Hz table
+limits (47 long, 15 short) and never beyond. Never present: PNS (codebook 13),
+intensity stereo (14, 15), pulse data, gain control, prediction, FIL, or any
+element but SCE. Zero decoder errors and zero bit-reader overruns.
+
+Three findings, each applied as a further `replace()` site in `glint.py` and
+each inert for this data by the census above:
+
+* A long-window `max_sfb` is six bits, so up to 63, and was never checked
+  against the band table (47 entries at 22050 Hz). Past it the offsets are
+  whatever memory follows the table, and the spectral loop writes `coef_` at
+  those offsets. Now refused as a malformed unit.
+* The book-11 escape prefix walk had no upper bound, and `1 << (n1 + 4)`
+  overflows `int` from a prefix of 27. AAC-LC values stop at 8191 (prefix 8);
+  a prefix over 12 is now refused, which keeps the shift defined without
+  second-guessing any real stream.
+* The PNS noise generator's state was a file-scope static that `init()` never
+  reset, so two decoders, or one rebuilt per unit as this host does, would draw
+  different noise for the same band. The state is now per decoder and reseeded
+  by `init()`. No Apple unit codes a PNS band, so this could not have caused
+  drift here; it is hygiene for the day one does.
+
+Measured: the audited build renders all 56 native configurations
+**byte-identical** to the previous Glint build (`--max-pcm-delta 0`, equal
+lengths, exact repeats from both hosts), and `pcm16_check` and
+`huffman_check` pass.
+
+Provenance, stated precisely: the shipped `aac_tables.hpp` holds the
+scalefactor-band offsets and Huffman codebooks of ISO/IEC 13818-7 / 14496-3,
+normative numbers rather than anyone's expression. Upstream's generator reads
+those numbers out of vo-aacenc (Apache-2.0) and FFmpeg (LGPL) and refuses to
+emit unless the two agree bit for bit; identical values from two unrelated
+codebases is evidence that they are the specification's data, and no code
+from either project is taken. The decoder itself is written against the
+specification and does not resemble FAAD2 or FFmpeg in structure. This is a
+reading of the source, not a legal opinion.
+
+### Native Linux
+
+`AAC=glint GLINT_SOURCE=<clone> ./build_linux.sh i686` builds the same
+pinned decoder into the native Linux host. Every AAC voice tried (Tiger
+Vicki; Leopard Vicki and Alex; 180 and 387 wpm) renders **byte-identical** to
+the Windows Glint host, with Fred unchanged as the control. The one thing
+that mattered: gcc's i386 default is x87, whose 80-bit intermediates round
+differently from the SSE2 doubles MSVC uses, so the decoder, bridge and host
+are built with `-msse2 -mfpmath=sse`. On the build VM Glint is ~25x real
+time against FAAD2's ~19.5x, with equal time to first sound.
+
 [oxideav-aac](https://github.com/OxideAV/oxideav-aac) was also inspected at
 `365e40e00c22a20fd83ba2bdc1aee826cc937cbc`. It declares MIT, but its current
 `filterbank::imdct` uses nested sample/coefficient loops and a cosine per term

@@ -87,6 +87,51 @@ def prepare(source, out, host):
             "static thread_local double ch_pcm[2][1024];")
     replace(decoder, "static_cast<float>((time[n] + overlap_[ch][n]) * kNorm)",
             "(time[n] + overlap_[ch][n]) * kNorm")
+    # Audit findings (2026-09-07), each inert for Apple's banks and measured
+    # so: 41,662 units across Tiger..Lion Vicki/Alex never exceed the band
+    # table, never use an escape prefix longer than 8, and never code a PNS
+    # band.  They close paths a malformed unit could still reach.
+    #
+    # 1. A long-window max_sfb is six bits, so up to 63, but the band table
+    #    for 22050 Hz has 47 entries; past it the offsets are whatever sits
+    #    after the table, and the spectral loop writes coef_ at those offsets.
+    replace(decoder, "    return 0;\n}\n\nint AacDecoder::decode_ics(", """    // Panthera experiment: refuse a max_sfb beyond the sample rate's band
+    // table rather than index past it (and write coef_ past its end).
+    if (ics.max_sfb > (ics.window_sequence == 2 ? kNumSwbShort[sr_index]
+                                                : kNumSwbLong[sr_index]))
+        return -1;
+    return 0;
+}
+
+int AacDecoder::decode_ics(""")
+    # 2. The book-11 escape prefix is a run of one bits with no upper bound in
+    #    the walk, and `1 << (n1 + 4)` overflows int from n1 = 27.  AAC-LC
+    #    values stop at 8191, so a prefix of 8; twelve is a safety bound that
+    #    keeps the shift defined without second-guessing any real stream.
+    replace(decoder, "while (br.get1()) n1++;",
+            "while (br.get1()) { if (++n1 > 12) return -3; }  // Panthera experiment: bounded")
+    # 3. The PNS generator's state was a file-scope static that init() never
+    #    reset, so two decoders -- or one rebuilt per unit, as the host does --
+    #    would draw different noise for the same band.  Per-decoder state,
+    #    seeded in init(), makes a PNS-bearing stream decode the same every time.
+    replace(decoder, """static uint32_t g_pns_state = 0x1234567u;
+static double pns_rand() {
+    g_pns_state ^= g_pns_state << 13;
+    g_pns_state ^= g_pns_state >> 17;
+    g_pns_state ^= g_pns_state << 5;
+    return (g_pns_state >> 8) * (2.0 / 16777216.0) - 1.0;  // [-1,1)
+}""", """// Panthera experiment: the generator state lives in the decoder and is
+// reseeded by init(), so repeated decodes of one stream agree.
+static double pns_rand(uint32_t& state) {
+    state ^= state << 13;
+    state ^= state >> 17;
+    state ^= state << 5;
+    return (state >> 8) * (2.0 / 16777216.0) - 1.0;  // [-1,1)
+}""")
+    replace(decoder, "            double r = pns_rand();", "            double r = pns_rand(pns_state_);")
+    replace(decoder, "    first_ = 1;\n}", "    first_ = 1;\n    pns_state_ = 0x1234567u;\n}")
+    replace(header, "    int first_ = 1;",
+            "    int first_ = 1;\n    uint32_t pns_state_ = 0x1234567u;  // PNS noise state, reseeded by init()")
     shutil.copy2(HERE / "glint_bridge.cpp", vendor)
     shutil.copy2(HERE / "pcm16.h", vendor)
     shutil.copy2(HERE / "tiger_host_aac_glint.c", host)
