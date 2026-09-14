@@ -23,6 +23,9 @@ $Generations = @($GenerationList -split ',' | Where-Object { $_ })
 # the two have to agree or a person's data is found by one and not the other.
 $dataPrefKey = 'HKCU:\Software\Panthera SAPI'
 $machinePrefPath = 'Software\Panthera SAPI'
+#: Which hive the machine-wide key is opened from; the settings test points
+#: it at HKCU so the elevated path can be exercised without touching HKLM.
+$machineHive = 'LocalMachine'
 
 #: %ProgramData%, named rather than hard-coded because a Windows install is
 #: not obliged to put it on C:.
@@ -76,34 +79,205 @@ function Set-MachineDataPath([string]$path) {
     }
 }
 
-#: The settings the engine DLL reads, in one place so the mirror below cannot
-#: drift from the checkboxes above it.  Tool state -- which generations were
-#: declined, whether the migration was declined -- is deliberately not here:
-#: it is this person's business and means nothing to another account.
-$SettingNames = @('AcceptCommands','Phrasing','ExpandAbbreviations','RateBoost',
-                  'Inflection','NumberStyle','Diagnostics')
+#: The settings the engine DLL reads and the type it reads each as, in one
+#: place so the file writer below cannot drift from the checkboxes above it.
+#: The DLL's lookup is typed -- setting_dword or setting_string -- and a
+#: value of the other type is passed over wherever it sits, so nothing here
+#: moves or mirrors one.  Tool state -- which generations were declined,
+#: whether the migration was declined, the data folder -- is deliberately not
+#: here: it is this person's business, means nothing to another account,
+#: and stays in HKCU.
+$SettingKinds = [ordered]@{ AcceptCommands = 'DWord'; Phrasing = 'String'; ExpandAbbreviations = 'DWord'
+                            RateBoost = 'DWord'; Inflection = 'DWord'; NumberStyle = 'String'; Diagnostics = 'DWord' }
+$SettingNames = @($SettingKinds.Keys)
 
-# The engine reads these from HKCU and falls back to HKLM per value, because a
-# voice speaking under a service account -- the sign-in screen -- has an HKCU
-# holding nothing anybody chose.  Mirroring happens on the elevated trips this
-# tool already makes, and the values travel as an argument rather than being
-# re-read on the other side: the elevated process's HKCU belongs to whichever
-# account answered the prompt, which need not be this one.  Same reason
-# -DataRoot has always been passed rather than resolved twice.
-function Set-MachineSettings([string]$pairs) {
-    if (!$pairs) { return }
-    foreach ($view in 'Registry32','Registry64') {
-        $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine',$view)
-        $key = $base.CreateSubKey($machinePrefPath)
-        foreach ($pair in @($pairs -split ';' | Where-Object { $_ })) {
-            $name,$value = $pair -split '=',2
-            if ($name -notin $SettingNames) { continue }
-            # A number is a DWORD and a word is a string, which is exactly the
-            # split the DLL makes between setting_dword and setting_string.
-            if ($value -match '^\d+$') { $key.SetValue($name,[int]$value,'DWord') }
-            else { $key.SetValue($name,[string]$value,'String') }
+# **The engine's settings live in two files now, and the registry is what
+# they fall back to.**
+#
+# The DLL reads, one typed value at a time: this user's file, the machine's,
+# HKCU, HKLM, then its default.  This user's file is under %APPDATA%, where
+# a choice belongs to the person who made it.  The machine's is under
+# %ProgramData%, which every account can read and -- once the installer or
+# an elevated trip has granted it -- any standard account can write, so the
+# copy the Windows sign-in screen speaks with is the one its owner saved
+# last, not whatever an elevated trip mirrored months ago.  Every save
+# writes both; the elevated `-MirrorSettings` trip stays for the machine
+# that was upgraded from a build whose installer never created the folder.
+#
+# Flat TOML, so the DLL's reader fits in one file and the writer fits here:
+# `Name = 1`, `Name = "word"`, `# comments`; a number is what the DLL reads
+# as a DWORD and a quoted word is what it reads as a string, and the split
+# is made by the value's type on this side exactly as it was for the
+# registry.  Keys are the registry's own names, so nothing maps them.
+#
+# The two paths honour the same environment overrides the DLL does, so a
+# test can point both at scratch files; the settings test sets the
+# variables directly.
+function Get-SettingsFilePath([string]$override, [string]$base) {
+    if ($override) { return $override }
+    if ($base) { return (Join-Path $base 'Panthera SAPI\settings.toml') }
+    return $null
+}
+$userSettingsFile = Get-SettingsFilePath $env:PANTHERA_SAPI_SETTINGS_USER $env:APPDATA
+$machineSettingsFile = Get-SettingsFilePath $env:PANTHERA_SAPI_SETTINGS_MACHINE $(if ($env:ProgramData) { $env:ProgramData } else { $env:ALLUSERSPROFILE })
+
+# One file as a list of @{Name;Value} in the file's own order, a Value being
+# [int] or [string].  A line that does not parse is left out, which is the
+# DLL's rule too: a hand edit that breaks one line cannot take a setting
+# with it.  `true`/`false` read as 1/0 as a courtesy; nothing here writes them.
+function Read-SettingsFile([string]$path) {
+    $table = New-Object Collections.ArrayList
+    if (!$path -or !(Test-Path -LiteralPath $path)) { return ,$table }
+    try { $lines = [IO.File]::ReadAllLines($path,[Text.Encoding]::UTF8) } catch { return ,$table }
+    foreach ($raw in $lines) {
+        $line = $raw.Trim()
+        if (!$line -or $line[0] -eq '#') { continue }
+        $eq = $line.IndexOf('=')
+        if ($eq -lt 0) { continue }
+        $name = $line.Substring(0,$eq).Trim()
+        $rest = $line.Substring($eq+1).Trim()
+        if ($name -notmatch '^[A-Za-z0-9_-]+$' -or !$rest) { continue }
+        if ($rest[0] -eq '"') {
+            $text = New-Object Text.StringBuilder; $closed = $false; $i = 1
+            while ($i -lt $rest.Length) {
+                $c = $rest[$i]
+                if ($c -eq '\' -and $i + 1 -lt $rest.Length) { [void]$text.Append($rest[$i+1]); $i += 2; continue }
+                if ($c -eq '"') { $closed = $true; break }
+                [void]$text.Append($c); $i++
+            }
+            if (!$closed) { continue }
+            $value = $text.ToString()
+            if ($value.Length -gt 63) { $value = $value.Substring(0,63) }
+            [void]$table.Add(@{ Name = $name; Value = [string]$value })
+        } else {
+            $hash = $rest.IndexOf('#')
+            if ($hash -ge 0) { $rest = $rest.Substring(0,$hash).Trim() }
+            if ($rest -eq 'true') { [void]$table.Add(@{ Name = $name; Value = [int]1 }) }
+            elseif ($rest -eq 'false') { [void]$table.Add(@{ Name = $name; Value = [int]0 }) }
+            elseif ($rest -match '^[+-]?\d{1,10}$') {
+                $n = [long]$rest
+                if ($n -ge -2147483648 -and $n -le 2147483647) { [void]$table.Add(@{ Name = $name; Value = [int]$n }) }
+            }
         }
-        $key.Dispose(); $base.Dispose()
+    }
+    return ,$table
+}
+# Whole, then swapped in over the old one, because the engine may be reading
+# it in another process at that very moment.  -> $true when it is on disk.
+function Write-SettingsFile([string]$path, $table) {
+    if (!$path) { return $false }
+    $text = New-Object Text.StringBuilder
+    [void]$text.Append("# Panthera SAPI settings.  Written by the settings program; safe to edit by hand.`r`n")
+    [void]$text.Append("# Numbers stay numbers and words stay in quotes; a line that does not parse is ignored.`r`n")
+    foreach ($entry in $table) {
+        $shown = if ($entry.Value -is [string]) { '"' + ($entry.Value -replace '(["\\])','\$1') + '"' }
+                 else { [string][int]$entry.Value }
+        [void]$text.Append(('{0} = {1}' -f $entry.Name,$shown)).Append("`r`n")
+    }
+    try {
+        $folder = Split-Path -Parent $path
+        if ($folder -and !(Test-Path -LiteralPath $folder)) { New-Item -ItemType Directory -Path $folder -Force | Out-Null }
+        $tmp = $path + '.tmp'
+        [IO.File]::WriteAllText($tmp,$text.ToString(),(New-Object Text.UTF8Encoding($false)))
+        # [NullString] and not $null: PowerShell hands a [string] parameter
+        # "" for $null, and an empty backup name is "not of a legal form".
+        if (Test-Path -LiteralPath $path) { [IO.File]::Replace($tmp,$path,[NullString]::Value) }
+        else { [IO.File]::Move($tmp,$path) }
+        return $true
+    } catch {
+        Remove-Item -LiteralPath ($path + '.tmp') -Force -ErrorAction SilentlyContinue
+        return $false
+    }
+}
+# $table with $name set to $value: in place where the name already stands,
+# any repeat of it dropped, at the end when it is new.
+function Set-TableValue($table, [string]$name, $value) {
+    $kept = New-Object Collections.ArrayList; $placed = $false
+    foreach ($entry in $table) {
+        if ($entry.Name -eq $name) {
+            if (!$placed) { [void]$kept.Add(@{ Name = $name; Value = $value }); $placed = $true }
+        } else { [void]$kept.Add($entry) }
+    }
+    if (!$placed) { [void]$kept.Add(@{ Name = $name; Value = $value }) }
+    return ,$kept
+}
+# One key in one file, everything else in it left as it was.
+function Set-SettingsFileValue([string]$path, [string]$name, $value) {
+    if (!$path) { return $false }
+    return (Write-SettingsFile $path (Set-TableValue (Read-SettingsFile $path) $name $value))
+}
+# The last line naming $name in $path when it is of $kind ('DWord' or
+# 'String', or $null for either), else $null -- the DLL's typed lookup.
+function Get-SettingsFileValue([string]$path, [string]$name, [string]$kind) {
+    $found = $null
+    foreach ($entry in (Read-SettingsFile $path)) {
+        if ($entry.Name -ne $name) { continue }
+        $isString = $entry.Value -is [string]
+        if ($kind -eq 'String' -and !$isString) { continue }
+        if ($kind -eq 'DWord' -and $isString) { continue }
+        $found = $entry.Value
+    }
+    return $found
+}
+
+# The machine-wide folder, writable by every standard account.  Done on the
+# elevated trips this tool already makes, which is what repairs a machine
+# upgraded from a build whose installer never created the folder; a fresh
+# install grants the same from installer.iss.  Users get modify and not full
+# control: the file is what SYSTEM reads at the sign-in screen, and its
+# permissions are not something a standard account should be able to change.
+function Grant-SettingsFolder {
+    if (!$machineSettingsFile) { return }
+    $folder = Split-Path -Parent $machineSettingsFile
+    try {
+        if (!(Test-Path -LiteralPath $folder)) { New-Item -ItemType Directory -Path $folder -Force | Out-Null }
+        & "$env:SystemRoot\System32\icacls.exe" $folder /grant '*S-1-5-32-545:(OI)(CI)M' /Q | Out-Null
+    } catch {}
+}
+# This person's settings, arrived as an argument, into the machine's file --
+# and whatever HKLM still held from before the files, seeded into it first
+# and then removed, so a deleted file means the defaults rather than a mirror
+# from months ago coming back.  The values travel as an argument rather than
+# being re-read on the other side: the elevated process's own files belong
+# to whichever account answered the prompt, which need not be this one.
+# Same reason -DataRoot has always been passed rather than resolved twice.
+function Set-MachineSettings([string]$pairs) {
+    if (!$machineSettingsFile) { return }
+    $table = Read-SettingsFile $machineSettingsFile
+    $present = @{}; foreach ($entry in $table) { $present[$entry.Name] = $true }
+    foreach ($view in 'Registry64','Registry32') {
+        try {
+            $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey($machineHive,$view)
+            $key = $base.OpenSubKey($machinePrefPath)
+            if ($key) {
+                foreach ($name in $SettingNames) {
+                    if ($present[$name] -or $name -notin $key.GetValueNames()) { continue }
+                    if ($key.GetValueKind($name).ToString() -ne $SettingKinds[$name]) { continue }
+                    $value = if ($SettingKinds[$name] -eq 'DWord') { [int]$key.GetValue($name) } else { [string]$key.GetValue($name) }
+                    [void]$table.Add(@{ Name = $name; Value = $value }); $present[$name] = $true
+                }
+                $key.Dispose()
+            }
+            $base.Dispose()
+        } catch {}
+    }
+    foreach ($pair in @($pairs -split ';' | Where-Object { $_ })) {
+        $name,$value = $pair -split '=',2
+        if ($name -notin $SettingNames) { continue }
+        if ($SettingKinds[$name] -eq 'DWord') {
+            if ($value -notmatch '^\d{1,9}$') { continue }
+            $typed = [int]$value
+        } else { $typed = [string]$value }
+        $table = Set-TableValue $table $name $typed
+    }
+    if (!(Write-SettingsFile $machineSettingsFile $table)) { return }
+    foreach ($view in 'Registry32','Registry64') {
+        try {
+            $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey($machineHive,$view)
+            $key = $base.OpenSubKey($machinePrefPath,$true)
+            if ($key) { foreach ($name in $SettingNames) { $key.DeleteValue($name,$false) }; $key.Dispose() }
+            $base.Dispose()
+        } catch {}
     }
 }
 
@@ -441,6 +615,7 @@ if ($MigrateData) {
             /grant '*S-1-5-32-544:(OI)(CI)F' `
             /grant '*S-1-5-32-545:(OI)(CI)RX' /T /C /Q | Out-Null
         Set-MachineDataPath $DataRoot
+        Grant-SettingsFolder
         Set-MachineSettings $MirrorSettings
         # Every registered token carries the old DataPath.  Follow the data,
         # all four lineages, the same way a deliberate folder change does.
@@ -461,7 +636,8 @@ if ($RegisterVoices) {
     & "$env:SystemRoot\System32\regsvr32.exe" /s (Join-Path $stage 'x64\panthera_sapi.dll')
     if ($LASTEXITCODE) { exit $LASTEXITCODE }
     # Registration is the elevated trip everybody makes, so it is where the
-    # machine-wide copy of the settings gets refreshed.
+    # machine-wide folder gets its permissions and its copy of the settings.
+    Grant-SettingsFolder
     Set-MachineSettings $MirrorSettings
     Add-VoiceTokens $Generations | Out-Null
     exit 0
@@ -566,7 +742,16 @@ $diagnostics.AccessibleName = 'Write a diagnostic log'
 $diagnostics.AccessibleDescription = 'Off by default. Records what the engine did, not what was spoken, to a file in your temp folder. Turn it on only if a bug report asks for it.'
 $diagnostics.Location = New-Object Drawing.Point(340,362); $diagnostics.AutoSize = $true
 
+# An engine setting goes to the files, this person's and the machine's; the
+# machine write fails quietly on a machine no elevated trip has granted the
+# folder on yet, and the next such trip carries the value across.  Tool
+# state -- the chosen folder, declined generations -- stays in HKCU.
 function Save-Setting([string]$name, $value) {
+    if ($name -in $SettingNames) {
+        Set-SettingsFileValue $userSettingsFile $name $value | Out-Null
+        Set-SettingsFileValue $machineSettingsFile $name $value | Out-Null
+        return
+    }
     # Registry New-Item -Force clears an existing key, including its values.
     if (!(Test-Path -LiteralPath $dataPrefKey)) {
         New-Item -Path $dataPrefKey -Force | Out-Null
@@ -574,14 +759,25 @@ function Save-Setting([string]$name, $value) {
     $kind = if ($value -is [string]) { 'String' } else { 'DWord' }
     New-ItemProperty -Path $dataPrefKey -Name $name -Value $value -PropertyType $kind -Force | Out-Null
 }
+# This person's own choice and nothing inherited: the file for an engine
+# setting, HKCU for tool state.
 function Load-Setting([string]$name, $default) {
+    if ($name -in $SettingNames) {
+        $value = Get-SettingsFileValue $userSettingsFile $name $SettingKinds[$name]
+        if ($null -ne $value) { return $value } else { return $default }
+    }
     try { (Get-ItemProperty -Path $dataPrefKey -Name $name -ErrorAction Stop).$name }
     catch { $default }
 }
 function Load-EngineSetting([string]$name, $default) {
-    # Match the DLL's per-value, typed HKCU -> HKLM lookup. Tool state and
-    # explicit choices to mirror still use Load-Setting (HKCU only).
+    # Match the DLL's per-value, typed lookup: this user's file, the
+    # machine's, HKCU, HKLM.  Tool state and explicit choices to mirror
+    # still use Load-Setting.
     $kind = if ($default -is [string]) { 'String' } else { 'DWord' }
+    foreach ($file in $userSettingsFile,$machineSettingsFile) {
+        $value = Get-SettingsFileValue $file $name $kind
+        if ($null -ne $value) { return $value }
+    }
     foreach ($path in $dataPrefKey,('HKLM:\' + $machinePrefPath)) {
         $key = $null
         try {
@@ -593,9 +789,10 @@ function Load-EngineSetting([string]$name, $default) {
     }
     return $default
 }
-# This person's settings, packed for the elevated process to mirror into HKLM.
-# Only the ones actually set travel: a value nobody chose has no business
-# becoming the default every other account on the machine inherits.
+# This person's settings, packed for the elevated process to write into the
+# machine's file.  Only the ones actually set travel: a value nobody chose
+# has no business becoming the default every other account on the machine
+# inherits.
 function Get-SettingsArgument {
     $pairs = @()
     foreach ($name in $SettingNames) {
@@ -604,6 +801,39 @@ function Get-SettingsArgument {
     }
     $pairs -join ';'
 }
+# Once, quietly: the values this person's HKCU held before the files move
+# into their file and leave the registry.  Only the engine settings, and
+# only ones of the type the DLL reads -- a wrong-typed value was never read
+# by anything and is left where it was.  A value the file already has is not
+# overridden: the file is what they have been hearing since it appeared.
+# The key itself stays; DataPath and the tool's own state live in it, and
+# the installer removes it with the product.  HKLM is not touched from here
+# -- that needs elevation, and the next elevated trip does it.
+#
+# Interactive runs only: on the -RegisterVoices and -MigrateData trips, HKCU
+# and %APPDATA% belong to whoever answered the elevation prompt.
+function Move-SettingsOutOfRegistry {
+    if (!$userSettingsFile) { return }
+    $key = $null
+    try { $key = Get-Item -LiteralPath $dataPrefKey -ErrorAction Stop } catch { return }
+    try {
+        $held = @($key.GetValueNames())
+        $table = Read-SettingsFile $userSettingsFile
+        $present = @{}; foreach ($entry in $table) { $present[$entry.Name] = $true }
+        $moved = @()
+        foreach ($name in $SettingNames) {
+            if ($name -notin $held) { continue }
+            if ($key.GetValueKind($name).ToString() -ne $SettingKinds[$name]) { continue }
+            $value = if ($SettingKinds[$name] -eq 'DWord') { [int]$key.GetValue($name) } else { [string]$key.GetValue($name) }
+            if (!$present[$name]) { [void]$table.Add(@{ Name = $name; Value = $value }); $present[$name] = $true }
+            $moved += $name
+        }
+    } finally { $key.Dispose() }
+    if (!$moved.Count) { return }
+    if (!(Write-SettingsFile $userSettingsFile $table)) { return }
+    foreach ($name in $moved) { Remove-ItemProperty -Path $dataPrefKey -Name $name -ErrorAction SilentlyContinue }
+}
+Move-SettingsOutOfRegistry
 $acceptCommands.Checked = [bool](Load-EngineSetting 'AcceptCommands' 0)
 $pauses.SelectedIndex = [Math]::Max(0, $pausesValues.IndexOf([string](Load-EngineSetting 'Phrasing' 'fewest')))
 $expandAbbrev.Checked = [bool](Load-EngineSetting 'ExpandAbbreviations' 1)

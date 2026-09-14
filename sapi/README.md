@@ -4,8 +4,8 @@ This is a SAPI 5 engine shim built for x86 and x64. Both variants launch the
 existing 32-bit `panthera_host.exe`, because Apple's engine itself is i386.
 
 The COM adapter is in `panthera_sapi.cpp`. Separately compiled modules own
-the resident child and pipe reads (`runtime`), per-value registry fallback
-(`settings`), opt-in logging (`diagnostics`), and command/abbreviation handling
+the resident child and pipe reads (`runtime`), the settings files and their
+registry fallback (`settings`), opt-in logging (`diagnostics`), and command/abbreviation handling
 (`text`). The lexical test links the same text module as the DLL; the resident
 integration test links the same runtime and settings modules on both bitnesses.
 
@@ -26,17 +26,39 @@ text in it -- which for a screen reader is a transcript of whatever its
 owner reads, in a folder anything running as them can open. It is now off,
 and with it off no file is created at all: the engine writes nothing and
 its child's diagnostics go to `NUL`. A build that finds logs left by an
-earlier one deletes them. To turn it on for a bug report:
+earlier one deletes them. To turn it on for a bug report, tick **Write a
+diagnostic log** in the settings program, or put this line in
+`%APPDATA%\Panthera SAPI\settings.toml`:
 
 ```
-reg add "HKCU\Software\Panthera SAPI" /v Diagnostics /t REG_DWORD /d 1 /f
+Diagnostics = 1
 ```
 
 `1` records the measurements -- byte counts, flags, which voice -- and that
 is what has actually settled every bug this log has settled. `2` also
 records a slice of the spoken text, and is worth using only when the report
-is about particular words. Either way the file stops at 4 MB and starts
-over. `/d 0` turns it off again and the next run clears up.
+is about particular words; it stays a deliberate edit of the file, because a
+transcript of everything the machine says should take more than one click.
+Either way the file stops at 4 MB and starts over. `0` turns it off again
+and the next run clears up.
+
+**Settings live in two files, and the registry is what they fall back to.**
+Each is flat TOML -- `Name = 1`, `Name = "word"`, `# comments` -- and the
+engine reads one typed value at a time in this order: `%APPDATA%\Panthera
+SAPI\settings.toml` (this user's), `%ProgramData%\Panthera SAPI\settings.toml`
+(the machine's), then `HKCU` and `HKLM\Software\Panthera SAPI` for a machine
+upgraded from a build that kept them there, then the engine's default. The
+settings program writes both files on every save, so the Windows sign-in
+screen -- a service account whose `%APPDATA%` nobody chose anything in --
+speaks with the settings its owner saved last. The installer grants every
+standard account write access to the machine folder, and the tool's own
+elevated trips grant it on a machine upgraded from an older installer.
+Opening the tool once moves the values `HKCU` held into the user's file and
+removes them from the registry; the next elevated trip does the same for
+`HKLM`. A value of the wrong type -- a word where a number belongs -- is
+passed over for the next source, so a hand edit that breaks one line cannot
+take a setting with it. The data folder is not a setting and stays in the
+registry: every voice token carries its own `DataPath`.
 
 Three things follow from the engine outliving the utterance, and
 `sapi/resident_test.cpp` gates all of them on every generation: a warm
@@ -137,6 +159,7 @@ original samples without restarting the host. Embedded commands retain their
 payloads through abbreviation processing; spaced delimiters are recognized,
 and Lion excludes input-mode commands consistently with NVDA and Android.
 The build runs resident voice checks through both x86 and x64 SAPI code with
-isolated registry settings, using personal engine data when available.
+the settings files and registry both isolated, using personal engine data
+when available.
 
 This is development work: do not distribute it with extracted Apple data.

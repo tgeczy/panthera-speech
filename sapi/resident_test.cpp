@@ -25,13 +25,26 @@ static int g_fail;
  * explicit user choice. Child hosts receive their settings via environment. */
 class TestSettings {
     HKEY user, machine;
-    std::wstring path;
+    std::wstring path, files;
 public:
     bool ready;
     TestSettings():user(0),machine(0),ready(false) {
         wchar_t suffix[80];
         swprintf_s(suffix,L"Software\\PantheraTests\\Resident-%lu",GetCurrentProcessId());
         path=suffix;
+        /* The settings files come before the registry, so they are pointed
+         * at a scratch folder too -- before the first lookup, which is when
+         * the DLL reads its environment -- or Tomi's own file would shadow
+         * every value this test pins. */
+        wchar_t temp[MAX_PATH];
+        if(GetTempPathW(MAX_PATH,temp)){
+            swprintf_s(suffix,L"panthera-resident-test\\settings-%lu",GetCurrentProcessId());
+            files=std::wstring(temp)+suffix;
+            CreateDirectoryW((std::wstring(temp)+L"panthera-resident-test").c_str(),0);
+            CreateDirectoryW(files.c_str(),0);
+            SetEnvironmentVariableW(L"PANTHERA_SAPI_SETTINGS_USER",(files+L"\\user.toml").c_str());
+            SetEnvironmentVariableW(L"PANTHERA_SAPI_SETTINGS_MACHINE",(files+L"\\machine.toml").c_str());
+        }
         if(RegCreateKeyExW(HKEY_CURRENT_USER,(path+L"\\User").c_str(),0,0,0,
                           KEY_ALL_ACCESS,0,&user,0) ||
            RegCreateKeyExW(HKEY_CURRENT_USER,(path+L"\\Machine").c_str(),0,0,0,
@@ -48,6 +61,11 @@ public:
         if(user)RegCloseKey(user);
         if(machine)RegCloseKey(machine);
         RegDeleteTreeW(HKEY_CURRENT_USER,path.c_str());
+        if(!files.empty()){
+            DeleteFileW((files+L"\\user.toml").c_str());
+            DeleteFileW((files+L"\\machine.toml").c_str());
+            RemoveDirectoryW(files.c_str());
+        }
     }
 };
 static void check(bool ok, const char *what) {
@@ -420,6 +438,19 @@ int wmain(int argc, wchar_t **argv) {
     set_dword(L"ExpandAbbreviations",1);
     say(e,ABBREVIATIONS,&expandedAgain,0);
     check(expandedAgain==expanded,"abbreviations on restores the original utterance");
+    /* The same change from the settings file, which is where the settings
+     * program writes now: it has to reach the next utterance as surely as
+     * the registry write did, and the file going away is a change too. */
+    {
+        SettingsTable off; SettingValue v; v.isString=false; v.number=0;
+        off.push_back(std::make_pair(std::wstring(L"ExpandAbbreviations"),v));
+        check(settings_write_file(settings_user_path(),off),"the settings file can be written");
+        std::vector<BYTE> fromFile; say(e,ABBREVIATIONS,&fromFile,0);
+        check(fromFile==spelled,"abbreviations off from the settings file changes the next utterance");
+        DeleteFileW(settings_user_path().c_str());
+        std::vector<BYTE> fileGone; say(e,ABBREVIATIONS,&fileGone,0);
+        check(fileGone==expanded,"removing the settings file returns to the registry setting");
+    }
 
     std::vector<BYTE> numbers, numberReference;
     set_string(L"NumberStyle",L"off");

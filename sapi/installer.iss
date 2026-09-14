@@ -21,7 +21,7 @@
 #ifndef StageDir
 #define StageDir "C:\panthera\sapi"
 #endif
-#define AppVer "3.0.0"
+#define AppVer "3.1.0"
 
 [Setup]
 AppId={{8E1B0A4C-5A0D-4F2E-9C1B-7D64A2153F90}
@@ -65,6 +65,16 @@ Source: "{#StageDir}\Panthera-MIT.txt"; DestDir: "{app}\licenses"
 ; but for the ._pth naming the app folder on sys.path; still no Apple data.
 Source: "{#StageDir}\python\*"; DestDir: "{app}\python"; Flags: recursesubdirs
 
+[Dirs]
+; The machine-wide settings file lives here, and every standard account
+; writes it: the settings tool keeps this copy current on every save, so the
+; sign-in screen speaks with the settings its owner chose last rather than
+; whatever an elevated trip mirrored months ago.  Modify and not full
+; control -- SYSTEM reads this file, and its permissions are not something a
+; standard account should be able to change.  The tool's own elevated trips
+; grant the same on a machine upgraded from an installer without this entry.
+Name: "{commonappdata}\Panthera SAPI"; Permissions: users-modify
+
 [Icons]
 ; The launcher rather than the batch file: a GUI-subsystem program creates no
 ; console, so nothing flashes or steals focus before the dialog appears.
@@ -82,6 +92,11 @@ Root: HKCU; Subkey: "Software\Panthera SAPI"; Flags: uninsdeletekey dontcreateke
 ; standalone default).  Registering with no data present is a clean no-op.
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -STA -File ""{app}\settings.ps1"" -RegisterVoices -GenerationList Tiger,Leopard,Snowleopard,Lion"; StatusMsg: "Registering voices from your speech data..."; Flags: runhidden
 Filename: "{app}\panthera_settings.exe"; Description: "Open Panthera SAPI settings"; Flags: postinstall nowait skipifsilent
+
+[UninstallDelete]
+; The settings files go with the product, as the HKCU key always has.
+Type: filesandordirs; Name: "{commonappdata}\Panthera SAPI"
+Type: filesandordirs; Name: "{userappdata}\Panthera SAPI"
 
 [UninstallRun]
 ; Tokens first; when the last Panthera token goes, the settings tool also
