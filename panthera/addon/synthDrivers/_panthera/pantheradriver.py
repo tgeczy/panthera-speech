@@ -644,6 +644,16 @@ class PantheraDriver(HostMixin, SpeechPipelineMixin, SynthDriver):
         #: those two paths would explain it very differently -- so record which
         #: one it was rather than reason about it.
         self._afterCancel = False
+        #: Indexes held until playback reaches them, with breathing off --
+        #: see the marks section of `speech_pipeline`.  Bytes fed and bytes
+        #: played since the device last held nothing of ours, the marks
+        #: waiting on a byte count, and a generation that `cancel()` bumps so
+        #: a callback from abandoned audio cannot count against fresh audio.
+        self._markLock = threading.Lock()
+        self._marks = []
+        self._markGen = 0
+        self._fedBytes = 0
+        self._playedBytes = 0
         #: How `cancel()` reaches the engine.
         #:
         #: Stopping the sound is instant, but the host went on synthesising
@@ -663,6 +673,11 @@ class PantheraDriver(HostMixin, SpeechPipelineMixin, SynthDriver):
         self._queue = queue.Queue()
         self._audioQueue = queue.Queue()
         self._player = self._makePlayer()
+        #: Whether this NVDA's player will call back when a chunk has been
+        #: played.  Every NVDA since the WASAPI player has, and the manifest
+        #: admits one older; on that one an index is reported the moment it
+        #: is dequeued, which is what every index did before marks existed.
+        self._playerTakesOnDone = self._probeOnDone()
         self._feeder = threading.Thread(target=self._feed,
                                         name=self.name + "-feed", daemon=True)
         self._feeder.start()
@@ -671,6 +686,18 @@ class PantheraDriver(HostMixin, SpeechPipelineMixin, SynthDriver):
         self._worker.start()
 
     # -- plumbing ----------------------------------------------------------
+    def _probeOnDone(self):
+        """-> whether `feed()` takes an `onDone` callback.
+
+        Asked once, of the signature, rather than discovered by a TypeError
+        on the feeder thread with a slice of audio in hand.
+        """
+        try:
+            import inspect
+            return "onDone" in inspect.signature(self._player.feed).parameters
+        except Exception:
+            return False
+
     def _makePlayer(self):
         """Build a WavePlayer across NVDA config generations.
 
@@ -870,6 +897,8 @@ class PantheraDriver(HostMixin, SpeechPipelineMixin, SynthDriver):
         self._afterCancel = True
         # Nothing is queued at the device any more, so the feeder is not ahead.
         self._fedUntil = 0.0
+        # And nothing held for playback is still wanted.
+        self._resetMarks()
 
     def pause(self, switch):
         try:

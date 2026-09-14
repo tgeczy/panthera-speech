@@ -49,6 +49,14 @@ OUT_RATE = 22050.0
 
 
 class FakeWavePlayer(object):
+    """NVDA's player, in the ways the driver can tell.
+
+    `feed()` takes an `onDone` callback and calls it once that chunk has
+    finished sounding, modelled on the real one's timing: due callbacks fire
+    from inside a later `feed()` and from `idle()`, and `stop()` drops them
+    without calling them.  The driver reports an index at playback through
+    exactly this, so the fake has to keep the real one's promises.
+    """
     def __init__(self, *a, **k):
         self.fed = 0
         self.bytes = 0
@@ -58,8 +66,10 @@ class FakeWavePlayer(object):
         self._lock = threading.Lock()
         self._until = 0.0
         self._running = False
+        #: (time the chunk ends, callback), in feed order.
+        self._callbacks = []
 
-    def feed(self, data):
+    def feed(self, data, size=None, onDone=None):
         with self._lock:
             self.fed += 1
             self.bytes += len(data)
@@ -69,21 +79,40 @@ class FakeWavePlayer(object):
                 self.startups += 1
                 now += STREAM_START
             self._until = max(self._until, now) + len(data) / 2.0 / OUT_RATE
+            if onDone is not None:
+                self._callbacks.append((self._until, onDone))
+        self._fire()
+
+    def _fire(self, everything=False):
+        """Call the callbacks whose chunk has finished, oldest first."""
+        due = []
+        with self._lock:
+            now = time.perf_counter()
+            while self._callbacks and (everything
+                                       or self._callbacks[0][0] <= now):
+                due.append(self._callbacks.pop(0)[1])
+        for callback in due:
+            callback()
 
     def stop(self):
         with self._lock:
             self.stops += 1
             self._until = 0.0
             self._running = False
+            del self._callbacks[:]
 
     def idle(self):
         self.idles += 1
         while True:
+            self._fire()
             with self._lock:
                 left = self._until - time.perf_counter()
             if left <= 0:
                 with self._lock:
                     self._running = False
+                # The real `sync()` fires a callback sitting at the very end
+                # of the stream before it returns.
+                self._fire(everything=True)
                 return
             time.sleep(min(left, 0.005))
 

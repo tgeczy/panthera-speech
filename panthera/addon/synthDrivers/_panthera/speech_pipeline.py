@@ -164,17 +164,36 @@ class SpeechPipelineMixin(object):
             #: With word wrap on that is heard as a full stop in the middle of
             #: a sentence -- "narrowing. budgets", "hits. and kills" -- at
             #: exactly the wrapped line boundaries.
+            #:
+            #: Two lists rather than one, because an index that arrives
+            #: *after* text is a different thing from one that arrives before
+            #: it.  Before any text, it is where say-all puts its line
+            #: marker.  After text, it is a callback somebody placed at a
+            #: point in the speech -- NVDA's own spelling-error sound and
+            #: indentation tones, or an add-on's earcon -- and if a break or
+            #: the end of the sequence follows, its place in the audio is
+            #: known exactly: the end of the words before it.  `_flush`
+            #: decides what the distinction is worth; with breathing on it
+            #: is worth nothing, and both lists go ahead of the audio as they
+            #: always have.  Text arriving after a trailing index makes it an
+            #: interior one, whose position nothing here can know, so it
+            #: rejoins the head.
             pending = []
+            trailing = []
             for kind, value in item:
                 if self._stopped or self._epoch != epoch:
                     break
                 if kind == "text":
+                    if trailing:
+                        pending.extend(trailing)
+                        del trailing[:]
                     run.append(value)
                     continue
                 if kind == "index":
-                    pending.append(value)
+                    (trailing if run else pending).append(value)
                     continue
-                self._flush(run, wpm, voice, adj, epoch, pending, vol)
+                self._flush(run, wpm, voice, adj, epoch, pending, vol,
+                            trailing)
                 if kind == "break":
                     self._audioQueue.put(("audio", _silence(value), self._epoch))
                 elif kind == "pitch":
@@ -188,7 +207,8 @@ class SpeechPipelineMixin(object):
                     # at the wrong speed" happens.
                     wpm = self._wpm(value)
             if not self._stopped and self._epoch == epoch:
-                self._flush(run, wpm, voice, adj, epoch, pending, vol)
+                self._flush(run, wpm, voice, adj, epoch, pending, vol,
+                            trailing)
                 if continuous and self._inputMode is None:
                     #: **The engine's own sentence pause, restored between
                     #: chunks.**  Inside one utterance the engine composes
@@ -215,9 +235,10 @@ class SpeechPipelineMixin(object):
                         * self.PAUSE_SCALE.get(self._pauseMode, 1.0))
                     if pause:
                         self._audioQueue.put(("audio", pause, self._epoch))
-            for index in pending:               # nothing left to speak
+            for index in pending + trailing:    # nothing left to speak
                 self._audioQueue.put(("index", index, None))
             del pending[:]
+            del trailing[:]
             self._spokeSinceCancel = True
             self._audioQueue.put(("done", None, None))
 
@@ -367,7 +388,8 @@ class SpeechPipelineMixin(object):
             carried = self._modeAfter(text) is not None
         return items
 
-    def _flush(self, run, wpm, voice, adj, epoch, pending=None, vol=0):
+    def _flush(self, run, wpm, voice, adj, epoch, pending=None, vol=0,
+               trailing=None):
         """Render the text collected so far as ONE utterance.
 
         **A speech sequence is not a list of utterances.**  NVDA hands over the
@@ -379,17 +401,46 @@ class SpeechPipelineMixin(object):
         splitting cost 163 ms across two joins, and there is no silence in it
         to trim: the extra is in the speech itself.
 
-        The indexes collected since the last flush are reported immediately
-        before this audio, rather than splitting it.  That matches what they
-        mean: NVDA's say-all index is the `lineReached` callback, placed at the
-        *start* of a line, and it is also what asks for the next line, so
-        reporting it early keeps the pipeline fed rather than starving it.
+        **With breathing on, every index is reported ahead of this audio**,
+        rather than splitting it.  That matches what the say-all index means:
+        it is the `lineReached` callback, placed at the *start* of a line, and
+        it is also what asks NVDA for the next line -- and the joiner needs
+        that next line in hand before it renders this one, or Alex has no
+        boundary to breathe at.  The cost is that the cursor, and anything
+        else hung on an index, leads the speech.
+
+        **With breathing off, an index goes where its audio is**, as an
+        `"index"` becomes a `"mark"`, which the feeder holds until playback
+        reaches it: the ones in `pending` before this audio, so they fire when
+        whatever was playing before it has finished; the ones in `trailing`
+        -- collected after the text and followed by a break, a prosody change
+        or the end of the sequence -- straight after it, and *before* the
+        pauses appended below, so NVDA's next utterance renders under the
+        pause instead of after it.  That is the eSpeak driver's shape, and
+        it is what NVDA's own spelling-error sound and an add-on's earcon are
+        placed for.  Nothing about the joiner changes, because with breathing
+        off it is not running: the setting was made for exactly this trade.
+
+        An index with text on both sides and no flush between has no known
+        position without the engine telling us where it got to, so it stays
+        at the head in both modes.  The engine can tell us -- `[[sync]]` fires
+        a callback the host maps but does not yet install -- and that is the
+        piece that would move it.
         """
+        immediate = self._joinSentences
+        heads = list(pending or [])
+        tails = list(trailing or [])
+        if pending:
+            del pending[:]
+        if trailing:
+            del trailing[:]
+        if immediate:
+            heads += tails
+            tails = []
+        kind = "index" if immediate else "mark"
         if not run:
-            if pending:
-                for index in pending:
-                    self._audioQueue.put(("index", index, None))
-                del pending[:]
+            for index in heads + tails:
+                self._audioQueue.put((kind, index, None))
             return
         text = _joinFragments(run)
         del run[:]
@@ -403,10 +454,8 @@ class SpeechPipelineMixin(object):
         # belonged at the head of this utterance already -- see the docstring
         # above -- and now that the audio arrives in pieces there is no later
         # moment that would still be the head.
-        if pending:
-            for index in pending:
-                self._audioQueue.put(("index", index, None))
-            del pending[:]
+        for index in heads:
+            self._audioQueue.put((kind, index, None))
         fed = []
         # What the user actually waits, measured where they wait it.  The two
         # numbers are different questions: how long until the first sound, and
@@ -501,10 +550,90 @@ class SpeechPipelineMixin(object):
                          (done - started) * 1000.0,
                          "" if self._epoch == epoch
                          else " (interrupted; the host was retired)"))
+        # After the words and before the gap, whatever the render did: an
+        # index is never lost, and one that rode behind a cancelled utterance
+        # is NVDA's to ignore.
+        for index in tails:
+            self._audioQueue.put((kind, index, None))
         if pcm is not None and fed and self._epoch == epoch:
             gap = self.PAUSE_MS.get(self._pauseMode, 0)
             if gap:
                 self._audioQueue.put(("audio", _silence(gap), epoch))
+
+    # -- marks: indexes reported when playback reaches them ------------------
+    #
+    # NVDA's player takes a callback per fed chunk and calls it when that
+    # chunk has finished sounding.  Bytes fed and bytes played are counted
+    # from the last moment the device held nothing of ours, and a mark is a
+    # byte count to wait for: the feeder dequeues it after everything before
+    # it has been fed, so "everything fed so far" is exactly its position.
+    #
+    # The counters are guarded by their own lock, never the player's:
+    # `feed()` fires due callbacks synchronously on the feeder thread while
+    # `_playerLock` is held, and a callback that took that lock would
+    # deadlock the driver on its first mark.  The generation is bumped by
+    # `cancel()`, because NVDA's `stop()` drops its pending callbacks
+    # without calling them and the C++ thread can still fire one in the
+    # window between our reset and its stop; a callback from a retired
+    # generation is ignored rather than counted against fresh audio.
+
+    def _marksDeferred(self):
+        """-> whether indexes are being held for playback right now."""
+        return bool(getattr(self, "_playerTakesOnDone", False)
+                    and not self._joinSentences)
+
+    def _feedPiece(self, piece):
+        """Hand one slice to the player, with a done callback when marks
+        are in use.  Called under `_playerLock`."""
+        if not self._marksDeferred():
+            self._player.feed(piece)
+            return
+        with self._markLock:
+            self._fedBytes += len(piece)
+            end, gen = self._fedBytes, self._markGen
+        self._player.feed(piece, onDone=lambda: self._played(gen, end))
+
+    def _played(self, gen, end):
+        """The player has finished the chunk ending at byte `end`."""
+        due = []
+        with self._markLock:
+            if gen != self._markGen:
+                return
+            if end > self._playedBytes:
+                self._playedBytes = end
+            while self._marks and self._marks[0][0] <= self._playedBytes:
+                due.append(self._marks.pop(0)[1])
+        for index in due:
+            synthIndexReached.notify(synth=self, index=index)
+
+    def _markReached(self, index):
+        """A mark came off the audio queue: report it now if its audio has
+        already played, or when it does."""
+        with self._markLock:
+            wait = (self._marksDeferred()
+                    and self._playedBytes < self._fedBytes)
+            if wait:
+                self._marks.append((self._fedBytes, index))
+        if not wait:
+            synthIndexReached.notify(synth=self, index=index)
+
+    def _marksDrained(self):
+        """Playback is over: report anything still held, and start counting
+        from nothing.  The safety net for a player that never called back
+        -- a mark is never lost, whatever the device did."""
+        with self._markLock:
+            due = [index for _target, index in self._marks]
+            del self._marks[:]
+            self._fedBytes = self._playedBytes = 0
+        for index in due:
+            synthIndexReached.notify(synth=self, index=index)
+
+    def _resetMarks(self):
+        """cancel(): whatever was held belongs to speech nobody will hear."""
+        with self._markLock:
+            self._markGen += 1
+            del self._marks[:]
+            self._fedBytes = self._playedBytes = 0
 
     def _feed(self):
         """Playback lives on its own thread because `feed()` blocks.
@@ -596,7 +725,7 @@ class SpeechPipelineMixin(object):
                             if self._playerIdle:
                                 self._playerIdle = False
                                 t0 = time.perf_counter()
-                                self._player.feed(piece)
+                                self._feedPiece(piece)
                                 ms = (time.perf_counter() - t0) * 1000.0
                                 if ms >= 20.0 and log.isEnabledFor(logging.DEBUG):
                                     log.debug(
@@ -637,9 +766,11 @@ class SpeechPipelineMixin(object):
                                             - self._cancelledAt) * 1000.0))
                                 self._afterCancel = False
                             else:
-                                self._player.feed(piece)
+                                self._feedPiece(piece)
                 elif kind == "index":
                     synthIndexReached.notify(synth=self, index=value)
+                elif kind == "mark":
+                    self._markReached(value)
                 elif kind == "done":
                     # idle() waits out the whole utterance, so it must NOT be
                     # held under the player lock: cancel() would then wait for
@@ -653,6 +784,9 @@ class SpeechPipelineMixin(object):
                         self._player.idle()
                     finally:
                         self._playerIdle = True
+                        # Before the completion notice, so NVDA hears every
+                        # index of an utterance before it hears the end of it.
+                        self._marksDrained()
                         synthDoneSpeaking.notify(synth=self)
             except Exception as e:
                 # Never silently: a feed or idle that fails is exactly the
