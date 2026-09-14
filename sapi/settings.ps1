@@ -739,7 +739,7 @@ foreach ($item in 'Fixed','Engine','Words') { [void]$numberStyle.Items.Add($item
 $diagnostics = New-Object Windows.Forms.CheckBox
 $diagnostics.Text = 'Write a &diagnostic log'
 $diagnostics.AccessibleName = 'Write a diagnostic log'
-$diagnostics.AccessibleDescription = 'Off by default. Records what the engine did, not what was spoken, to a file in your temp folder. Turn it on only if a bug report asks for it.'
+$diagnostics.AccessibleDescription = 'Off by default. Records what the engine did, not what was spoken, to a file in the temp folder of whoever is speaking, on every account of this machine and at the sign-in screen. Turn it on only if a bug report asks for it, and off again afterwards.'
 $diagnostics.Location = New-Object Drawing.Point(340,362); $diagnostics.AutoSize = $true
 
 # An engine setting goes to the files, this person's and the machine's; the
@@ -848,6 +848,33 @@ $rateBoost.Add_CheckedChanged({ Save-Setting 'RateBoost' ([int]$rateBoost.Checke
 $diagnostics.Add_CheckedChanged({ Save-Setting 'Diagnostics' ([int]$diagnostics.Checked) })
 $inflection.Add_ValueChanged({ Save-Setting 'Inflection' ([int]$inflection.Value) })
 $numberStyle.Add_SelectedIndexChanged({ if ($numberStyle.SelectedIndex -ge 0) { Save-Setting 'NumberStyle' $numberValues[$numberStyle.SelectedIndex] } })
+
+# **Logging that reaches every account is said out loud.**  The machine file
+# is what every other account and the sign-in screen read, so a Diagnostics
+# value in it means their sessions are being logged too -- each to its own
+# temp folder, which this person cannot read, but logged: what the engine
+# did for them, and at the transcript level the words themselves, which at
+# the sign-in screen include user names.  Fair is saying so every time the
+# program opens while it is on, and offering the way out in the same
+# breath.  Off is the default answer; whoever needs the log for a report
+# says no on purpose.  The question goes through a scriptblock so the test
+# can answer it without a dialog.
+$AskYesNo = { param([string]$text, [string]$title)
+    [Windows.Forms.MessageBox]::Show($form, $text, $title, 'YesNo', 'Warning', 'Button1') -eq 'Yes' }
+function Confirm-SharedLogging {
+    $level = Get-SettingsFileValue $machineSettingsFile 'Diagnostics' 'DWord'
+    if (!$level -or $level -le 0) { return 'quiet' }
+    $text = "Panthera's diagnostic log is turned on for everyone who uses this machine, not only for you.`r`n`r`n" +
+            "Panthera speaks for every account here, including the Windows sign-in screen, and while the log is on it " +
+            "records what the engine did for each of them, and at the transcript level the words themselves, which at " +
+            "the sign-in screen include user names.`r`n`r`nTurn the log off?"
+    if (& $AskYesNo $text 'Panthera SAPI') {
+        $diagnostics.Checked = $false
+        Save-Setting 'Diagnostics' 0
+        return 'off'
+    }
+    return 'kept'
+}
 
 function Refresh-Voices {
     # **"Not installed" and "data not found" are different things to be, and
@@ -1499,4 +1526,4 @@ $form.Add_FormClosing({
 # Migration first, registration second: moving the data re-registers the
 # tokens against the new root on its way out, so asking about registration
 # before the move would ask about a folder that is about to be left behind.
-Refresh-Voices; $form.Add_Shown({$list.Focus(); Offer-Rebind; Offer-NewData}); [void]$form.ShowDialog()
+Refresh-Voices; $form.Add_Shown({$list.Focus(); Confirm-SharedLogging | Out-Null; Offer-Rebind; Offer-NewData}); [void]$form.ShowDialog()

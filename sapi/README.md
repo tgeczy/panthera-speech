@@ -40,7 +40,9 @@ records a slice of the spoken text, and is worth using only when the report
 is about particular words; it stays a deliberate edit of the file, because a
 transcript of everything the machine says should take more than one click.
 Either way the file stops at 4 MB and starts over. `0` turns it off again
-and the next run clears up.
+and the next run clears up. Because the machine file below reaches every
+account and the sign-in screen, the settings program says so whenever it
+opens while the log is on, and offers to turn it off in the same breath.
 
 **Settings live in two files, and the registry is what they fall back to.**
 Each is flat TOML -- `Name = 1`, `Name = "word"`, `# comments` -- and the

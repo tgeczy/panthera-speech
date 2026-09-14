@@ -129,6 +129,21 @@ try {
     $machineLeft = Get-ItemProperty -Path $machineTestKey
     Check ($null -eq $machineLeft.NumberStyle -and $null -eq $machineLeft.Inflection) 'the elevated trip empties HKLM of the engine settings'
     Check ((Load-EngineSetting NumberStyle 'fix') -eq 'words') 'the seeded value is what the UI now inherits'
+
+    # Logging that reaches every account is said out loud at open.  The
+    # machine file is the one every other account reads, so it is the one
+    # that decides; the answer comes through $AskYesNo, so no dialog shows.
+    $script:asked = 0; $script:answer = $true
+    $AskYesNo = { param($text,$title) $script:asked++; $script:answer }
+    Check ((Confirm-SharedLogging) -eq 'quiet' -and $asked -eq 0) 'no shared logging, no question'
+    Set-SettingsFileValue $machineSettingsFile Diagnostics 1 | Out-Null
+    $script:answer = $false
+    Check ((Confirm-SharedLogging) -eq 'kept' -and $asked -eq 1 -and (Get-SettingsFileValue $machineSettingsFile Diagnostics 'DWord') -eq 1) 'answering no leaves the shared log on'
+    $script:answer = $true
+    $diagnostics.Checked = $true
+    Check ((Confirm-SharedLogging) -eq 'off' -and $asked -eq 2) 'answering yes turns it off'
+    Check (!$diagnostics.Checked -and (Get-SettingsFileValue $machineSettingsFile Diagnostics 'DWord') -eq 0 -and (Get-SettingsFileValue $userSettingsFile Diagnostics 'DWord') -eq 0) 'off reaches both files and the checkbox'
+    Check ((Confirm-SharedLogging) -eq 'quiet' -and $asked -eq 2) 'once off, the question is not asked again'
 } finally {
     if ($form) { $form.Dispose() }
     if ($extractTimer) { $extractTimer.Dispose() }
