@@ -72,8 +72,21 @@ adb shell am start -n com.pantheraspeech.tts/.SettingsActivity --es import /path
 ```
 
 That route imports without the confirm dialog; typing the command is the
-consent. What the app can read is its own folders: a file pushed with adb
-into shared storage or `Android/data` is not readable by a release build.
+consent. What the app can read is its own folders. A zip pushed to
+`/data/local/tmp` is not one of them on a release build (measured on the
+Pixel Watch 2: nothing imported, no log line); a tree pushed with adb into
+`Android/data/com.pantheraspeech.tts/files/panthera-data/<gen>` was readable
+by the release build there, and was moved into protected storage and spoken.
+Older notes said the opposite for other devices; check on the device in
+hand.
+
+Two adb traps. In Git Bash on Windows, any bare argument that looks like a
+POSIX path -- `/data/local/tmp/x.zip`, `/storage/emulated/0/...` -- is
+rewritten to a Windows path before adb sees it: a push reports success and
+lands somewhere mangled, and `--es import /data/...` hands the app a `C:\`
+path. Set `MSYS_NO_PATHCONV=1` first, as `build.sh` does. And pushing a
+directory that contains symlinks (a framework's `Versions/Current`) crashed
+adb with `std::bad_alloc`; push a tree without them.
 
 On the Pixel Watch 2, each `Hello there.` render at 180 wpm was 15,792 mono
 16-bit samples at 22,050 Hz, peak 25,231. Both 31,628-byte framework WAVs had

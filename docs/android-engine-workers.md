@@ -66,9 +66,10 @@ see *Speaking before unlock* below):
   progress.
 
 A watch has no file picker (Wear OS answers the request with a stub, and the
-button says so), and adb cannot feed a release build: files pushed into shared
-storage or `Android/data` are not readable by the app. Debug builds take the
-developer route in `docs/android-tts-debugging.md`.
+button says so). Whether adb can feed a release build depends on the device:
+on the Pixel Watch 2 a tree pushed into the inbox was read and moved by the
+release build; other devices have refused shell-owned files there. The
+developer route is in `docs/android-tts-debugging.md`.
 
 ### Speaking before unlock (Direct Boot)
 
