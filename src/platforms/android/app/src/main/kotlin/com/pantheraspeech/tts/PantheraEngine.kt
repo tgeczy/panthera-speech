@@ -96,9 +96,19 @@ object PantheraEngine {
      * that, only protected storage may be touched: reading the other half
      * throws, and an engine that throws on the lock screen is worse than
      * one that is quiet there. */
-    fun unlocked(ctx: Context): Boolean =
-        try { ctx.getSystemService(UserManager::class.java)?.isUserUnlocked ?: true }
-        catch (e: Exception) { true }
+    @Volatile private var knownUnlocked = false
+
+    fun unlocked(ctx: Context): Boolean {
+        // Asked on every lookup, and a lookup happens several times per
+        // utterance.  Once true it stays true for the life of the process --
+        // no process survives the reboot that would lock the user again --
+        // so the system is asked only until it says yes.
+        if (knownUnlocked) return true
+        val now = try { ctx.getSystemService(UserManager::class.java)?.isUserUnlocked ?: true }
+                  catch (e: Exception) { true }
+        if (now) knownUnlocked = true
+        return now
+    }
 
     private fun protectedContext(ctx: Context): Context =
         if (ctx.isDeviceProtectedStorage) ctx else ctx.createDeviceProtectedStorageContext()
@@ -107,10 +117,13 @@ object PantheraEngine {
     fun dataRoot(ctx: Context): File = File(protectedContext(ctx).filesDir, DATA_DIR)
 
     /** The folder a PC's file window shows -- the inbox -- or null before
-     * unlock.  Created on the way out, so it is there to be copied into. */
+     * unlock.  Not created here: this is on the path of every utterance,
+     * and a mkdirs on shared storage is a round trip through FUSE each
+     * time.  Setup creates it, which is where somebody about to copy into
+     * it is looking. */
     fun inboxRoot(ctx: Context): File? =
         if (!unlocked(ctx)) null
-        else try { ctx.getExternalFilesDir(null)?.let { File(it, DATA_DIR).also { d -> d.mkdirs() } } }
+        else try { ctx.getExternalFilesDir(null)?.let { File(it, DATA_DIR) } }
              catch (e: Exception) { null }
 
     /** The internal folder the data used to be read from, and a debug push

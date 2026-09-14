@@ -980,6 +980,8 @@ class SettingsActivity : Activity() {
     // ---- behaviour ---------------------------------------------------------
 
     private fun refresh() {
+        // So the inbox exists for the person about to copy into it over a PC.
+        try { PantheraEngine.inboxRoot(this)?.mkdirs() } catch (e: Exception) { /* shared storage absent */ }
         val signature = PantheraEngine.allVoices(this).joinToString { it.id }
         if (voiceSignature != signature) { voiceSignature = signature; rebuildVoices() }
         val verified = PantheraEngine.verified(this)
