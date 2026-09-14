@@ -158,15 +158,30 @@ def test_with_breathing_on_the_end_index_is_reported_before_any_audio():
 
 
 def test_with_breathing_off_an_index_is_never_lost_when_the_run_is_cancelled():
-    """Whatever the epoch did, NVDA is told about every index it sent."""
+    """Whatever the epoch did, NVDA is told about every index it sent.
+
+    The cancel lands *during* the render of the first part -- the real
+    case, since `_run` reads the epoch after it dequeues -- so the audio is
+    dropped and the rest of the sequence is abandoned, and the index that
+    was trailing that part still goes out."""
     d = _bare(False)
+    render = d._render
+
+    def cancelledMidRender(text, wpm, voice, pitch=0, sink=None, volume=0):
+        d._epoch += 1                   # cancel() arrived while rendering
+        return render(text, wpm, voice, pitch, sink=sink, volume=volume)
+    d._render = cancelledMidRender
     d._queue.put(EARCON)
     d._queue.put(None)
-    d._epoch = 1                        # cancel() arrived before the render
     d._run()
-    reported = [v for k, v in _shape(_drain(d._audioQueue))
-                if k in ("mark", "index")]
+    raw = _drain(d._audioQueue)
+    reported = [v for k, v, _t in raw if k in ("mark", "index")]
     assert reported == [7]
+    # The rendered words were dropped by the sink.  What may still be there
+    # is the break's own silence, which rides the *new* epoch and has always
+    # been fed -- it is silence.  Nothing from the cancelled run may be.
+    stale = [(k, len(v)) for k, v, t in raw if k == "audio" and t == 0]
+    assert not stale, "audio from the cancelled run reached the queue: %r" % (stale,)
 
 
 # -- the feeder: when a mark is reported --------------------------------------
