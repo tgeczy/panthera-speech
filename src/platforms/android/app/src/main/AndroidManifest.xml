@@ -12,19 +12,30 @@
         </intent>
     </queries>
 
+    <!-- For "Check for updates" on the Setup page, and nothing else: the app
+         reaches the network only when that button is pressed. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <application
         android:label="@string/app_name"
         android:allowBackup="true"
         android:theme="@android:style/Theme.DeviceDefault">
 
-        <service android:name=".TigerWorkerService" android:process=":tiger" android:exported="false" />
-        <service android:name=".LeopardWorkerService" android:process=":leopard" android:exported="false" />
-        <service android:name=".SnowLeopardWorkerService" android:process=":snowleopard" android:exported="false" />
-        <service android:name=".LionWorkerService" android:process=":lion" android:exported="false" />
+        <!-- Every service says it can run before the phone is first unlocked,
+             the engine and its four workers alike: the engine binds the
+             workers, and binding a service that has not said so fails while
+             the user is locked.  With the data in device-protected storage,
+             that is what lets a screen reader read the lock screen after a
+             reboot with these voices; see ProtectedStorage.kt. -->
+        <service android:name=".TigerWorkerService" android:process=":tiger" android:exported="false" android:directBootAware="true" />
+        <service android:name=".LeopardWorkerService" android:process=":leopard" android:exported="false" android:directBootAware="true" />
+        <service android:name=".SnowLeopardWorkerService" android:process=":snowleopard" android:exported="false" android:directBootAware="true" />
+        <service android:name=".LionWorkerService" android:process=":lion" android:exported="false" android:directBootAware="true" />
 
         <service
             android:name=".PantheraTtsService"
             android:exported="true"
+            android:directBootAware="true"
             android:label="@string/engine_name">
             <intent-filter>
                 <action android:name="android.intent.action.TTS_SERVICE" />

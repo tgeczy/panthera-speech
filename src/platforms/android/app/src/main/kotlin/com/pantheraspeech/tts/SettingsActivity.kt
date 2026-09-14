@@ -64,6 +64,9 @@ class SettingsActivity : Activity() {
     private var voiceFilter = FILTER_ALL
     private var listedVoices: List<PantheraEngine.VoiceInfo> = emptyList()
     private var currentPage = 0
+    private var moveStatus: TextView? = null
+    private var moveAnnounced = -1
+    private var updateStatus: TextView? = null
     private val preferenceListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key != "sample_text" && key != "settings_page" && key != PREF_VOICE_FILTER)
             refreshSettings(key == PantheraEngine.PREF_GEN || key?.startsWith("default_voice") == true)
@@ -147,7 +150,7 @@ class SettingsActivity : Activity() {
         }
     }
 
-    override fun onResume() { super.onResume(); refresh(); refreshSettings(true) }
+    override fun onResume() { super.onResume(); refresh(); refreshSettings(true); moveDataIn() }
     override fun onDestroy() {
         PantheraEngine.prefs(this).unregisterOnSharedPreferenceChangeListener(preferenceListener)
         importJob?.listener = null
@@ -231,7 +234,9 @@ class SettingsActivity : Activity() {
                     "${ZipImport.sizeText(f.bytes)}." +
                     if (File(root, f.gen).exists()) " The $label folder already here will be replaced." else ""
                 }
-                val message = lines.joinToString("\n\n") + "\n\nInto: ${root.absolutePath}"
+                val message = lines.joinToString("\n\n") +
+                    "\n\nInto this app's protected storage, where the voices can speak " +
+                    "before the phone is unlocked."
                 if (!confirm) { startImport(source, plan, root); return@runOnUiThread }
                 android.app.AlertDialog.Builder(this)
                     .setTitle("Import engine data?").setMessage(message)
@@ -450,13 +455,23 @@ class SettingsActivity : Activity() {
         root.addView(TextView(this).apply {
             textSize = 13f
             setTextIsSelectable(true)
-            text = PantheraEngine.dataRoot(this@SettingsActivity).absolutePath
+            text = PantheraEngine.inboxRoot(this@SettingsActivity)?.absolutePath
+                ?: "Android/data/com.pantheraspeech.tts/files/${PantheraEngine.DATA_DIR}"
         })
         root.addView(body(
             "named tiger, leopard, snowleopard or lion, exactly as it is: Speech, " +
             "SpeechDictionary.framework and the rest. On a PC, plug the phone in " +
             "and use the file window; the folder above is under Android, then " +
             "data, then this app."))
+        // Where the data really lives, said once: the folder above is an
+        // inbox.  Somebody who copied 700 MB over and then finds the folder
+        // empty deserves to have been told why before it happened.
+        root.addView(body(
+            "\nWhatever you put there is moved into this app's protected storage " +
+            "the next time the app runs, so the voices can speak on the lock " +
+            "screen after a restart, before the phone is unlocked. The folder " +
+            "above is empty again afterwards; that is the move, not a loss."))
+        moveStatus = body("").also { root.addView(it) }
 
         root.addView(heading("2.  Check the engine"))
         root.addView(Button(this).apply {
@@ -506,6 +521,23 @@ class SettingsActivity : Activity() {
             text = "Open Text-to-speech settings"
             setOnClickListener { openTtsSettings() }
         })
+
+        root.addView(heading("Updates"))
+        // Only when pressed; the app never asks the network on its own.  And
+        // the answer is a download in the browser rather than an install,
+        // because installing would need the "install unknown apps" switch
+        // for this app, which is exactly the permission Google leans on
+        // third-party apps for asking.
+        root.addView(body(
+            "Looks for a newer version on the project's release page. The " +
+            "download opens in your browser; once it has finished, opening it " +
+            "from the download notification installs it."))
+        root.addView(Button(this).apply {
+            text = "Check for updates"
+            setOnClickListener { checkForUpdates() }
+        })
+        updateStatus = body("").also { root.addView(it) }
+
         root.addView(Button(this).apply {
             text = "Licenses and source"
             setOnClickListener {
@@ -967,10 +999,12 @@ class SettingsActivity : Activity() {
                     "Engine found and verified. You can now select Panthera " +
                     "Speech in Text-to-speech settings."
                 else
-                    "No engine data found.\nExpected a generation folder (tiger, " +
-                    "leopard, snowleopard or lion) holding the extracted Speech and " +
-                    "SpeechDictionary.framework folders, under:\n" +
-                    PantheraEngine.dataRoot(this).absolutePath
+                    "No engine data found.\nUse Extract engine from zip file above, " +
+                    "or copy a generation folder (tiger, leopard, snowleopard or " +
+                    "lion) holding the extracted Speech and SpeechDictionary.framework " +
+                    "folders into:\n" +
+                    (PantheraEngine.inboxRoot(this)?.absolutePath
+                        ?: "Android/data/com.pantheraspeech.tts/files/${PantheraEngine.DATA_DIR}")
                 refresh()
             }
         }.start()
@@ -1080,6 +1114,98 @@ class SettingsActivity : Activity() {
         }
         Log.i("Panthera", "playback head=${track.playbackHeadPosition}/$off routed=${track.routedDevice?.type}")
         try { track.stop() } finally { track.release() }
+    }
+
+    /** Anything in the inbox or the old internal folder goes into protected
+     * storage now, with the progress on the Setup page.  The service does
+     * the same on its own when it starts, so this is for the person who has
+     * just copied a folder over and is looking at the screen. */
+    private fun moveDataIn() {
+        if (PantheraEngine.migrating) return
+        moveStatus?.text = PantheraEngine.migrationNote ?: ""
+        val pending = try { PantheraEngine.pendingMoves(this) } catch (e: Exception) { emptyList() }
+        if (pending.isEmpty()) return
+        val names = pending.joinToString(" and ") { PantheraEngine.genLabel(it.second) }
+        moveStatus?.text = "Moving $names into protected storage…"
+        moveAnnounced = -1
+        Thread({
+            PantheraEngine.migrate(this) { gen, done, total ->
+                val permille = if (total > 0) (done * 1000 / total).toInt().coerceIn(0, 1000) else 0
+                val fifth = permille / 200
+                if (fifth != moveAnnounced) {
+                    moveAnnounced = fifth
+                    runOnUiThread {
+                        if (isFinishing || isDestroyed) return@runOnUiThread
+                        val line = "Moving ${PantheraEngine.genLabel(gen)} into protected storage… ${permille / 10}%"
+                        moveStatus?.text = line
+                        // A screen reader hears the line change only if told.
+                        if (fifth in 1..4) try { moveStatus?.announceForAccessibility("${fifth * 20} percent") } catch (e: Throwable) {}
+                    }
+                }
+            }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                moveStatus?.text = PantheraEngine.migrationNote ?: ""
+                try { moveStatus?.announceForAccessibility(moveStatus?.text) } catch (e: Throwable) {}
+                refresh(); rebuildVoices(); refreshVoiceButton(); rebuildEngineSwitches()
+            }
+        }, "panthera-move").start()
+    }
+
+    private fun installedVersion(): String =
+        try { packageManager.getPackageInfo(packageName, 0).versionName ?: "?" } catch (e: Exception) { "?" }
+
+    private fun checkForUpdates() {
+        val installed = installedVersion()
+        updateStatus?.text = "Checking…"
+        Thread {
+            val answer = Updates.check(installed)
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                when (answer) {
+                    is Updates.Answer.UpToDate ->
+                        updateStatus?.text = "You have the newest version, $installed."
+                    is Updates.Answer.Failed ->
+                        updateStatus?.text = "Could not check: ${answer.reason}."
+                    is Updates.Answer.Available -> offerUpdate(answer.release, installed)
+                }
+                try { updateStatus?.announceForAccessibility(updateStatus?.text) } catch (e: Throwable) {}
+            }
+        }.start()
+    }
+
+    private fun offerUpdate(release: Updates.Release, installed: String) {
+        val watch = packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_WATCH)
+        updateStatus?.text = "Version ${release.number} is available; you have $installed."
+        if (watch) {
+            // A watch has no browser to hand the download to, and no file
+            // manager to install from.  Say where it is instead.
+            android.app.AlertDialog.Builder(this)
+                .setTitle("Version ${release.number} is available")
+                .setMessage("You have $installed. A watch cannot download and install it " +
+                    "on its own; get the APK from ${Updates.RELEASES_PAGE} on a phone or " +
+                    "computer and install it from there.")
+                .setPositiveButton("Close", null).show()
+            return
+        }
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Version ${release.number} is available")
+            .setMessage("You have $installed.\n\nDownload opens the new version in your " +
+                "browser. When the download finishes, open it from the notification and " +
+                "Android installs it; the first time, it asks you to allow the browser to " +
+                "install apps.")
+            .setPositiveButton("Download") { _, _ -> openUrl(release.apk) }
+            .setNeutralButton("Release notes") { _, _ -> openUrl(release.page) }
+            .setNegativeButton("Later", null)
+            .show()
+    }
+
+    private fun openUrl(url: String) {
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (e: Exception) {
+            updateStatus?.text = "No browser could open $url."
+        }
     }
 
     private fun toast(t: String) = Toast.makeText(this, t, Toast.LENGTH_SHORT).show()

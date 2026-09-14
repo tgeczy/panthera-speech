@@ -1,7 +1,14 @@
 package com.pantheraspeech.tts
 
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.SharedPreferences
+import android.os.Build
+import android.os.StatFs
+import android.os.UserManager
+import android.util.Log
 import java.io.File
 
 object PantheraEngine {
@@ -74,22 +81,45 @@ object PantheraEngine {
 
     // ---- data layout -------------------------------------------------------
     //
-    // Data may live in either the app's external files dir (user-visible, the
-    // place to extract into) or its internal files dir (always readable by the
-    // app -- the reliable fallback, and where a future in-app import lands).
-    // Each generation is looked for in both; whichever holds it wins.
+    // Data lives in device-protected storage: the half of the app's files
+    // that exists before the phone has been unlocked, which is what lets a
+    // screen reader read the lock screen after a reboot with these voices --
+    // see ProtectedStorage for the whole of it.  Two other places are looked
+    // in, and only once unlocked, because before that they do not exist: the
+    // external files dir a PC's file window shows, which is the inbox a
+    // person copies into, and the internal files dir a debug push writes to.
+    // Whatever is found in either is moved into protected storage by
+    // `migrate`, so a lookup that finds a generation there is finding it on
+    // its way in.
 
-    private fun candidateRoots(ctx: Context): List<File> = listOfNotNull(
-        ctx.getExternalFilesDir(null)?.let { File(it, DATA_DIR) },
-        File(ctx.filesDir, DATA_DIR),
-    )
+    /** Whether the person has unlocked the phone since it booted.  Before
+     * that, only protected storage may be touched: reading the other half
+     * throws, and an engine that throws on the lock screen is worse than
+     * one that is quiet there. */
+    fun unlocked(ctx: Context): Boolean =
+        try { ctx.getSystemService(UserManager::class.java)?.isUserUnlocked ?: true }
+        catch (e: Exception) { true }
 
-    /** The root shown to the user as the place to extract data into. It is
-     * also where a zip import lands: the first root the lookup consults, so
-     * an imported generation is the one that runs. */
-    fun dataRoot(ctx: Context): File =
-        ctx.getExternalFilesDir(null)?.let { File(it, DATA_DIR) }
-            ?: File(ctx.filesDir, DATA_DIR)
+    private fun protectedContext(ctx: Context): Context =
+        if (ctx.isDeviceProtectedStorage) ctx else ctx.createDeviceProtectedStorageContext()
+
+    /** Where the engine data lives, and where a zip import lands. */
+    fun dataRoot(ctx: Context): File = File(protectedContext(ctx).filesDir, DATA_DIR)
+
+    /** The folder a PC's file window shows -- the inbox -- or null before
+     * unlock.  Created on the way out, so it is there to be copied into. */
+    fun inboxRoot(ctx: Context): File? =
+        if (!unlocked(ctx)) null
+        else try { ctx.getExternalFilesDir(null)?.let { File(it, DATA_DIR).also { d -> d.mkdirs() } } }
+             catch (e: Exception) { null }
+
+    /** The internal folder the data used to be read from, and a debug push
+     * still writes to.  Null before unlock. */
+    private fun legacyRoot(ctx: Context): File? =
+        if (!unlocked(ctx)) null else File(ctx.filesDir, DATA_DIR)
+
+    private fun candidateRoots(ctx: Context): List<File> =
+        listOfNotNull(dataRoot(ctx), inboxRoot(ctx), legacyRoot(ctx))
 
     /** A generation just imported is wanted, whatever its switch said
      * before; then the catalogue is rebuilt and the gate re-run, so the new
@@ -290,8 +320,22 @@ object PantheraEngine {
 
     // ---- the gate ----------------------------------------------------------
 
-    fun prefs(ctx: Context): SharedPreferences =
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    @Volatile private var prefsMoved = false
+
+    /** The settings, in device-protected storage so the service can read
+     * them before unlock.  The first call in a process after unlock carries
+     * them over from where they used to live -- a no-op once nothing is
+     * left there -- so nobody's voice or rate is lost to the move.  The
+     * other half cannot even be asked before unlock: it throws. */
+    fun prefs(ctx: Context): SharedPreferences {
+        val protected = protectedContext(ctx)
+        if (!prefsMoved && !ctx.isDeviceProtectedStorage && unlocked(ctx)) {
+            try { protected.moveSharedPreferencesFrom(ctx, PREFS) }
+            catch (e: Exception) { Log.w("PantheraEngine", "settings could not be moved", e) }
+            prefsMoved = true
+        }
+        return protected.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    }
 
     /** The engine is usable only after the user has run "Check Engine" AND the
      * data is actually there.  This is the gate the service honours: no verify,
@@ -305,6 +349,104 @@ object PantheraEngine {
         val ok = genPresent(ctx, activeGen(ctx))
         prefs(ctx).edit().putBoolean(PREF_VERIFIED, ok).apply()
         return ok
+    }
+
+    // ---- moving data into protected storage --------------------------------
+    //
+    // A generation found in the inbox or the old internal folder is copied
+    // into protected storage and then removed from where it was.  The engine
+    // keeps working throughout: a worker that already has the old copy mapped
+    // keeps it until it is next replaced, and the lookup finds whichever copy
+    // exists.  One move at a time, and never on the main thread.
+
+    private val migrateLock = Any()
+    @Volatile private var unlockWatcher: BroadcastReceiver? = null
+
+    /** What the last move had to say, in words for the Setup page; null when
+     * there has never been anything to move. */
+    @Volatile var migrationNote: String? = null
+        private set
+
+    /** Whether a move is running right now. */
+    @Volatile var migrating: Boolean = false
+        private set
+
+    /** (folder, generation) pairs sitting outside protected storage.  Empty
+     * before unlock, because those folders cannot be looked at.
+     *
+     * The internal folder first and the inbox last, because a later move
+     * replaces an earlier one: the inbox used to be looked in first, so a
+     * generation in both places spoke from the inbox, and it still does. */
+    fun pendingMoves(ctx: Context): List<Pair<File, String>> =
+        listOfNotNull(legacyRoot(ctx), inboxRoot(ctx)).flatMap { root ->
+            GENERATIONS.filter { mtIn(root, it).isFile }.map { root to it }
+        }
+
+    /** Move everything found outside protected storage into it.
+     * `progress(generation, bytesDone, bytesTotal)` follows the copy.
+     * -> the generations moved. */
+    fun migrate(ctx: Context, progress: ((String, Long, Long) -> Unit)? = null): List<String> =
+        synchronized(migrateLock) {
+            val moved = ArrayList<String>()
+            migrating = true
+            try {
+                for ((root, gen) in pendingMoves(ctx)) {
+                    val into = dataRoot(ctx)
+                    into.mkdirs()
+                    val bytes = ProtectedStorage.size(File(root, gen))
+                    val free = try { StatFs(into.absolutePath).availableBytes } catch (e: Exception) { -1L }
+                    if (free in 0 until bytes + (64L shl 20)) {
+                        migrationNote = "${genLabel(gen)} could not be moved into protected storage: " +
+                            "it needs ${ZipImport.sizeText(bytes)} and this device has " +
+                            "${ZipImport.sizeText(free)} free. It will speak, but not before the " +
+                            "phone is unlocked."
+                        Log.w("PantheraEngine", migrationNote!!)
+                        continue
+                    }
+                    try {
+                        ProtectedStorage.move(root, gen, into, { d, t -> progress?.invoke(gen, d, t) })
+                        moved.add(gen)
+                        Log.i("PantheraEngine", "moved $gen (${ZipImport.sizeText(bytes)}) from $root " +
+                            "into protected storage")
+                    } catch (e: Exception) {
+                        migrationNote = "${genLabel(gen)} could not be moved into protected storage: ${e.message}"
+                        Log.w("PantheraEngine", migrationNote!!, e)
+                    }
+                }
+                if (moved.isNotEmpty()) {
+                    refreshVoiceCatalogue()
+                    migrationNote = "Moved ${moved.joinToString(" and ") { genLabel(it) }} into " +
+                        "protected storage, so the voices can speak before the phone is unlocked."
+                }
+            } finally {
+                migrating = false
+            }
+            moved
+        }
+
+    /** Move data in as soon as the phone is unlocked: now, or when the
+     * unlock arrives.  The service calls this when it starts, which on a
+     * phone that has just booted is before unlock. */
+    fun migrateWhenUnlocked(ctx: Context) {
+        val app = ctx.applicationContext
+        fun now() = Thread({
+            try { migrate(app) } catch (e: Throwable) { Log.w("PantheraEngine", "the move failed", e) }
+        }, "panthera-move").apply { priority = Thread.MIN_PRIORITY }.start()
+        if (unlocked(app)) { now(); return }
+        synchronized(migrateLock) {
+            if (unlockWatcher != null) return
+            val watcher = object : BroadcastReceiver() {
+                override fun onReceive(c: Context, intent: Intent) {
+                    try { app.unregisterReceiver(this) } catch (e: Exception) { /* already gone */ }
+                    synchronized(migrateLock) { if (unlockWatcher === this) unlockWatcher = null }
+                    now()
+                }
+            }
+            unlockWatcher = watcher
+            val filter = IntentFilter(Intent.ACTION_USER_UNLOCKED)
+            if (Build.VERSION.SDK_INT >= 33) app.registerReceiver(watcher, filter, Context.RECEIVER_NOT_EXPORTED)
+            else app.registerReceiver(watcher, filter)
+        }
     }
 
     // Settings are read together once per utterance, after resolving its voice.

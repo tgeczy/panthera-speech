@@ -32,8 +32,9 @@ the earlier GPL comparison configuration; package its sources with `--legacy`.
 
 Nothing of Apple's ships in the app; the desktop add-on extracts a
 generation's folder from the user's own copy of Mac OS X, and that folder is
-what the phone needs. Two routes, both ending in
-`Android/data/com.pantheraspeech.tts/files/panthera-data/<generation>`:
+what the phone needs. Two routes, both ending in the app's device-protected
+storage (`/data/user_de/0/com.pantheraspeech.tts/files/panthera-data/<generation>`,
+see *Speaking before unlock* below):
 
 * **Extract engine from zip file** (Setup, step 1; since 3.0.2). Zip the
   extracted folder, get the zip onto the device by whatever means -- Downloads,
@@ -57,13 +58,62 @@ what the phone needs. Two routes, both ending in
   cannot seek (some cloud drives) is scanned front to back instead, slower
   but with the same answer.
 * **Copy the folder by hand** over the PC's file window into the path Setup
-  shows, named `tiger`, `leopard`, `snowleopard` or `lion`. Both the Mac's own
-  layout and the flattened one the push script makes are read.
+  shows -- `Android/data/com.pantheraspeech.tts/files/panthera-data`, the
+  inbox -- named `tiger`, `leopard`, `snowleopard` or `lion`. Both the Mac's
+  own layout and the flattened one the push script makes are read. The next
+  time the app runs unlocked it moves the folder into protected storage and
+  the inbox is empty again; Setup says so above the path, and shows the move's
+  progress.
 
 A watch has no file picker (Wear OS answers the request with a stub, and the
 button says so), and adb cannot feed a release build: files pushed into shared
 storage or `Android/data` are not readable by the app. Debug builds take the
 developer route in `docs/android-tts-debugging.md`.
+
+### Speaking before unlock (Direct Boot)
+
+Since 3.1.0 (panthera-speech#18) the engine speaks on the lock screen after a
+reboot, before the phone has been unlocked. Android keeps an app's data in two
+halves: the credential-encrypted half (the ordinary files dir, `Android/data`,
+the shared preferences) does not exist until the first unlock, and the
+device-protected half is there from boot. Every service in the manifest --
+the engine and its four workers -- is `directBootAware`, the data and the
+preferences live in the protected half, and a lookup touches the other half
+only once `UserManager.isUserUnlocked()` says it may (reading it before that
+throws, and an engine that throws on the lock screen is worse than one that is
+quiet there). The system hides non-aware engines from a locked user, which is
+why a screen reader used to fall back to Google's engine there.
+
+`ProtectedStorage` does the move: a generation found in the inbox or in the
+old internal folder is copied into `<gen>.moving` beside the live folder,
+checked file by file against the source, swapped into place, and only then
+removed from where it was. A copy, never a rename, because the two halves are
+different encryption policies. The service starts it when it is created (or,
+on a phone that has just booted, when the unlock broadcast arrives), and Setup
+starts it on resume so the person who has just copied a folder sees the
+progress. A move that would not fit says so on the Setup page and leaves the
+folder where it is; the voices still speak, only not before unlock. Settings
+are carried over once with `moveSharedPreferencesFrom`.
+
+To test it: set a PIN, reboot, do not unlock, and let the screen reader speak.
+There is no emulate-locked mode on a retail phone; a real reboot is the rig.
+`adb shell dumpsys package com.pantheraspeech.tts` lists the services with
+their direct-boot flag, and `adb` itself works before unlock.
+
+### Updates
+
+**Check for updates** on the Setup page (panthera-speech#19) asks the GitHub
+releases API for the newest published release carrying an `.apk` asset --
+never `/releases/latest`, which is pinned to the newest release with the
+desktop files so the NVDA and SAPI updaters stay quiet about Android-only
+releases -- and compares it with the installed version. Only when the button
+is pressed; the app never contacts the network on its own, which is the
+desktop add-on's rule for the same reason. A newer version is offered as a
+download in the browser, with the release page beside it: an app cannot
+install an APK without the per-app "install unknown apps" switch, and asking
+for that is the wrong trade. On a watch, which has no browser, the dialog
+says where to get it instead. `Updates` is the pure half and has JVM tests
+(`src/test/kotlin`, run with `gradlew :app:testDebugUnitTest`).
 
 The app process owns preferences. Workers receive a settings snapshot for each
 utterance, rather than reading a separate process's SharedPreferences cache.

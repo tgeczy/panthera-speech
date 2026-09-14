@@ -62,8 +62,8 @@ android {
         minSdk = 26
         targetSdk = 35
         testInstrumentationRunner = "com.pantheraspeech.tts.EngineSmokeTest"
-        versionCode = 4
-        versionName = "3.0.2"
+        versionCode = 5
+        versionName = "3.1.0"
 
         // Native libraries are prebuilt by build_jni_so.sh. Both ABIs pass
         // the four-generation device suite; each device selects its own ABI.
@@ -72,8 +72,11 @@ android {
         }
     }
 
-    // Kotlin sources live under src/main/kotlin.
+    // Kotlin sources live under src/main/kotlin, and the desktop-JVM tests
+    // of the pure pieces -- the update check, the move into protected
+    // storage -- under src/test/kotlin.
     sourceSets["main"].java.srcDirs("src/main/kotlin")
+    sourceSets["test"].java.srcDirs("src/test/kotlin")
     sourceSets["main"].assets.srcDir(nativeNotices)
     if (experimentalJni != null) {
         sourceSets["main"].jniLibs.setSrcDirs(listOf(file(experimentalJni)))
@@ -123,4 +126,12 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+}
+
+dependencies {
+    // Desktop-JVM tests only. The app itself depends on nothing but the
+    // platform; org.json is the real library here because android.jar's copy
+    // is a stub that throws.
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }

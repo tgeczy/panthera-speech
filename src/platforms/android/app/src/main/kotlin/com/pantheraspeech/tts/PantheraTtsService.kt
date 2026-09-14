@@ -23,6 +23,10 @@ class PantheraTtsService : TextToSpeechService() {
         // gated on the few-second image load -- a screen reader's first request
         // must not wait that long.
         Thread { try { PantheraEngine.warmUp(applicationContext) } catch (e: Throwable) {} }.start()
+        // Data copied in by hand, or left where an older version kept it,
+        // goes into protected storage as soon as the phone is unlocked.  On
+        // a phone that has just booted, that is later than now.
+        try { PantheraEngine.migrateWhenUnlocked(applicationContext) } catch (e: Throwable) {}
     }
 
     // Every Mac voice at least speaks English; a few also carry other locales,
