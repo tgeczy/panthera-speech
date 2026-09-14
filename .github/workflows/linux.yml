@@ -212,6 +212,14 @@ jobs:
         run: |
           version="${TAG##*/v}"
           asset="panthera-linux-${{ matrix.arch }}-${version}.tar.gz"
+          # The safety net must not touch a tarball the dispatch already
+          # attached: --clobber removes the asset before re-uploading it, and
+          # the release is public by then.
+          if [ "${{ github.event_name }}" = release ] &&
+             gh release view "$TAG" --json assets --jq '.assets[].name' | grep -qx "$asset"; then
+            echo "$asset is already on $TAG; leaving it alone"
+            exit 0
+          fi
           cp "build/panthera-linux-${{ matrix.arch }}-${{ matrix.aac }}.tar.gz" "build/$asset"
           gh release upload "$TAG" "build/$asset" --clobber
           echo "attached $asset to $TAG"
