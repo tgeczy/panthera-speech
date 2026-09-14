@@ -229,8 +229,20 @@ AAC=glint GLINT_SOURCE=/path/to/glint-clone sh build_linux.sh i686
 This requires a C++17 multilib toolchain and the pinned official source clone
 described in [the AAC experiment](../tools/aac_experiment/README.md). It builds
 into `build/linux-i686-glint-glint`, separately from the default codec, and has its
-own Linux CI job. Dependency promotion and release packaging remain separate
-from this experimental build.
+own Linux CI job.
+
+The release tarballs come from that workflow. While the release is still a
+draft, dispatch it with the release's tag:
+
+```sh
+gh workflow run linux.yml --ref main -f release_tag=pantheraspeech/v3.1.0
+```
+
+The i686 and aarch64 Glint archives are then attached to the release as
+`panthera-linux-<arch>-<version>.tar.gz`, named from the tag, before anyone
+can see it. Publishing a release without them attaches them a few minutes
+later; a re-run replaces what is there. The FAAD2 and x86_64 builds stay CI
+artifacts.
 
 ## Android volume
 

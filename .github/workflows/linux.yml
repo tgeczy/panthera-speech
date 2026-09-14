@@ -16,13 +16,27 @@ on:
   push:
     branches: [main, "tgeczy/**"]
   pull_request:
+  # The release tarballs come from here too.  Dispatch with the release's
+  # tag while it is still a draft and the two shipping archives land on it,
+  # named by version, before anyone can see the release; publishing a
+  # release without them attaches them a few minutes later as a safety net.
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Attach the shipping tarballs to this release (e.g. pantheraspeech/v3.1.0); blank builds only"
+        required: false
+        default: ""
+  release:
+    types: [published]
 
 jobs:
   build:
     # Match the supported runtime baseline. ubuntu-latest pulled in GLIBC_2.38
     # symbols, so an otherwise passing archive could not load on Ubuntu 22.04.
     runs-on: ${{ matrix.runner || 'ubuntu-22.04' }}
+    # Only the attach step writes anything, and only to a release.
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -180,3 +194,24 @@ jobs:
           name: panthera-linux-${{ matrix.arch }}-${{ matrix.aac }}
           path: build/panthera-linux-${{ matrix.arch }}-${{ matrix.aac }}.tar.gz
           if-no-files-found: error
+
+      # The two archives that ship -- i686 and aarch64, both with Glint -- go
+      # onto the release under the names the updaters and the notes use,
+      # panthera-linux-<arch>-<version>.tar.gz.  The FAAD2 and x86_64 builds
+      # are comparison builds and stay artifacts.  A draft is found by its
+      # tag name, so this works before the tag exists; --clobber makes a
+      # re-run a replacement rather than a failure.
+      - name: Attach to the release
+        if: >-
+          matrix.aac == 'glint' &&
+          (github.event_name == 'release' ||
+           (github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != ''))
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || github.event.inputs.release_tag }}
+        run: |
+          version="${TAG##*/v}"
+          asset="panthera-linux-${{ matrix.arch }}-${version}.tar.gz"
+          cp "build/panthera-linux-${{ matrix.arch }}-${{ matrix.aac }}.tar.gz" "build/$asset"
+          gh release upload "$TAG" "build/$asset" --clobber
+          echo "attached $asset to $TAG"
