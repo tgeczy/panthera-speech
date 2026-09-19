@@ -396,7 +396,7 @@ class PantheraDriver(HostMixin, SpeechPipelineMixin, SynthDriver):
             defaultVal="fewest",
             availableInSettingsRing=True,
         ),
-        # Where the breathing went, and how to get it back.
+        # Preserve breaths across NVDA's separately supplied Say All blocks.
         #
         # Alex breathes at a sentence boundary *inside* one utterance and
         # nowhere else -- N sentences give N-1 breaths, measured 0/1/2/5 for
@@ -407,16 +407,15 @@ class PantheraDriver(HostMixin, SpeechPipelineMixin, SynthDriver):
         # occasionally but not nearly as much as I recall" -- occasionally is
         # when a line happened to carry two full stops.
         #
-        # So this holds a finished sentence briefly and speaks it together with
-        # the next one.  The cost is that the cursor leads what is being said
-        # by up to one extra sentence, which is why it is a setting and not
-        # simply the behaviour.
+        # Positioned markers preserve the speech inside an available utterance,
+        # but do not supply the next block. This holds a finished sentence
+        # briefly and speaks it with the next one. Indexes are reported early
+        # to obtain that text, so the reading cursor and callbacks can lead
+        # speech. Keep the existing setting key and default for saved choices.
         BooleanDriverSetting(
             "joinSentences",
-            # Says the benefit, not the mechanism: nobody wants "coalesce
-            # utterances", they want the thing it produces.  T is free -- E, R,
-            # G, B and A are taken above.
-            _("Brea&the between sentences when reading continuously"),
+            # Retain the T access key.
+            _("Join &text blocks during Say All to preserve breaths"),
             defaultVal=True,
         ),
         # The engine reads numbers well up to six digits and gives up at
@@ -596,6 +595,7 @@ class PantheraDriver(HostMixin, SpeechPipelineMixin, SynthDriver):
         #: streaming off and says why; the old request works against every host
         #: that has ever existed.
         self._streaming = True
+        self._markerStreaming = True
         #: Whether a request is on the pipe with its response still to
         #: come.
         #:

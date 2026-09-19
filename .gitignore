@@ -13,3 +13,6 @@ __pycache__/
 # NVDA's secure screens; both are artefacts of build.sh.
 *.dll
 *.nvda-addon
+
+# Local Codex files
+/.codex/

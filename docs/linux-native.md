@@ -220,7 +220,8 @@ library at a chosen rate. Building Linux runs the synthetic instruction/signal
 tests in `tools/native_divide_check.c`; native i686 additionally runs
 `tiger_host --audio-timeline-check`. These tests need no engine data.
 
-The Glint decoder remains opt-in:
+Glint is the default decoder for the shipping i686 and AArch64 builds.
+An existing pinned clone can be supplied for an offline build:
 
 ```sh
 AAC=glint GLINT_SOURCE=/path/to/glint-clone sh build_linux.sh i686
@@ -228,14 +229,14 @@ AAC=glint GLINT_SOURCE=/path/to/glint-clone sh build_linux.sh i686
 
 This requires a C++17 multilib toolchain and the pinned official source clone
 described in [the AAC experiment](../tools/aac_experiment/README.md). It builds
-into `build/linux-i686-glint-glint`, separately from the default codec, and has its
-own Linux CI job.
+into `build/linux-i686-glint`. Optional FAAD2 comparison builds use a separate
+directory and are not the release tarballs.
 
 The release tarballs come from that workflow. While the release is still a
 draft, dispatch it with the release's tag:
 
 ```sh
-gh workflow run linux.yml --ref main -f release_tag=pantheraspeech/v3.1.0
+gh workflow run linux.yml --ref main -f release_tag=pantheraspeech/v3.2.0
 ```
 
 The i686 and aarch64 Glint archives are then attached to the release as

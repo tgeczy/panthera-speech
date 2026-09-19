@@ -3,7 +3,7 @@
 
 An index is how NVDA hangs a callback on a point in the speech: the say-all
 cursor, its own spelling-error sound and indentation tones, an add-on's
-earcon.  With "Breathe between sentences when reading continuously" checked,
+earcon.  With "Join text blocks during Say All to preserve breaths" checked,
 every index is reported ahead of its audio, because the joiner needs NVDA's
 next line before it renders this one and NVDA only sends it on the previous
 line's index -- so the cursor leads, and so does the earcon.  That is the

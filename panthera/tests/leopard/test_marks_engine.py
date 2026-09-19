@@ -46,6 +46,7 @@ class _Listener(object):
         self.firstFeed = None
         self.renders = []
         self.reported = []
+        self.markerFrames = []
         player = driver._player
         feed = player.feed
 
@@ -59,6 +60,12 @@ class _Listener(object):
 
         def spy(text, wpm, voice, pitch=0, sink=None, **kw):
             fed = []
+            marker = kw.get("markerSink")
+            if marker is not None:
+                def positioned(ident, frame):
+                    self.markerFrames.append(frame)
+                    return marker(ident, frame)
+                kw["markerSink"] = positioned
 
             def counting(chunk):
                 fed.append(len(chunk))
@@ -92,7 +99,12 @@ def test_with_breathing_off_the_index_waits_for_the_words_before_it(driver, monk
     assert [i for _t, i in listen.reported] == [7]
     text, nbytes = listen.renders[0]
     assert text.startswith("first part")
-    first = nbytes / 2.0 / OUT_RATE
+    # The new path keeps BOTH fragments in this render. Its interior sync,
+    # rather than the end of the whole render, identifies the first part.
+    assert driver._markerStreaming and len(listen.renders) == 1
+    assert len(listen.markerFrames) == 1
+    assert 0 < listen.markerFrames[0] < nbytes / 2
+    first = listen.markerFrames[0] / OUT_RATE
     at = listen.reported[0][0] - listen.firstFeed
     # The fake device starts its stream 120 ms after the first feed, which
     # is slack in the index's favour: it must not sound before the words.

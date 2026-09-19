@@ -56,7 +56,13 @@ def main():
     with tempfile.TemporaryDirectory(prefix="windows-", dir=out) as scratch:
         stage = Path(scratch)
         host = stage / "host"
-        shutil.copytree(ROOT / "src", host)
+        # The Windows translation unit uses the files directly under src.
+        # Do not copy Android's Gradle output, locked caches or local signing
+        # configuration into this compiler staging directory.
+        host.mkdir()
+        for path in (ROOT / "src").iterdir():
+            if path.is_file():
+                shutil.copy2(path, host / path.name)
         vendor = glint.prepare(source, stage, host)
         with (out / "build-windows.log").open("w", encoding="utf8") as log:
             def run(args):

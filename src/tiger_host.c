@@ -590,6 +590,7 @@ static unsigned bswap(unsigned v)
 #include "tiger_host_dyldinfo.c"
 #include "tiger_host_speech.c"
 #include "tiger_host_volume.c"
+#include "tiger_host_markers.c"
 #include "tiger_host_serve.c"
 #include "tiger_host_pmod.c"
 

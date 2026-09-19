@@ -40,6 +40,7 @@ from synthDriverHandler import synthDoneSpeaking, synthIndexReached
 
 from .audio import SENTENCE_PAUSE_FACTOR, _silence, _sliceAudio
 from .constants import FEED_LEAD, FEED_SLICE, OUT_RATE
+from .marker_pipeline import MarkerPipelineMixin
 from .text import (INPUT_MODE_CAPTURE_RE, SPLIT_MIN, _joinFragments,
                    _sentenceEnds, _splitUtterance)
 
@@ -85,7 +86,7 @@ JOIN_MAX_CHARS = 800
 TUNE_JOIN_MAX_CHARS = 8000
 
 
-class SpeechPipelineMixin(object):
+class SpeechPipelineMixin(MarkerPipelineMixin):
     """Rendering, joining and feeding, on their own threads."""
 
     #: When the last interruption happened, for the one measurement a listener
@@ -142,6 +143,9 @@ class SpeechPipelineMixin(object):
                           and _sentenceEnds(_chunkText) >= 1
                           and len(_chunkText) >= JOIN_MIN_CHARS)
             item = self._join(item, epoch)
+            marked = (not self._joinSentences and self._streaming
+                      and getattr(self, "_markerStreaming", False)
+                      and not self._acceptCommands and self._inputMode is None)
             wpm, voice = self._wpm(), self._voiceId
             #: What NVDA has asked us to add to the user's pitch for the
             #: text that follows -- how "capital pitch change percentage"
@@ -183,6 +187,11 @@ class SpeechPipelineMixin(object):
             for kind, value in item:
                 if self._stopped or self._epoch != epoch:
                     break
+                if marked:
+                    if kind in ("text", "index", "break"):
+                        run.append((kind, value))
+                        continue
+                    self._flushMarked(run, wpm, voice, adj, epoch, vol)
                 if kind == "text":
                     if trailing:
                         pending.extend(trailing)
@@ -207,8 +216,11 @@ class SpeechPipelineMixin(object):
                     # at the wrong speed" happens.
                     wpm = self._wpm(value)
             if not self._stopped and self._epoch == epoch:
-                self._flush(run, wpm, voice, adj, epoch, pending, vol,
-                            trailing)
+                if marked:
+                    self._flushMarked(run, wpm, voice, adj, epoch, vol)
+                else:
+                    self._flush(run, wpm, voice, adj, epoch, pending, vol,
+                                trailing)
                 if continuous and self._inputMode is None:
                     #: **The engine's own sentence pause, restored between
                     #: chunks.**  Inside one utterance the engine composes

@@ -54,6 +54,10 @@ static FILE *g_in, *g_out;
  * rather than answer it in a shape the driver will misread.  That is why the
  * request magic carries a version at all. */
 #define REQ_MAGIC_STREAM 0x54475234u    /* 'TGR4' */
+#define REQ_MAGIC_MARKERS 0x54475235u   /* 'TGR5': PCM + positioned syncs */
+#define STREAM_MARKER 0x80000001u      /* followed by u32 id, u32 frame */
+#define STREAM_ERROR  0x80000002u      /* followed by i32 error; then end */
+#define MARKERS_UNAVAILABLE (-32001)
 #define RSP_MAGIC 0x54475253u           /* 'TGRS' */
 /* How far behind the collected frontier a streamed chunk stops.
  *
@@ -326,6 +330,41 @@ static unsigned stream_chunk(unsigned sent, unsigned upto)
     return sent;
 }
 
+static int stream_markers(unsigned *sent, unsigned settled)
+{
+    for (;;) {
+        speech_marker mark;
+        unsigned upto;
+        int have, failed;
+        /* Publish only the committed producer frontier. A sync can arrive
+         * immediately after this snapshot at THAT frontier, but cannot then
+         * arrive behind audio already sent. Do not hold the lock on pipe I/O
+         * or guest calls: both can block the producer. */
+        EnterCriticalSection(&g_markers.lock);
+        upto = g_markers.frontier;
+        if (upto > settled) upto = settled;
+        failed = g_markers.failed;
+        have = g_markers.consumed < g_markers.count &&
+               g_markers.items[g_markers.consumed].frame <= upto;
+        if (have) mark = g_markers.items[g_markers.consumed++];
+        LeaveCriticalSection(&g_markers.lock);
+        if (failed) return 0;
+        if (!have) {
+            *sent = stream_chunk(*sent, upto);
+            return 1;
+        }
+        if (mark.frame < *sent) return 0;
+        *sent = stream_chunk(*sent, mark.frame);
+        {
+            unsigned tag = STREAM_MARKER;
+            fwrite(&tag, 4, 1, g_out);
+            fwrite(&mark.id, 4, 1, g_out);
+            fwrite(&mark.frame, 4, 1, g_out);
+            fflush(g_out);
+        }
+    }
+}
+
 static int serve(image *mt, void *chan, const char *voicesdir)
 {
     SEUseVoice_t use     = (SEUseVoice_t)find_export(mt, "_SEUseVoice");
@@ -419,7 +458,7 @@ static int serve(image *mt, void *chan, const char *voicesdir)
         unsigned magic, namelen, textlen, nframes, i;
         int wpm, pitch, err = 0, voicechanged;
         unsigned flags;
-        int streaming;
+        int streaming, marked, marker_failed = 0;
         int cancelled = 0;
         unsigned sent = 0;
         double speak_ms = 0.0;
@@ -427,8 +466,10 @@ static int serve(image *mt, void *chan, const char *voicesdir)
         char *text;
 
         if (!read_all(g_in, &magic, 4)) return 0;      /* driver went away */
-        if (magic != REQ_MAGIC && magic != REQ_MAGIC_STREAM) return 1;
-        streaming = (magic == REQ_MAGIC_STREAM);
+        if (magic != REQ_MAGIC && magic != REQ_MAGIC_STREAM &&
+            magic != REQ_MAGIC_MARKERS) return 1;
+        marked = (magic == REQ_MAGIC_MARKERS);
+        streaming = (magic != REQ_MAGIC);
         if (!read_all(g_in, &wpm, 4) ||
             !read_all(g_in, &pitch, 4) ||
             !read_all(g_in, &flags, 4) ||
@@ -555,6 +596,7 @@ static int serve(image *mt, void *chan, const char *voicesdir)
         if (g_gcd_log)
             fprintf(stderr, "tiger_host: [%u] speaking %u byte(s)\n",
                     g_utt, textlen);
+        if (!err && marked && !markers_begin(mt, textlen)) err = MARKERS_UNAVAILABLE;
         if (!err) err = speak_text(&api, chan, text, textlen);
         speak_ms = wall_ms() - g_utt_t0;
         if (g_gcd_log)
@@ -686,6 +728,7 @@ static int serve(image *mt, void *chan, const char *voicesdir)
                      * driver cannot start the next utterance until this
                      * response ends, so finishing it politely *is* the lag. */
                     InterlockedExchange(&g_au_cancel, 1);
+                    if (marked) markers_end();
                     if (stopnow)
                         call_aligned2((void *)stopnow, chan, (void *)0);
                     cancel_stopped = wall_ms();
@@ -746,7 +789,11 @@ static int serve(image *mt, void *chan, const char *voicesdir)
                  * too, rather than sitting on it until the response ends --
                  * see STREAM_SETTLE.  This is what keeps a rate-boosted
                  * utterance in one piece. */
-                if (streaming) {
+                if (marked) {
+                    unsigned upto = quiet >= STREAM_SETTLE ? g_pcm_n :
+                        (g_pcm_n > STREAM_LOOKBEHIND ? g_pcm_n - STREAM_LOOKBEHIND : 0);
+                    if (!marker_failed && !stream_markers(&sent, upto)) marker_failed = 1;
+                } else if (streaming) {
                     if (quiet >= STREAM_SETTLE)
                         sent = stream_chunk(sent, g_pcm_n);
                     else if (g_pcm_n > STREAM_LOOKBEHIND)
@@ -882,7 +929,22 @@ static int serve(image *mt, void *chan, const char *voicesdir)
              * be megabytes of it through the pipe for the driver to discard
              * is most of the delay the cancel exists to remove -- measured,
              * it was the difference between 446 ms and not noticing. */
-            if (!cancelled)
+            if (marked) {
+                if (!cancelled && !err) {
+                    if (!stream_markers(&sent, g_pcm_n)) marker_failed = 1;
+                    EnterCriticalSection(&g_markers.lock);
+                    if (g_markers.frontier != g_pcm_n ||
+                        g_markers.consumed != g_markers.count) marker_failed = 1;
+                    LeaveCriticalSection(&g_markers.lock);
+                    if (marker_failed) {
+                        unsigned tag = STREAM_ERROR;
+                        int code = -32002;
+                        fwrite(&tag, 4, 1, g_out);
+                        fwrite(&code, 4, 1, g_out);
+                    }
+                }
+                markers_end();
+            } else if (!cancelled)
                 sent = stream_chunk(sent, g_pcm_n);
             fwrite(&zero, 4, 1, g_out);
             fflush(g_out);

@@ -498,6 +498,16 @@ object PantheraEngine {
     fun volume(ctx: Context): Int = settings(ctx).volume
 
     private val lock = Any()
+    private val cancellations = java.util.concurrent.Executors.newSingleThreadExecutor { work ->
+        Thread(work, "panthera-cancel")
+    }
+    // Warm short labels on the Nothing Phone finished in 11-60 ms with Alex.
+    // A stop just before completion should not pay another process/voice load.
+    // This is a maximum opportunity to finish, never an unconditional sleep.
+    private const val COMPLETION_GRACE_MS = 60L
+    // The measured gain is for short labels (digits, Search, Messages).
+    // Waiting on paragraphs only delays the replacement before killing anyway.
+    private const val COMPLETION_GRACE_MAX_BYTES = 32
     @Volatile private var worker: IPantheraWorker? = null
     @Volatile private var request: PantheraRequest<IPantheraWorker>? = null
     @Volatile private var openedGen: String? = null
@@ -506,13 +516,20 @@ object PantheraEngine {
     fun isOpen(): Boolean = worker != null
 
     fun <T> withSynthesis(block: () -> T): T = synchronized(lock) {
-        val owned = PantheraRequest<IPantheraWorker>(PantheraWorkers::retire) { api ->
-            // Playback can remain queued after synthesis has already finished.
-            // Preserve that warm worker; only unfinished synthesis needs death.
-            val complete = try { api.renderComplete() } catch (_: Exception) { false }
-            if (complete) android.util.Log.i("PantheraEngine", "Keeping completed engine worker after playback stop")
-            complete
-        }
+        val owned = PantheraRequest<IPantheraWorker>(
+            retire = PantheraWorkers::retire,
+            canReuse = { api, allowGrace ->
+                val at = android.os.SystemClock.elapsedRealtime()
+                var complete = api.renderComplete()
+                while (!complete && allowGrace && android.os.SystemClock.elapsedRealtime() - at < COMPLETION_GRACE_MS) {
+                    Thread.sleep(2)
+                    complete = api.renderComplete()
+                }
+                android.util.Log.i("PantheraEngine", "Cancelled renderer settled in " +
+                    "${android.os.SystemClock.elapsedRealtime() - at} ms, grace=$allowGrace reused=$complete")
+                complete
+            },
+            dispatchCancel = { cancellations.execute(it) })
         check(request == null) { "Nested synthesis request" }
         request = owned
         try { block() } finally {
@@ -577,7 +594,7 @@ object PantheraEngine {
             if (!owned.attach(next)) return@synchronized -1
             next.start(voice.dir, voice.creator, voice.voiceId, text, wpm,
                 snapshot.engineVolume(voice.gen), voice.gen, snapshot.numbers, snapshot.expandAbbreviations, snapshot.inflection)
-                .also { if (it == 0) owned.started() }
+                .also { if (it == 0) owned.started(text.size <= COMPLETION_GRACE_MAX_BYTES) }
         } catch (e: Exception) {
             android.util.Log.e("PantheraEngine", "Speech failed", e); -1
         }

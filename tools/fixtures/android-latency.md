@@ -25,6 +25,74 @@ mean the responsiveness target passed. The range marker estimates when the
 first nonquiet sample reaches Android's playback position; it is not an
 acoustic measurement.
 
+## September 19: short-label completion grace (unreleased)
+
+Three additional instrumentation modes run with a matching app/test APK:
+
+```text
+adb -s DEVICE shell am instrument -w -e latency completion com.pantheraspeech.tts.test/com.pantheraspeech.tts.EngineSmokeTest
+adb -s DEVICE shell am instrument -w -e latency handoff com.pantheraspeech.tts.test/com.pantheraspeech.tts.EngineSmokeTest
+adb -s DEVICE shell am instrument -w -e latency labels com.pantheraspeech.tts.test/com.pantheraspeech.tts.EngineSmokeTest
+```
+
+`completion` warms each voice and observes the native completion predicate
+for up to 110 ms after start, without cancelling first. `handoff` cancels
+warm requests 10/25/50 ms after start and measures stop-call duration, worker
+identity, and next PCM arrival. Every replacement must match an uninterrupted
+reference exactly. `labels` sends 20 short labels per burst at 25/50/100 ms
+intervals through the real TTS client, with playback markers and a final
+utterance that must finish. These modes use installed generations. The first
+two do not change preferences; the TTS probe restores its preferences.
+
+Nothing Phone A024, Android 16, Box64, original 3.1.0 versus the candidate:
+120 handoffs per build, all replacement PCM exact. Old requests use 387 wpm;
+replacement `Seven` uses 180. For the 18 short-label cases per generation:
+
+| Voice | Retirements, original / candidate | Next PCM median ms, original / candidate | Maximum ms, original / candidate |
+| --- | ---: | ---: | ---: |
+| Tiger Fred | 0 / 0 | 11 / 11 | 15 / 14 |
+| Leopard Alex | 8 / 0 | 17 / 17.5 | 280 / 65 |
+| Snow Leopard Alex | 15 / 6 | 345 / 35.5 | 379 / 458 |
+| Lion Alex | 8 / 0 | 17.5 / 19 | 273 / 59 |
+
+The candidate polls completion for up to 60 ms only for successfully started
+requests of at most 32 MacRoman bytes. An initial unconditional-grace version
+increased long-text cancellation latency and was narrowed. Large requests
+still retire immediately if unfinished. Stop calls returned within the
+probe's one-millisecond resolution in the final handoff run; the original
+took up to 50 ms. Worker shutdown now runs off the stop caller.
+
+These are small controlled samples, not acoustic latency guarantees. Snow
+Leopard still missed the grace window in six short-label cases, and its worst
+case was slower. Both builds completed the 240-request TTS label probe with
+zero synthesis errors; the candidate still had restarts during the fastest
+bursts. Intentional retirements across those captures fell from 27 to 6,
+with no automatic service-restart events on either build. No Watch 9
+measurement has been made for this candidate. Native
+libraries in the tested APKs were byte-identical, isolating the Kotlin change.
+
+The broader audio suite can select its initial reference generation with
+`-e audioOnly true -e testGeneration tiger`; subsequent generation checks
+still cover every installed generation. On this phone, using Lion as the
+initial generation exposed a two-sample difference between Fred's curly- and
+straight-apostrophe renders on both original and candidate APKs. That exact
+comparison remains an unresolved pre-existing failure, not a relaxed oracle.
+With Tiger as the initial reference, both builds passed the broader audio
+suite, including later generation-specific checks and paragraph breaths.
+The candidate also passed all 17 JVM tests, eight Binder retirement/rebind
+cycles, and completed-renderer reuse with exact replacement PCM for every
+installed generation.
+
+Tomi subsequently confirmed the candidate by ear on the Nothing Phone:
+alternating the "home screen 1 of 1" boundary and "Meet" within about
+0.3 seconds passed his navigation test without triggering double-taps.
+A recovered recent log window showed Lion Alex reusing the worker after
+three cancellations in 1, 1, and 5 ms, with no worker replacement in that
+window. Logs record text lengths, not labels or touch timestamps; the
+listening report and logged reuse are separate evidence.
+
+## Earlier measurements
+
 September 7, 2026: both the Nothing Phone 3 (ARM64) and Pixel Watch 2 (ARMv7)
 pass ownership and audio regressions after moving retirement to the binding
 owner. The phone rapid run has zero scheduled automatic service restarts:

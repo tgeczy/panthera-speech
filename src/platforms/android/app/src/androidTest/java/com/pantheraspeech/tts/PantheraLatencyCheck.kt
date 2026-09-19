@@ -129,9 +129,29 @@ internal object PantheraLatencyCheck {
                 val line = "$id first=${s.firstMs} gate=${s.gateMs} sound=${s.soundMs} done=${s.elapsed()} bytes=${s.bytes}"
                 report.add(line); Log.i("PantheraLatency", line)
             }
-            for (name in listOf("panthera-leopard-fred", "panthera-leopard-alex")) {
+            val names = if (mode == "labels") PantheraEngine.availableGens(ctx).map { gen ->
+                val voices = PantheraEngine.scanVoices(ctx, gen)
+                (voices.firstOrNull { it.name == "Alex" } ?: voices.first { it.name == "Fred" }).id
+            } else listOf("panthera-leopard-fred", "panthera-leopard-alex")
+            for (name in names) {
                 check(tts.setVoice(tts.voices.first { it.name == name }) == TextToSpeech.SUCCESS)
                 complete("$name-cold", "Seven")
+                if (mode == "labels") {
+                    for (gap in listOf(25L, 50L, 100L)) {
+                        val burst = ArrayList<Sample>()
+                        val labels = listOf("Search", "Search apps and more.", "7", "Messages")
+                        repeat(20) { i ->
+                            burst.add(say("$name-label-$gap-$i", labels[i % labels.size]))
+                            Thread.sleep(gap)
+                        }
+                        complete("$name-label-$gap-final", "Messages")
+                        val line = "$name-labels gap=$gap requests=${burst.size} firstBeforeNext=${burst.count { it.firstMs in 0 until gap }} " +
+                            "playbackBeforeNext=${burst.count { it.soundMs in 0 until gap }} errors=${burst.count { it.error }}"
+                        report.add(line); Log.i("PantheraLatency", line)
+                        check(burst.none { it.error }) { "$name short-label replacement reported synthesis errors" }
+                    }
+                    continue
+                }
                 if (mode == "rapid") {
                     for (gap in listOf(150L, 100L)) {
                         val burst = ArrayList<Sample>()

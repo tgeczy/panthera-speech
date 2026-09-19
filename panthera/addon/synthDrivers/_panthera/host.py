@@ -54,6 +54,7 @@ REQ_MAGIC = 0x54475233          # 'TGR3'
 #: an add-on folder refuses the request outright instead of answering it in a
 #: shape this driver would read as chunk lengths.
 REQ_MAGIC_STREAM = 0x54475234   # 'TGR4'
+REQ_MAGIC_MARKERS = 0x54475235  # 'TGR5', positioned interior sync records
 RSP_MAGIC = 0x54475253          # 'TGRS'
 
 
@@ -66,6 +67,62 @@ def _readExactly(stream, n):
             raise IOError("engine closed the pipe")
         out += chunk
     return out
+
+
+
+def _prepareProse(text, numberStyle, expandAbbreviations, fixStress):
+    """The existing lexical rewrites, shared with marker transparency checks."""
+    # Number rewriting can move to the host when abbreviation expansion
+    # is enabled. With expansion disabled, despelling turns 1234567mm
+    # into 1234567 M M and changes which numbers the later pass recognizes.
+    # Keep the released order in that mode until both steps live natively.
+    nativeNumberStyle = numberStyle
+    if not expandAbbreviations:
+        nativeNumberStyle = "off"
+        if numberStyle != "off":
+            text = "".join(
+                part if part.startswith("[[")
+                else pantheranumbers.expand(part, numberStyle)
+                for part in COMMAND_SPLIT_RE.split(text))
+    #: The engine's measured wrong guesses, settled in the text whichever
+    #: way the abbreviations setting points: "<proper noun> Dr." read as
+    #: a street mid-news-article, and "X's" after NVDA's camel-case split
+    #: read as the roman numeral -- "SpaceX's" was "space ten's".  See
+    #: pantheraabbrev.disambiguate and [[news-reading-quirks]].
+    text = "".join(
+        part if part.startswith("[[")
+        else pantheraabbrev.disambiguate(part, expandAbbreviations)
+        for part in COMMAND_SPLIT_RE.split(text))
+    if not expandAbbreviations:
+        #: **The engine's own abbreviation table, which no setting of its
+        #: own reaches.**  TIGER_NO_ABBREV turns off the dictionary rules
+        #: that rewrite units and quantities, and those are regular
+        #: expressions this host compiles, so declining to compile one
+        #: turns it off.  "DR" is not one of them: it is a lexical entry
+        #: inside MacinTalk, tagged `Abbrev` and `Doctor`, and rendering it
+        #: runs no regular expression and no query at all -- and neither
+        #: is "Dr.", "St." or 10.7's digit-adjacent units, which is why
+        #: the despelling now covers those forms too.
+        #:
+        #: So the switch only did half of what its label promised, and the
+        #: half it missed is the half Tomi noticed.  See pantheraabbrev.py
+        #: for what is covered and what deliberately is not.
+        text = "".join(
+            part if part.startswith("[[") else pantheraabbrev.spell(part)
+            for part in COMMAND_SPLIT_RE.split(text))
+    if fixStress:
+        #: Outside the commands for the same reason the numbers are: a
+        #: respelling inside "[[rate 200]]" would corrupt the command.
+        #:
+        #: The word arrives already spelt out -- NVDA's symbol dictionary
+        #: turns ":" into "colon" long before the driver is handed the
+        #: text, which is why the engine never sees the punctuation at all.
+        #: Running after the number expansion simply keeps the two rewrites
+        #: from meeting: that one works on digits, this one on words.
+        text = "".join(
+            part if part.startswith("[[") else pantherastress.fix(part)
+            for part in COMMAND_SPLIT_RE.split(text))
+    return text, nativeNumberStyle
 
 
 class HostMixin(object):
@@ -605,7 +662,8 @@ class HostMixin(object):
         t.daemon = True
         t.start()
 
-    def _render(self, text, wpm, voice, pitch=0, sink=None, volume=0):
+    def _render(self, text, wpm, voice, pitch=0, sink=None, volume=0,
+                markerSink=None, markerIds=()):
         """-> PCM bytes, or None.  One request, one utterance.
 
         With a `sink`, the audio is asked for in chunks and each is handed over
@@ -615,6 +673,12 @@ class HostMixin(object):
         per character than any other voice here, so a paragraph of him was the
         longest wait of all.
         """
+        marked = markerSink is not None
+        renderEpoch = getattr(self, "_epoch", None)
+        markerIds = tuple(markerIds)
+        if marked and (sink is None or not self._streaming or not self._markerStreaming):
+            return None
+        trusted = {"[[sync 0x%x]]" % i for i in markerIds} if marked else set()
         text = text.strip()
         if not text:
             return b""
@@ -632,7 +696,9 @@ class HostMixin(object):
             # delimiters off with soCommandDelimiter made text containing "[["
             # produce silence instead of speaking it.  The host separately
             # guarantees no command can outlive its utterance.
-            text = COMMAND_RE.sub("", text)
+            # marker_plan stripped document commands BEFORE adding these.
+            # The ordinary render entry point has no trusted commands.
+            text = COMMAND_RE.sub(lambda m: m.group(0) if m.group(0) in trusted else "", text)
         elif self.INPUT_MODES_WORK is False:
             #: **The user asked for embedded commands and gets all of them
             #: except the ones this generation cannot honour.**
@@ -673,56 +739,27 @@ class HostMixin(object):
             if lastSwitch:
                 self._inputMode = (None if lastSwitch == "TEXT"
                                    else lastSwitch)
-        # Number rewriting can move to the host when abbreviation expansion
-        # is enabled. With expansion disabled, despelling turns 1234567mm
-        # into 1234567 M M and changes which numbers the later pass recognizes.
-        # Keep the released order in that mode until both steps live natively.
-        nativeNumberStyle = self._numberStyle
-        if not self._expandAbbreviations:
-            nativeNumberStyle = "off"
-            if self._numberStyle != "off":
-                text = "".join(
-                    part if part.startswith("[[")
-                    else pantheranumbers.expand(part, self._numberStyle)
-                    for part in COMMAND_SPLIT_RE.split(text))
-        #: The engine's measured wrong guesses, settled in the text whichever
-        #: way the abbreviations setting points: "<proper noun> Dr." read as
-        #: a street mid-news-article, and "X's" after NVDA's camel-case split
-        #: read as the roman numeral -- "SpaceX's" was "space ten's".  See
-        #: pantheraabbrev.disambiguate and [[news-reading-quirks]].
-        text = "".join(
-            part if part.startswith("[[")
-            else pantheraabbrev.disambiguate(part, self._expandAbbreviations)
-            for part in COMMAND_SPLIT_RE.split(text))
-        if not self._expandAbbreviations:
-            #: **The engine's own abbreviation table, which no setting of its
-            #: own reaches.**  TIGER_NO_ABBREV turns off the dictionary rules
-            #: that rewrite units and quantities, and those are regular
-            #: expressions this host compiles, so declining to compile one
-            #: turns it off.  "DR" is not one of them: it is a lexical entry
-            #: inside MacinTalk, tagged `Abbrev` and `Doctor`, and rendering it
-            #: runs no regular expression and no query at all -- and neither
-            #: is "Dr.", "St." or 10.7's digit-adjacent units, which is why
-            #: the despelling now covers those forms too.
-            #:
-            #: So the switch only did half of what its label promised, and the
-            #: half it missed is the half Tomi noticed.  See pantheraabbrev.py
-            #: for what is covered and what deliberately is not.
-            text = "".join(
-                part if part.startswith("[[") else pantheraabbrev.spell(part)
-                for part in COMMAND_SPLIT_RE.split(text))
-        if self._fixStress:
-            #: Outside the commands for the same reason the numbers are: a
-            #: respelling inside "[[rate 200]]" would corrupt the command.
-            #:
-            #: The word arrives already spelt out -- NVDA's symbol dictionary
-            #: turns ":" into "colon" long before the driver is handed the
-            #: text, which is why the engine never sees the punctuation at all.
-            #: Running after the number expansion simply keeps the two rewrites
-            #: from meeting: that one works on digits, this one on words.
-            text = "".join(
-                part if part.startswith("[[") else pantherastress.fix(part)
-                for part in COMMAND_SPLIT_RE.split(text))
+        prepared, nativeNumberStyle = _prepareProse(
+            text, self._numberStyle, self._expandAbbreviations, self._fixStress)
+        if marked:
+            # Commands are lexical fences. An index between "Dr." and a name
+            # must not silently defeat the driver's Doctor disambiguation.
+            # Keep the legacy boundary path for a rewrite crossing this mark.
+            def withoutSync(value):
+                return COMMAND_RE.sub(lambda m: "" if m.group(0) in trusted else m.group(0), value)
+            control, _ = _prepareProse(withoutSync(text), self._numberStyle,
+                                      self._expandAbbreviations, self._fixStress)
+            if withoutSync(prepared) != control:
+                return None
+            if nativeNumberStyle != "off":
+                # The native number pass also protects command spans. Its
+                # Python oracle lets us reject a crossing before any audio.
+                expanded = "".join(part if part.startswith("[[") else
+                    pantheranumbers.expand(part, nativeNumberStyle)
+                    for part in COMMAND_SPLIT_RE.split(prepared))
+                if withoutSync(expanded) != pantheranumbers.expand(control, nativeNumberStyle):
+                    return None
+        text = prepared
         # Volume is the engine's own [[volm]] command, not gain applied to
         # the PCM afterwards.  Measured on both engines it is exactly
         # linear -- volm 0.5 halves the RMS and 0.2 fifths it -- so the
@@ -812,7 +849,7 @@ class HostMixin(object):
             # waiting here to kill the utterance that follows it.
             self._clearCancel()
             streaming = sink is not None and self._streaming
-            req = REQ_MAGIC_STREAM if streaming else REQ_MAGIC
+            req = REQ_MAGIC_MARKERS if marked else (REQ_MAGIC_STREAM if streaming else REQ_MAGIC)
             # From here until the response ends, this is what cancel() may
             # take the host away from.
             self._rendering = True
@@ -849,11 +886,34 @@ class HostMixin(object):
                 raise IOError("bad response magic %08x" % magic)
             answered = True
             feeding = True
+            frames, reached = 0, []
+            if marked and status == -32001:
+                self._markerStreaming = False
+                if _readExactly(proc.stdout, 4) != b"\0\0\0\0":
+                    raise IOError("invalid marker refusal")
+                log.warning("%s: this engine does not support positioned markers; "
+                            "using boundary marks instead" % self.name)
+                return None
             while True:
                 (n,) = struct.unpack("<I", _readExactly(proc.stdout, 4))
                 if not n:
                     break
+                if marked and n == 0x80000001:
+                    ident, frame = struct.unpack("<II", _readExactly(proc.stdout, 8))
+                    if (frame != frames or len(reached) >= len(markerIds)
+                            or ident != markerIds[len(reached)]):
+                        raise IOError("out of order speech marker")
+                    reached.append(ident)
+                    if feeding and not markerSink(ident, frame):
+                        feeding = False
+                    continue
+                if marked and n == 0x80000002:
+                    code, = struct.unpack("<i", _readExactly(proc.stdout, 4))
+                    raise IOError("speech marker timeline failed: %d" % code)
+                if marked and n > 1024:
+                    raise IOError("invalid marker stream record")
                 chunk = _readExactly(proc.stdout, n * 2)
+                frames += n
                 # Read to the end of the response even once the sink has
                 # stopped wanting it.  The same pipe carries the next
                 # utterance, so chunks left unread would put the protocol out
@@ -863,6 +923,9 @@ class HostMixin(object):
                 # draining is cheap.
                 if feeding and not sink(chunk):
                     feeding = False
+            if (marked and feeding and self._epoch == renderEpoch
+                    and tuple(reached) != markerIds):
+                raise IOError("missing interior speech marker")
             if status:
                 log.debugWarning("%s: " % self.name + "OSErr %d for %r"
                                  % (status, text))
@@ -889,7 +952,11 @@ class HostMixin(object):
                     self._proc = None
                 elif proc is not None:
                     retired = True
-            if (sink is not None and self._streaming and not answered
+            if marked and not retired and self._epoch == renderEpoch:
+                self._markerStreaming = False
+                log.warning("%s: positioned markers unavailable; using boundary "
+                            "marks for subsequent speech" % self.name)
+            elif (not marked and sink is not None and self._streaming and not answered
                     and not retired):
                 # A host that does not know 'TGR4' exits rather than answer it,
                 # which arrives here as a closed pipe.  Left alone this repeats

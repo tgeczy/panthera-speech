@@ -171,12 +171,27 @@ Each incoming request stays whole while its audio streams. This follows the
 NVDA driver's paragraph handling: splitting at sentence boundaries removes
 Alex's breaths and composed pauses. Explicit stops still cancel speech; separate
 Android requests retain their own boundaries. No artificial gaps or audio
-silence trimming are added. An explicit stop retires an active private worker
-and the next request reopens it. The emulated engines can drain a whole
+silence trimming are added. An explicit stop retires unfinished work when it
+cannot safely reuse the worker, and the next request reopens it. The emulated engines can drain a whole
 paragraph inside their stop call, or return with deferred work that truncates
 the next utterance. Process isolation makes cancellation a reliable boundary
 without disconnecting the public service. Completed requests retain their
 warm worker; stopping idle playback does not retire it.
+
+The unreleased short-label cancellation change gives successfully started
+requests of at most 32 MacRoman bytes up to 60 ms to finish rendering before
+retirement. It exits that wait as soon as completion is observed. Larger
+requests and cancellation during start get no grace; already completed
+requests of any size still keep their worker. The byte limit is a heuristic,
+not a prediction of synthesis duration.
+
+Cancellation detaches the request immediately and makes the reuse/retirement
+decision on a separate executor. The synthesis owner waits for that decision
+before handing the worker to another request, so a delayed cancellation cannot
+retire a worker after reuse. Nothing waits on the stop caller for that grace
+period or for process death. The native library and desktop cancellation
+policies are unchanged. Measurements and remaining limits are recorded in
+[the latency checks](../tools/fixtures/android-latency.md).
 
 ## Native fixes
 

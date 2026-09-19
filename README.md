@@ -52,6 +52,20 @@ The driver *module* names — `tigerspeech`, `leopardspeech`, `lionspeech` —
 are frozen for good. NVDA keys every speech setting by synth name, so renaming one silently
 resets the voice, rate, pitch and volume of everybody who had it selected.
 
+## NVDA Say All and breaths (in development)
+
+The setting **Join text blocks during Say All to preserve breaths** keeps
+Alex's sentence-boundary breaths when NVDA supplies the sentences as separate
+text blocks. It retains the previous setting's saved choice and default.
+With joining enabled, reading-position indexes and their callbacks can be
+reported ahead of speech so NVDA supplies the next block in time.
+
+With joining disabled, the new marker path preserves speech and breaths
+within text already supplied together, while placing supported indexes and
+earcon pauses at their audio positions. It does not join separate Say All
+blocks. This is an NVDA setting; see the [marker implementation and validation
+status](docs/speech-markers.md) for the tested engines and remaining work.
+
 ## Why the cats
 
 *Panthera* is the genus: tiger, leopard, snow leopard and lion are all in it.
