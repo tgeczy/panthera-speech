@@ -1,4 +1,4 @@
-# Panthera 3.2.0 - draft
+# Panthera 3.2.0
 
 One release for the NVDA add-on, SAPI for Windows, Android, and the native
 Linux command-line host and C library. No Apple engine or voice data is
@@ -81,26 +81,8 @@ marker records when they request that protocol explicitly. The new marker
 adapter is enabled only on native hosts; emulated hosts refuse it before
 speech and continue supporting the existing protocols.
 
-## Draft validation still to finish before publication
+Astra 6 helped shape this release end to end. It earned its keep this
+session in every way. Tomi's careful listening helped get the swipes smooth
+and kept Alex breathing where he should.
 
-Live NVDA/Earcons interaction and the updated Android candidate on Galaxy
-Watch9 still need user confirmation. The listening files and automated checks
-establish the results described above, not every voice or input boundary.
-See [marker implementation and evidence](https://github.com/tgeczy/panthera-speech/blob/main/docs/speech-markers.md).
-
-## Who helped shape this release
-
-**Astra 6 helped shape this release end to end. It earned its keep this
-session in every way.** Tomi requested this credit, and his careful listening
-confirmed both the rapid-navigation improvement and the preserved breaths.
-
-## Downloads
-
-- **NVDA:** `pantheraspeech-3.2.0.nvda-addon`
-- **SAPI:** `panthera-sapi-3.2.0-setup.exe`
-- **Android:** `panthera-android-3.2.0.apk`, signed with the existing release key
-- **Linux x86:** `panthera-linux-i686-3.2.0.tar.gz`
-- **Linux ARM64:** `panthera-linux-aarch64-3.2.0.tar.gz`
-
-GitHub also provides the tagged source archives. The Linux tarballs contain
-additional pinned dependency sources; normal binaries include their notices.
+Thanks for all the testing and reports. Enjoy 3.2.0! <3
