@@ -443,8 +443,11 @@ class SettingsActivity : Activity() {
         root.addView(body(
             "Zip the folder the desktop add-on extracted for a generation -- it " +
             "holds Speech and SpeechDictionary.framework -- get the zip onto this " +
-            "device, and choose it here. The app reads which engine is inside, " +
-            "with or without a folder around it, and unpacks it into place."))
+            "device, and choose it here. Generation folders (tiger, leopard, " +
+            "snowleopard or lion) can be at the top of the zip or inside panthera " +
+            "or panthera-data, in any casing. A single engine's Speech and " +
+            "SpeechDictionary.framework folders can also be at the top. " +
+            "The app checks the engine inside before unpacking it into place."))
         root.addView(Button(this).apply {
             text = "Extract engine from zip file"
             setOnClickListener { pickZip() }

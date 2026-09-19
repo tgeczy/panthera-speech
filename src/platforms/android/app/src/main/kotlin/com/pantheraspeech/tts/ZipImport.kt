@@ -25,7 +25,9 @@ import java.util.zip.ZipInputStream
  * `SpeechDictionary.framework` and the rest -- and a person zips that folder
  * to get it onto a phone in one piece. The zip may hold the folder itself
  * (`lion/Speech/...`), or its contents at the top (`Speech/...`), or all four
- * generations side by side; the folder's name is never trusted, because
+ * generations side by side. Named generation folders may also sit immediately
+ * inside panthera/ or panthera-data/. These directory names
+ * are matched without regard to case. The folder's name is never trusted, because
  * "lion.zip" with Leopard inside is an easy thing to make. The engine says
  * what it is: `Info.plist` beside the MacinTalk binary names its version, and
  * where an extraction carries no plist (Lion's does not), the binary itself
@@ -182,6 +184,29 @@ object ZipImport {
     fun unsafe(name: String): Boolean =
         name.startsWith("/") || name.split('/').any { it == ".." || it.isEmpty() }
 
+    private val wrappers = listOf("panthera", "panthera-data")
+
+    private fun generationFolder(name: String) =
+        PantheraEngine.GENERATIONS.any { it.equals(name, ignoreCase = true) }
+
+    /** Check only the outer layout; the engine bytes still identify the version.
+     * Keep the documented single-engine Speech/ layout at the archive root. */
+    private fun supportedPrefix(prefix: String): Boolean {
+        if (prefix.isEmpty()) return true
+        val parts = prefix.removeSuffix("/").split('/')
+        return when (parts.size) {
+            1 -> generationFolder(parts[0])
+            2 -> wrappers.any { it.equals(parts[0], ignoreCase = true) } && generationFolder(parts[1])
+            else -> false
+        }
+    }
+
+    private const val LAYOUT_HELP =
+        "Put tiger, leopard, snowleopard or lion folders at the top of the zip, " +
+        "or directly inside panthera or panthera-data. " +
+        "Folder names may use any casing. A single engine's Speech and " +
+        "SpeechDictionary.framework folders may also be at the top."
+
     /** Decide from the entry list what the zip holds. `read` fetches one
      * entry's bytes, for the plist and, failing that, the binary. */
     fun plan(entries: List<Entry>, read: (Entry) -> ByteArray?): Plan {
@@ -192,6 +217,13 @@ object ZipImport {
                 "The zip holds a path that leaves its own folder (${e.name}), so it is not one this app will unpack.")
             byName[name] = e
         }
+        if (entries.any {
+                val top = it.name.replace('\\', '/').substringBefore('/')
+                top.equals("outspoken", ignoreCase = true) ||
+                    top.equals("outspoken-data", ignoreCase = true)
+            }) return Plan(emptyList(),
+                "Whoops, did you mean Outspoken TTS for Android? " +
+                "This zip has Outspoken folders. Choose a zip with Panthera engine data instead.")
         val prefixes = byName.keys.filter { it == MACINTALK || it.endsWith("/$MACINTALK") }
             .map { it.removeSuffix(MACINTALK) }
         if (prefixes.isEmpty()) {
@@ -201,9 +233,11 @@ object ZipImport {
                 "generation it is. Zip the folder the desktop add-on extracted: it holds Speech and " +
                 "SpeechDictionary.framework."
             else
-                "No engine in this zip. Zip the folder the desktop add-on extracted for a generation " +
-                "-- it holds Speech and SpeechDictionary.framework -- with or without a folder around it.")
+                "No engine in this zip. " + LAYOUT_HELP)
         }
+        val unsupported = prefixes.firstOrNull { !supportedPrefix(it) }
+        if (unsupported != null) return Plan(emptyList(),
+            "No supported generation folder at $unsupported. " + LAYOUT_HELP)
         val found = ArrayList<Found>()
         for (prefix in prefixes) {
             var version: String? = null

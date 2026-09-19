@@ -217,16 +217,16 @@ object ZipImportCheck {
                 check(p.refusal == null && p.found.single().gen == "leopard")
             }
             // Refusals, each in words with the reason in them.
-            expect("ml.zip", engine("ml/", "4.1.12", true, listOf("Alex"))) { p ->
+            expect("ml.zip", engine("lion/", "4.1.12", true, listOf("Alex"))) { p ->
                 check(p.refusal?.contains("Mountain Lion") == true && p.refusal!!.contains("4.1.12"))
             }
-            expect("future.zip", engine("x/", "3.12.1", true, listOf("Alex"))) { p ->
+            expect("future.zip", engine("snowleopard/", "3.12.1", true, listOf("Alex"))) { p ->
                 // 3.12 has never existed; a version past Snow Leopard's line
                 // still lands in its generation rather than being refused,
                 // and the confirm dialog names the version so a person sees.
                 check(p.refusal == null && p.found.single().gen == "snowleopard")
             }
-            expect("unknown.zip", engine("x/", "2.1", true, listOf("Alex"))) { p ->
+            expect("unknown.zip", engine("snowleopard/", "2.1", true, listOf("Alex"))) { p ->
                 check(p.refusal?.contains("2.1") == true)
             }
             expect("flat.zip", mapOf(
@@ -238,8 +238,8 @@ object ZipImportCheck {
             expect("nothing.zip", mapOf("readme.txt" to "hi".toByteArray())) { p ->
                 check(p.refusal?.startsWith("No engine") == true) { p.refusal ?: "accepted" }
             }
-            expect("twice.zip", engine("a/", "3.6.59", true, listOf("Alex")) +
-                    engine("b/", "3.6.59", true, listOf("Bruce"))) { p ->
+            expect("twice.zip", engine("leopard/", "3.6.59", true, listOf("Alex")) +
+                    engine("panthera/LEOPARD/", "3.6.59", true, listOf("Bruce"))) { p ->
                 check(p.refusal?.contains("twice") == true) { p.refusal ?: "accepted" }
             }
             expect("nodict.zip", engine("lion/", "4.0.74", false, listOf("Alex"), dictionary = false)) { p ->

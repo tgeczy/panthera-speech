@@ -27,6 +27,14 @@ included; use your existing extracted data.
 
 ## Android
 
+- **ZIP imports check the folder layout before extraction.** Generation folders
+  (`tiger`, `leopard`, `snowleopard`, `lion`) can be at the ZIP root or directly
+  inside `panthera/` or `panthera-data/`, regardless of case.
+  A single engine's extracted contents at the root remain supported. Other
+  nesting is rejected with layout guidance; engine, dictionary and voice
+  checks still apply before existing data is replaced. Archives with Outspoken
+  folders are refused with a message pointing to Outspoken TTS for Android.
+
 - **Smoother rapid movement between short labels.** Repeated interruptions
   could restart the worker unnecessarily, adding a delay to the next item.
   A successfully started short request now gets up to 60 ms to finish, so
