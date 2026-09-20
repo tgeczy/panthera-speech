@@ -63,9 +63,10 @@ open class PantheraWorkerService : Service() {
             if (opened) PantheraNative.nativeFinish()
         } }
         override fun stopAndFinish(timeoutMs: Int): Boolean {
-            // Snow Leopard aborted in the direct-stop probe; retain retirement.
+            // Timer callbacks now honor serial queues, including Snow Leopard.
+            // Failed or slow native cleanup still falls back to retirement.
             // Only acknowledged starts reach this method from the owner.
-            if (!opened || activeGeneration !in setOf("tiger", "leopard", "lion")) return false
+            if (!opened || activeGeneration !in setOf("tiger", "leopard", "snowleopard", "lion")) return false
             return PantheraCleanup.attempt(synthesis, timeoutMs.coerceIn(1, 120).toLong(),
                 stop = { PantheraNative.nativeStop() },
                 finish = {

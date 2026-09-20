@@ -9,7 +9,7 @@ Cancellation still detaches the request immediately and stops playback. A
 completed renderer is reused; short labels retain their existing completion
 grace of at most 60 ms.
 
-For an acknowledged, unfinished longer request, Tiger, Leopard and Lion now
+For an acknowledged, unfinished longer request, all four generations now
 try native cleanup. The worker sets the thread-safe stop flag, then queues
 `nativeFinish` on its owning synthesis executor. The cancellation executor
 waits up to 120 ms for this work and a true completion predicate. It never
@@ -17,10 +17,11 @@ waits on the public stop caller. Failure, death or timeout retires the worker
 through the existing binding owner. A timed-out native thread is not interrupted;
 the process is retired before the next synthesis request can acquire ownership.
 
-Snow Leopard retains retirement: a separate direct-JNI probe aborted on its
-third stop, after two exact recoveries. The dispatch-source reclamation race
-found in the follow-up below is fixed, but direct native reuse still fails
-audio checks and remains excluded.
+Snow Leopard initially remained excluded after a direct-JNI probe aborted on
+its third stop. Source reclamation, missing cancellation cleanup and serial
+source delivery were subsequently fixed as described below. The final local
+candidate includes Snow Leopard after 108 exact direct recoveries and the
+120-case service handoff check.
 This policy also retains retirement for cancellation during an unacknowledged
 start, whose completion predicate could still describe the preceding request.
 
@@ -28,7 +29,7 @@ The 120 ms bounds the wait for cleanup, not total Android scheduling, Binder,
 replacement startup or playback latency. A timed-out attempt can make the
 fallback slower than immediate retirement. This needs broader device testing.
 
-## Nothing Phone comparison
+## Initial Nothing Phone comparison
 
 A024, Android 16, ARM64 Box64. Control and candidate use identical current
 native libraries and differ in worker cleanup policy (plus diagnostic build
@@ -60,8 +61,8 @@ unchanged, and this is not a claim of universal improvement. No automatic
 service restarts were recorded in any comparison capture.
 
 Small sequential runs on one phone, not randomized crossover or a latency
-guarantee. No Watch test or user listening A/B yet. Keep the fallback and
-investigate the Snow Leopard abort before expanding coverage.
+guarantee. No Watch test or user listening A/B yet. This initial comparison
+predates the serial-queue fix and Snow Leopard expansion below.
 
 ### Snow Leopard dispatch-source race
 
@@ -170,6 +171,51 @@ Windows Snow Leopard and Lion each pass 12 direct cancellation/replacement
 comparisons. Linux Tiger Fred and Leopard Alex streaming recovery checks also
 pass. Original phone app and test packages are restored after each batch.
 
+#### Serial source delivery and the reuse candidate
+
+Timer threads previously invoked guest handlers independently, despite their
+serial target queues. A per-queue mutex reduced overlap but still failed the
+audio checks. Delivering source events and cancellation callbacks through a
+FIFO on one persistent worker per serial queue passed 108 direct interruptions
+with the extended status wait, then another 108 using the ordinary wait.
+
+`tiger_host_gcd_queue.c` now implements that delivery without diagnostic
+instrumentation or engine-private offsets. Timer threads wait for the callback
+to return, so their source/context cannot be reclaimed during delivery. Events
+cancelled while waiting are skipped; cleanup remains queued. Different queues
+can advance independently. General `dispatch_async`/`dispatch_sync` block
+semantics are unchanged and remain a separate limitation.
+
+One related lifetime gap is closed: a source cannot be recycled while its
+`CreateThread` call has yet to publish the thread handle. A fast callback can
+cancel itself before that call returns. Queue-handle allocation is also
+synchronized; exhaustion of the existing 64-handle pool now fails explicitly
+instead of aliasing a live queue.
+
+The native check holds an event open and requires another source on the same
+queue to wait, while a different queue progresses. It also checks that a
+queue's callbacks share its persistent worker. The previous host fails; the
+new Windows and Linux builds pass, alongside the 8,000-allocation and cleanup
+ordering checks. Native Windows Snow Leopard and Lion each pass 12 matched
+replacement comparisons. Linux Tiger Fred and Leopard Alex streaming checks
+pass. The clean Android native build passes 108 direct Snow Leopard Alex
+interruptions with exact replacement PCM, including uninterrupted controls;
+median stop-to-replacement PCM is 137 ms in that probe.
+
+The Android service candidate now allows Snow Leopard cleanup with the same
+120 ms budget and retirement fallback as the other generations. All 120
+service replacements are byte-exact; the playback suite and 26 JVM tests pass.
+Snow Leopard reuses 25 of 30 workers in this run. Its six long-text replacement
+times are 467, 142, 108, 534, 122 and 83 ms (median 132 ms). The two slow cases
+retired their workers: a failed cleanup attempt still adds cost before restart.
+This is a follow-up run, not a randomized latency comparison against the
+initial table. Public stop calls remain in the probe's 0 ms measurement bin.
+
+The original phone app and instrumentation were restored and verified by
+SHA-256 after testing. No new build is published. The normal JNI staging
+directory was not overwritten; the candidate APK and research results remain
+under `build/research/snow-stop-20260920/`.
+
 ## NVDA / Rog Ally
 
 NVDA already requests native stop and attempts host reuse. The Android change
@@ -250,10 +296,9 @@ checks it after rendering, and passes it into each flush. Four deterministic
 regressions reproduced the old behavior and pass with the fix. Ordinary
 Tiger render behavior is unchanged.
 
-The shared join/pause regressions now explicitly exercise the Leopard, Snow
-Leopard and Lion driver classes. Snow Leopard's unresolved Android native-stop
-abort remains separate: it retains worker retirement on Android and still
-receives the NVDA joining fix.
+The shared join/pause regressions explicitly exercise the Leopard, Snow Leopard
+and Lion driver classes. The Android native-stop investigation and its source
+queue changes above are separate from the NVDA joining fix.
 
 ## Validation
 

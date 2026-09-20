@@ -15,14 +15,12 @@
  * stage and produced a 46-byte wav -- a header and no audio, with no error
  * anywhere.
  *
- * **Everything here runs the block on the calling thread.** `dispatch_async`
- * included, which is a real semantic change -- a queue that is supposed to
- * return immediately does not. It is the right first answer: this host renders
- * one utterance at a time and already serialises the engine's own worker, so
- * running the work early is at worst wasted parallelism, where deferring it
- * with nothing to run it later is silence. If something turns out to depend on
- * async being asynchronous it will deadlock rather than go quiet, which is the
- * failure worth having.
+ * General dispatch_async/sync still invoke the block on the calling thread;
+ * callers relying on deferred block execution remain unsupported. Timer
+ * sources now deliver callbacks through their serial target queue, separately
+ * implemented in tiger_host_gcd_queue.c. Running each timer's guest callback
+ * on its own thread broke that queue's serialization and consumed a guest
+ * stack per short-lived timer under emulation.
  */
 
 /* Defined in tiger_host_fault.c, which is included after this one. */
@@ -269,6 +267,7 @@ static void __cdecl sh_dispatch_async_f(void *queue, void *ctx,
 typedef struct {
     unsigned  magic;
     void     *ctx;
+    void     *queue;
     void (__cdecl *handler)(void *);
     void (__cdecl *cancel_handler)(void *);
     int       cancel_delivered;
@@ -277,6 +276,7 @@ typedef struct {
     volatile long     armed;            /* set by set_timer, cleared on fire */
     HANDLE    rearm;                    /* signalled by set_timer */
     HANDLE    thread;
+    int       starting;                 /* thread handle not yet published */
     volatile long running;
     unsigned  fired;
     int       reaps_graph;              /* the deferred audio-graph stop */
@@ -343,11 +343,15 @@ static int g_ndispatch;
 
 static void *dispatch_handle(void)
 {
+    int index;
     /* The macro's own count: sizeof stopped answering for this the moment it
      * became a pointer to an array rather than the array. */
-    if (g_ndispatch >= (int)g_dispatch_handles_guest_count)
-        return &g_dispatch_handles[0];
-    return &g_dispatch_handles[g_ndispatch++];
+    source_pool_lock();
+    index = g_ndispatch++;
+    source_pool_unlock();
+    if (index >= (int)g_dispatch_handles_guest_count)
+        die("dispatch queue handle pool exhausted");
+    return &g_dispatch_handles[index];
 }
 
 static dsource *as_source(void *o)
@@ -355,6 +359,8 @@ static dsource *as_source(void *o)
     dsource *s = (dsource *)o;
     return (s && s->magic == DSRC_MAGIC) ? s : NULL;
 }
+
+#include "tiger_host_gcd_queue.c"
 
 static DWORD WINAPI source_thread(LPVOID param)
 {
@@ -384,7 +390,7 @@ static DWORD WINAPI source_thread(LPVOID param)
             s->armed = 0;
             g_w_src_zero++;
             if (s->handler) { g_gcd_handler = (void *)s->handler;
-                              enter_engine(s->handler, s->ctx); s->fired++; }
+                              source_deliver(s, s->handler, s->ctx, 0); }
             if (s->period_ms) { s->delay_ms = s->period_ms; s->armed = 1; }
             if ((s->fired & 0x3f) == 0) SwitchToThread();
             continue;
@@ -415,7 +421,7 @@ static DWORD WINAPI source_thread(LPVOID param)
             if (g_gcd_log)
                 fprintf(stderr, "tiger_host: gcd %p entering %s\n",
                         (void *)s, engine_symbol((void *)s->handler));
-            enter_engine(s->handler, s->ctx); s->fired++;
+            source_deliver(s, s->handler, s->ctx, 0);
             if (g_gcd_log)
                 fprintf(stderr, "tiger_host: gcd %p returned after %u "
                                 "firing(s)\n", (void *)s, s->fired); }
@@ -429,7 +435,7 @@ static DWORD WINAPI source_thread(LPVOID param)
      * Snow Leopard's cancellation handler releases the source and deletes
      * that context. Deliver it here, never from source_cancel. The pool lock
      * observes cancellation publication; it is not held across guest code.
-     * Queue-wide ordering remains the same limitation as event delivery. */
+     * Cleanup is delivered on the same target queue as the event. */
     {
         void (__cdecl *cleanup)(void *) = NULL;
         void *ctx = NULL;
@@ -440,7 +446,7 @@ static DWORD WINAPI source_thread(LPVOID param)
             ctx = s->ctx;
         }
         source_pool_unlock();
-        if (cleanup) enter_engine(cleanup, ctx);
+        if (cleanup) source_deliver(s, cleanup, ctx, 1);
     }
     if (g_verbose)
         printf("  [gcd] source %p ended after %u firing(s)\n",
@@ -457,7 +463,7 @@ static void * __cdecl sh_dispatch_source_create(void *type, unsigned long handle
     dsource *s = NULL;
     int i, cap = (int)g_sources_guest_count;
     int spin;
-    (void)type; (void)handle; (void)mask; (void)queue;
+    (void)type; (void)handle; (void)mask;
     /* A retired slot first, and only one whose thread has really finished --
      * reusing one still inside its handler would hand the engine a source
      * that is about to be overwritten underneath it.
@@ -474,6 +480,7 @@ static void * __cdecl sh_dispatch_source_create(void *type, unsigned long handle
         for (i = 0; i < g_nsources; i++) {
             dsource *c = &g_sources[i];
             if (!c->retired) continue;
+            if (c->starting) { winding = 1; continue; }
             if (c->thread && WaitForSingleObject(c->thread, 0) != WAIT_OBJECT_0)
                 { winding = 1; continue; }     /* still winding down */
             if (!oldest || c->retired_at < oldest->retired_at) oldest = c;
@@ -492,6 +499,7 @@ static void * __cdecl sh_dispatch_source_create(void *type, unsigned long handle
             g_src_made++;
             memset(s, 0, sizeof(*s));
             s->magic = DSRC_MAGIC;
+            s->queue = queue;
         }
         source_pool_unlock();
         if (s) break;
@@ -714,13 +722,24 @@ static void __cdecl sh_dispatch_source_set_timer(void *o,
 static void __cdecl sh_dispatch_resume(void *o)
 {
     dsource *s = as_source(o);
+    HANDLE thread;
     if (!s) { if (g_verbose) printf("  [gcd] resume(%p) not a source\n", o);
               return; }
-    if (s->running) return;
+    source_pool_lock();
+    if (s->running || s->starting) { source_pool_unlock(); return; }
     /* Auto-reset: each `set_timer` wakes the wait exactly once. */
     if (!s->rearm) s->rearm = CreateEvent(NULL, FALSE, FALSE, NULL);
     s->running = 1;
-    s->thread = CreateThread(NULL, 0, source_thread, s, 0, NULL);
+    s->starting = 1;
+    source_pool_unlock();
+    /* The event can cancel itself before CreateThread returns. Prevent pool
+     * reuse until the resulting thread handle has been published. */
+    thread = CreateThread(NULL, 0, source_thread, s, 0, NULL);
+    if (!thread) die("cannot create dispatch timer thread");
+    source_pool_lock();
+    s->thread = thread;
+    s->starting = 0;
+    source_pool_unlock();
     if (g_verbose)
         printf("  [gcd] resumed %p (handler %p, armed=%ld, %u ms)\n", o,
                (void *)s->handler, s->armed, s->delay_ms);
@@ -779,8 +798,10 @@ static unsigned __int64 __cdecl sh_dispatch_walltime(void *when, __int64 delta)
 
 static void * __cdecl sh_dispatch_queue_create(const char *label, void *attr)
 {
-    (void)label; (void)attr;
-    return dispatch_handle();
+    void *q = dispatch_handle();
+    (void)label;
+    if (!attr) source_queue_init(q);
+    return q;
 }
 
 static void * __cdecl sh_dispatch_get_global_queue(long pri, unsigned long f)
