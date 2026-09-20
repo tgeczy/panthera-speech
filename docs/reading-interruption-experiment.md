@@ -98,6 +98,42 @@ were restored in place after each batch; no uninstall or data move was needed.
 Research artifacts and symbolized-stack evidence are local under
 `build/research/snow-stop-20260920/`.
 
+#### Cancellation follow-up: completion and queued work
+
+Further isolated Android probes found that `g_stopped` can be set while the
+engine's `soStatus.outputBusy` remains true and source handlers are still
+running. Waiting for status to become idle and for active handlers to finish
+did not establish safe reuse: replacement mismatches and a ten-second busy
+timeout remained. Requiring every timer to be disarmed was also unsuitable;
+an armed worker source persisted even across successful idle renders.
+
+The source shim ignores its target queue. The trace recorded up to six
+simultaneous source handlers targeting the same queue created with a null
+attribute (a serial queue). An experimental per-queue mutex removed that
+overlap, but did not eliminate the cancellation failures. It is not a complete
+queue implementation: it supplies neither FIFO ordering nor asynchronous
+dispatch semantics. None of these research changes is enabled in production.
+
+Three captured replacement failures contain 14,183 samples instead of 13,910.
+In each, the entire reference word is present byte-for-byte after a 273-sample
+prefix. A buffered trace caught that prefix arriving as two scheduled slices,
+229 and 44 frames, tagged with the new request's utterance number. The first
+slice has 229 nonzero floats; the second has 43 and a trailing zero. The next
+slice begins the correct word. This is evidence of extra leading audio, not a
+reason to trim a fixed number of samples. Whether the prefix comes from work
+left by the cancelled request or retained engine buffer state remains open.
+
+Immediate per-slice logging passed 36 interruptions; buffered tracing later
+caught two failures in five fresh processes. Additional request-phase probes
+caught busy timeouts but not the prefix, so the precise point within request
+startup remains unmeasured. The native Windows matched-text/rate/gap control
+passed 36 replacements, but uses Media Foundation rather than Android's Glint
+decoder and does not prove the fault is exclusive to Android.
+
+The next investigation is queue ordering and the provenance of those two
+slices. Snow Leopard keeps worker retirement. Original app and test APK hashes
+were verified after restoring the final diagnostic batch.
+
 ## NVDA / Rog Ally
 
 NVDA already requests native stop and attempts host reuse. The Android change
