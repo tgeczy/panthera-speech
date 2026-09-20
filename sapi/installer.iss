@@ -4,10 +4,11 @@
 ; data-driven COM class, a SAPI voice is a registry token naming a generation
 ; folder, and only voices whose data exists on disk are ever registered.
 ; This script's whole job is to place the files, register the class, and run
-; the settings tool's register pass while the installer is already elevated --
+; the settings tool's register pass on a fresh install, while elevated --
 ; an NVDA user's extracted voices appear immediately, from the data they
 ; already have, and a machine with no data simply shows four "not installed"
-; rows until its owner extracts.
+; rows until its owner extracts. Upgrades refresh the COM class only, leaving
+; existing voice tokens and deliberately unregistered generations alone.
 ;
 ; It ships only our code.  No Apple data is packaged, looked for, or touched;
 ; uninstall removes the voices and the class and leaves every extracted tree
@@ -21,7 +22,8 @@
 #ifndef StageDir
 #define StageDir "C:\panthera\sapi"
 #endif
-#define AppVer "3.2.0"
+#define AppVer "3.2.0.1"
+#define AssetVer "3.2.0-r2"
 
 [Setup]
 AppId={{8E1B0A4C-5A0D-4F2E-9C1B-7D64A2153F90}
@@ -35,7 +37,7 @@ PrivilegesRequired=admin
 Compression=lzma2
 SolidCompression=yes
 OutputDir={#StageDir}\out
-OutputBaseFilename=panthera-sapi-{#AppVer}-setup
+OutputBaseFilename=panthera-sapi-{#AssetVer}-setup
 DisableProgramGroupPage=yes
 UninstallDisplayName=Panthera SAPI {#AppVer}
 ; The HKCU entry below is the settings tool's remembered folder choice.  On a
@@ -86,11 +88,14 @@ Name: "{autoprograms}\Panthera SAPI settings"; Filename: "{app}\panthera_setting
 Root: HKCU; Subkey: "Software\Panthera SAPI"; Flags: uninsdeletekey dontcreatekey
 
 [Run]
-; The settings tool's register pass does everything in order: regsvr32 for
+; On a fresh install the settings tool does everything in order: regsvr32 for
 ; both registry views, then one token per voice whose folder exists at the
 ; resolved data root (chosen folder, then NVDA's shared macintalk, then the
 ; standalone default).  Registering with no data present is a clean no-op.
-Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -STA -File ""{app}\settings.ps1"" -RegisterVoices -GenerationList Tiger,Leopard,Snowleopard,Lion"; StatusMsg: "Registering voices from your speech data..."; Flags: runhidden
+; On an upgrade, even zero registered voices is a choice to preserve. Do not
+; rebuild tokens from available data or infer a choice from elevated HKCU.
+Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -STA -File ""{app}\settings.ps1"" -RegisterServer"; StatusMsg: "Updating SAPI components..."; Flags: runhidden; Check: IsUpgrade
+Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -STA -File ""{app}\settings.ps1"" -RegisterVoices -GenerationList Tiger,Leopard,Snowleopard,Lion"; StatusMsg: "Registering voices from your speech data..."; Flags: runhidden; Check: not IsUpgrade
 Filename: "{app}\panthera_settings.exe"; Description: "Open Panthera SAPI settings"; Flags: postinstall nowait skipifsilent
 
 [UninstallDelete]
@@ -102,3 +107,24 @@ Type: filesandordirs; Name: "{userappdata}\Panthera SAPI"
 ; Tokens first; when the last Panthera token goes, the settings tool also
 ; unregisters both DLLs.  Data trees are not touched.
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -STA -File ""{app}\settings.ps1"" -UnregisterVoices -GenerationList Tiger,Leopard,Snowleopard,Lion"; RunOnceId: "UnregisterVoices"; Flags: runhidden
+
+[Code]
+const
+  UninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{8E1B0A4C-5A0D-4F2E-9C1B-7D64A2153F90}_is1';
+var
+  ExistingInstall: Boolean;
+
+function InitializeSetup: Boolean;
+begin
+  { Snapshot before Setup writes its own uninstall key. Checking in [Run]
+    would mistake a first install for an upgrade. Read both registry views. }
+  ExistingInstall := RegKeyExists(HKLM32, UninstallKey);
+  if IsWin64 then
+    ExistingInstall := ExistingInstall or RegKeyExists(HKLM64, UninstallKey);
+  Result := True;
+end;
+
+function IsUpgrade: Boolean;
+begin
+  Result := ExistingInstall;
+end;

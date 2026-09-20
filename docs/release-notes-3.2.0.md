@@ -50,6 +50,15 @@ included; use your existing extracted data.
 
 ## SAPI (Windows)
 
+**Installer update, September 19:** the SAPI download is now revision 2
+(`panthera-sapi-3.2.0-r2-setup.exe`, installed version 3.2.0.1). Updates keep
+exactly the engines you registered: Lion-only stays Lion-only, and choosing
+none stays none. Thanks to x0 for catching this! If the earlier installer
+already brought unwanted engines back, unregister those once in SAPI settings;
+future updates with this installer will leave that choice alone. If you already
+installed 3.2.0, download and run revision 2 directly; the old update checker
+compares release versions and will not offer another build of the same release.
+
 The installer carries the rebuilt shared host and both x86 and x64 SAPI
 components. Settings and resident-engine checks cover reuse, settings
 changes and cancellation recovery. SAPI continues using its existing

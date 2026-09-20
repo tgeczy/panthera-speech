@@ -1,4 +1,4 @@
-﻿param([switch]$RegisterVoices,[switch]$UnregisterVoices,[string]$GenerationList,[string]$DataRoot,
+﻿param([switch]$RegisterVoices,[switch]$RegisterServer,[switch]$UnregisterVoices,[string]$GenerationList,[string]$DataRoot,
       [switch]$MigrateData,[string]$MigrateFrom,[switch]$ShowMigrationPlan,[string]$MirrorSettings)
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -630,7 +630,7 @@ if ($MigrateData) {
     exit 0
 }
 
-if ($RegisterVoices) {
+if ($RegisterVoices -or $RegisterServer) {
     & "$env:SystemRoot\SysWOW64\regsvr32.exe" /s (Join-Path $stage 'x86\panthera_sapi.dll')
     if ($LASTEXITCODE) { exit $LASTEXITCODE }
     & "$env:SystemRoot\System32\regsvr32.exe" /s (Join-Path $stage 'x64\panthera_sapi.dll')
@@ -639,7 +639,9 @@ if ($RegisterVoices) {
     # machine-wide folder gets its permissions and its copy of the settings.
     Grant-SettingsFolder
     Set-MachineSettings $MirrorSettings
-    Add-VoiceTokens $Generations | Out-Null
+    # An installer upgrade refreshes COM registration without changing which
+    # voices are registered. An empty voice list can be a deliberate choice.
+    if ($RegisterVoices) { Add-VoiceTokens $Generations | Out-Null }
     exit 0
 }
 if ($UnregisterVoices) {
