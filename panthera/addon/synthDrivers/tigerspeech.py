@@ -909,7 +909,7 @@ class SynthDriver(SynthDriver):
 
     # -- threads -----------------------------------------------------------
     def _run(self):
-        """Render each utterance and hand it on.  Nothing is stamped.
+        """Render each utterance and discard its remainder if interrupted.
 
         Reconcile the settings here rather than taking them as queued events:
         `cancel()` drains this queue, and NVDA cancels between changing a
@@ -920,6 +920,7 @@ class SynthDriver(SynthDriver):
             item = self._queue.get()
             if item is None:
                 break
+            mark = self._cancels
             wpm, voice = self._wpm(), self._voiceId
             #: What NVDA has asked us to add to the user's pitch for the text
             #: that follows -- how "capital pitch change percentage" is
@@ -946,7 +947,7 @@ class SynthDriver(SynthDriver):
             #: arbitrary.
             pending = []
             for kind, value in item:
-                if self._stopped:
+                if self._stopped or self._cancels != mark:
                     break
                 if kind == "text":
                     run.append(value)
@@ -954,9 +955,11 @@ class SynthDriver(SynthDriver):
                 if kind == "index":
                     pending.append(value)
                     continue
-                self._flush(run, wpm, voice, adj, pending, vol)
+                self._flush(run, wpm, voice, adj, pending, vol, mark=mark)
+                if self._stopped or self._cancels != mark:
+                    break
                 if kind == "break":
-                    self._audioQueue.put(("audio", _silence(value), self._cancels))
+                    self._audioQueue.put(("audio", _silence(value), mark))
                 elif kind == "pitch":
                     adj = value
                 elif kind == "volume":
@@ -965,14 +968,14 @@ class SynthDriver(SynthDriver):
                     # After the flush, never before it: the text already
                     # collected was asked for at the old rate.
                     wpm = self._wpm(value)
-            if not self._stopped:
-                self._flush(run, wpm, voice, adj, pending, vol)
+            if not self._stopped and self._cancels == mark:
+                self._flush(run, wpm, voice, adj, pending, vol, mark=mark)
             for index in pending:               # nothing left to speak
                 self._audioQueue.put(("index", index, None))
             del pending[:]
             self._audioQueue.put(("done", None, None))
 
-    def _flush(self, run, wpm, voice, adj=0, pending=None, vol=0):
+    def _flush(self, run, wpm, voice, adj=0, pending=None, vol=0, mark=None):
         """Render the text collected so far as ONE utterance.
 
         **A speech sequence is not a list of utterances.**  NVDA hands over the
@@ -994,6 +997,8 @@ class SynthDriver(SynthDriver):
         the caret can lead the voice by part of a sentence.  That is the price
         of not putting a full stop in the middle of one.
         """
+        if mark is None:
+            mark = self._cancels
         if not run:
             if pending:
                 for index in pending:
@@ -1016,7 +1021,8 @@ class SynthDriver(SynthDriver):
             for index in pending:
                 self._audioQueue.put(("index", index, None))
             del pending[:]
-        mark = self._cancels
+        if self._stopped or self._cancels != mark:
+            return
         fed = []
         # What the user actually waits, measured where they wait it.  The two
         # numbers that matter are different questions: how long until the first
@@ -1036,7 +1042,8 @@ class SynthDriver(SynthDriver):
 
         pcm = self._render(text, wpm, voice, self._pitchOffset(adj),
                            sink=sink, volume=vol)
-        if pcm is None and not fed and not self._streaming:
+        if (pcm is None and not fed and not self._streaming
+                and not self._stopped and self._cancels == mark):
             # That failure was the host refusing to stream, and it has just
             # been turned off.  Say this utterance the old way rather than
             # losing it -- it could be the one telling the user what happened.

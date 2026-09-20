@@ -126,8 +126,25 @@ and playback-marker engine checks are included among the passes.
 diagnostics with the unchanged 3.2.0 native binaries. Worker retirement policy
 is unchanged. Local evidence is in `build/research/sequoia-cancel-20260920/`;
 the original Ally log is kept outside the repository. User listening on the
-fixed package is still pending. This fix is in the shared Leopard/Snow/Lion
+fixed package passed on the Ally X: Tomi reports the transition is consistently
+responsive. This fix is in the shared Leopard/Snow/Lion
 NVDA driver, not Tiger's separate driver or the Android/SAPI/Linux frontends.
+
+### Tiger cancellation coverage
+
+Tiger has no say-all joiner, so it cannot incur that 350 ms hold. Its separate
+driver did have a related sequence-lifetime fault: cancel during a render
+before a break, rate, pitch or volume command could still render the abandoned
+remainder, and label the break's silence with the new cancellation count.
+The worker now keeps one cancellation count for the entire dequeued sequence,
+checks it after rendering, and passes it into each flush. Four deterministic
+regressions reproduced the old behavior and pass with the fix. Ordinary
+Tiger render behavior is unchanged.
+
+The shared join/pause regressions now explicitly exercise the Leopard, Snow
+Leopard and Lion driver classes. Snow Leopard's unresolved Android native-stop
+abort remains separate: it retains worker retirement on Android and still
+receives the NVDA joining fix.
 
 ## Validation
 

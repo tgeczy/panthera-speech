@@ -23,6 +23,7 @@ import pytest
 
 import nvwave
 import synthDriverHandler
+from synthDrivers import leopardspeech, snowleopardspeech, lionspeech
 from synthDrivers.leopardspeech import SynthDriver
 from synthDrivers._panthera import speech_pipeline
 from synthDrivers._panthera.audio import _silence
@@ -35,12 +36,12 @@ from synthDrivers._panthera.constants import OUT_RATE
 S1 = "The deadline is now only days away, and nobody expects a resolution."
 
 
-def _bare(join, player=None):
+def _bare(join, player=None, driverClass=SynthDriver):
     """A driver with only the parts the render loop and the feeder touch:
     no host, no threads, and a render that produces silence sized to the
     text -- ten milliseconds a character -- so a test can tell which audio
     an index landed beside."""
-    d = SynthDriver.__new__(SynthDriver)
+    d = driverClass.__new__(driverClass)
     d._queue = queue.Queue()
     d._audioQueue = queue.Queue()
     d._joinSentences = join
@@ -97,13 +98,13 @@ def _run(d, item):
     return _shape(_drain(d._audioQueue))
 
 
-def _cancelDuringRender(join):
+def _cancelDuringRender(join, driverClass):
     """Finish an interrupted indexed post with its replacement already queued.
 
     The render owns the old epoch even though cancel() has advanced the driver.
     No timing sleeps: observe whether the replacement asks to wait for more text.
     """
-    d = _bare(join)
+    d = _bare(join, driverClass=driverClass)
     d._markerStreaming = not join
     d._cancelEvent = None
     d._rendering = False
@@ -139,15 +140,23 @@ def _cancelDuringRender(join):
     return waits, beforeReplacement
 
 
-def test_cancelled_post_cannot_make_its_replacement_wait_for_say_all():
-    waits, _ = _cancelDuringRender(True)
+@pytest.mark.parametrize("driverClass", [leopardspeech.SynthDriver,
+                                       snowleopardspeech.SynthDriver,
+                                       lionspeech.SynthDriver],
+                         ids=["leopard", "snowleopard", "lion"])
+def test_cancelled_post_cannot_make_its_replacement_wait_for_say_all(driverClass):
+    waits, _ = _cancelDuringRender(True, driverClass)
     assert not any(timeout > 0 for timeout in waits), (
         "The first post after cancel waited for another sentence")
 
 
 @pytest.mark.parametrize("join", [True, False])
-def test_cancelled_post_cannot_append_silence_to_the_new_utterance(join):
-    _, beforeReplacement = _cancelDuringRender(join)
+@pytest.mark.parametrize("driverClass", [leopardspeech.SynthDriver,
+                                       snowleopardspeech.SynthDriver,
+                                       lionspeech.SynthDriver],
+                         ids=["leopard", "snowleopard", "lion"])
+def test_cancelled_post_cannot_append_silence_to_the_new_utterance(join, driverClass):
+    _, beforeReplacement = _cancelDuringRender(join, driverClass)
     assert not [item for item in beforeReplacement
                 if item[0] == "audio" and item[2] == 1], (
         "The cancelled post appended its sentence pause with the new epoch")
