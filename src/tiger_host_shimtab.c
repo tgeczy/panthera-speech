@@ -152,6 +152,8 @@ static const shim g_shims[] = {
                               (void *)sh_dispatch_source_create },
     { "_dispatch_set_context",  (void *)sh_dispatch_set_context  },
     { "_dispatch_get_context",  (void *)sh_dispatch_get_context  },
+    { "_dispatch_source_set_cancel_handler_f",
+                   (void *)sh_dispatch_source_set_cancel_handler_f },
     { "_dispatch_source_set_event_handler_f",
                    (void *)sh_dispatch_source_set_event_handler_f },
     { "_dispatch_source_set_timer",

@@ -270,6 +270,8 @@ typedef struct {
     unsigned  magic;
     void     *ctx;
     void (__cdecl *handler)(void *);
+    void (__cdecl *cancel_handler)(void *);
+    int       cancel_delivered;
     volatile unsigned period_ms;        /* 0 = do not repeat after firing */
     volatile unsigned delay_ms;         /* how long until the next firing */
     volatile long     armed;            /* set by set_timer, cleared on fire */
@@ -296,10 +298,10 @@ typedef struct {
      * or 24 voices depending on the run, and finishing every time once
      * logging slowed it down.
      *
-     * Waiting for `dispatch_release` would be the principled answer and does
-     * not work: **this engine never releases them**, so nothing is ever
-     * reclaimed and the pool is spent by the first utterance -- measured, 1
-     * voice of 24, five runs out of five.
+     * Snow Leopard releases them from its cancellation handler. That import
+     * was missing, so the old observation that it never releases a source
+     * was a host bug: its TaskRec cleanup never ran. Retirement still waits
+     * for the source thread, including that cleanup, to finish.
      *
      * So reuse the *oldest* retired slot instead of the first one found.  A
      * stale write then has to survive a full lap of the table to land on a
@@ -422,6 +424,24 @@ static DWORD WINAPI source_thread(LPVOID param)
             s->armed = 1;
         }
     }
+    /* Cancellation is asynchronous: the guest may cancel this source from
+     * its own event handler and continue using its context until it returns.
+     * Snow Leopard's cancellation handler releases the source and deletes
+     * that context. Deliver it here, never from source_cancel. The pool lock
+     * observes cancellation publication; it is not held across guest code.
+     * Queue-wide ordering remains the same limitation as event delivery. */
+    {
+        void (__cdecl *cleanup)(void *) = NULL;
+        void *ctx = NULL;
+        source_pool_lock();
+        if (s->retired && !s->cancel_delivered) {
+            s->cancel_delivered = 1;
+            cleanup = s->cancel_handler;
+            ctx = s->ctx;
+        }
+        source_pool_unlock();
+        if (cleanup) enter_engine(cleanup, ctx);
+    }
     if (g_verbose)
         printf("  [gcd] source %p ended after %u firing(s)\n",
                (void *)s, s->fired);
@@ -504,6 +524,13 @@ static void * __cdecl sh_dispatch_get_context(void *o)
 {
     dsource *s = as_source(o);
     return s ? s->ctx : NULL;
+}
+
+static void __cdecl sh_dispatch_source_set_cancel_handler_f(
+        void *o, void (__cdecl *fn)(void *))
+{
+    dsource *s = as_source(o);
+    if (s) s->cancel_handler = fn;
 }
 
 /* **The audio graph must not be torn down between utterances.**

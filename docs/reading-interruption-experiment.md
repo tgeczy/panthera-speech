@@ -130,9 +130,45 @@ startup remains unmeasured. The native Windows matched-text/rate/gap control
 passed 36 replacements, but uses Media Foundation rather than Android's Glint
 decoder and does not prove the fault is exclusive to Android.
 
-The next investigation is queue ordering and the provenance of those two
-slices. Snow Leopard keeps worker retirement. Original app and test APK hashes
-were verified after restoring the final diagnostic batch.
+The later provenance probe identified the first 272 samples as an exact match
+to a fragment of the interrupted text (sample 73,748 in its full render),
+followed by a zero. The first stale slice was scheduled during `SESpeakBuffer`
+on a thread outside a timer handler; the second followed from the completion
+path. Disassembly-derived, read-only snapshots of the Snow Leopard audio
+object showed state=0 and scheduled=0, but **two buffers still occupied** after
+settling and before the next request. Its `Wakeup` path subsequently schedules
+them. The producer/stop ordering that leaves those buffers remains under
+investigation; these private field offsets are not used by production code.
+
+#### Restore the missing cancellation cleanup
+
+Snow Leopard does release its dispatch sources, contrary to the earlier
+observation in the host's source-pool comment. `MTBEWorker::AddTask` installs
+`_MTBEWorkerCancelTask` with `dispatch_source_set_cancel_handler_f`; that import
+was missing from the shim table. Its `CancelTask` releases the source and
+deletes the 24-byte task record, so silently ignoring registration skipped
+the engine's cleanup on every task.
+
+The host now records the cancellation handler and runs it once, after the
+source's event handler has returned and before its thread becomes reclaimable.
+It never invokes guest cleanup under the source-pool lock. This restores
+per-source cleanup ordering; it does not solve the existing target-queue
+ordering limitation. The ordering requirement is described in
+[Apple's cancellation-handler documentation](https://developer.apple.com/documentation/dispatch/dispatch_source_set_cancel_handler_f).
+
+The allocation check now also covers external cancellation during an active
+event, cancellation from inside the event, repeated cancellation and a live
+disarmed timer. The old host fails on the missing import; the fixed native
+Windows and Linux hosts pass, with one cleanup call and no overlap in each
+case. An Android diagnostic observed 1,349 cleanup callbacks and matching
+source releases in one process. Replacement corruption still occurred in a
+separate direct-reuse run, so this is not evidence that reuse is safe.
+
+With the cleanup fix alone and Snow Leopard's retirement policy retained,
+Android passes 120 exact worker handoffs and the playback suite. Native
+Windows Snow Leopard and Lion each pass 12 direct cancellation/replacement
+comparisons. Linux Tiger Fred and Leopard Alex streaming recovery checks also
+pass. Original phone app and test packages are restored after each batch.
 
 ## NVDA / Rog Ally
 
