@@ -198,6 +198,9 @@ echo "== self-tests =="
 "$OUT/tiger_host" --regex-check | tail -3
 if [ "$ARCH" = i686 ]; then
     "$OUT/tiger_host" --audio-timeline-check
+    $CC $CFLAGS -DTIGER_CHECK_HOST="\"$HOST_SRC\"" \
+        "$ROOT/tools/gcd_sources_check.c" -o "$OUT/gcd_sources_check" $LDFLAGS
+    "$OUT/gcd_sources_check"
 fi
 $CC $CFLAGS "$ROOT/tools/native_divide_check.c" -o "$OUT/native_divide_check"
 "$OUT/native_divide_check"

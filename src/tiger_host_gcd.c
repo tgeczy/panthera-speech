@@ -325,6 +325,15 @@ static unsigned g_retire_seq;
  * number that decides how big the table has to be. */
 static unsigned g_src_made, g_src_reused;
 static int g_nsources;
+/* A source may create its successor while the request thread creates another.
+ * Choosing, closing and clearing a retired slot must be one operation: two
+ * creators otherwise close the same thread handle, or wait on its freed mutex.
+ * No guest callback or blocking thread wait runs under this lock. */
+static volatile LONG g_source_pool_lock;
+static void source_pool_lock(void)
+{ while (InterlockedExchange(&g_source_pool_lock, 1)) Sleep(0); }
+static void source_pool_unlock(void)
+{ InterlockedExchange(&g_source_pool_lock, 0); }
 /* The guest holds these as opaque ids -- and an opaque id is still a number
  * that has to fit in the guest's 32 bits. */
 GUEST_STATIC(int, g_dispatch_handles, 64);
@@ -441,6 +450,7 @@ static void * __cdecl sh_dispatch_source_create(void *type, unsigned long handle
     for (spin = 0; spin < 50 && !s; spin++) {
         dsource *oldest = NULL;
         int winding = 0;
+        source_pool_lock();
         for (i = 0; i < g_nsources; i++) {
             dsource *c = &g_sources[i];
             if (!c->retired) continue;
@@ -455,9 +465,16 @@ static void * __cdecl sh_dispatch_source_create(void *type, unsigned long handle
                                   oldest->rearm = NULL; }
             s = oldest;
             g_src_reused++;
-            break;
         }
-        if (g_nsources < cap) { s = &g_sources[g_nsources++]; break; }
+        if (!s && g_nsources < cap) s = &g_sources[g_nsources++];
+        if (s) {
+            /* Claim and initialize before another creator scans the pool. */
+            g_src_made++;
+            memset(s, 0, sizeof(*s));
+            s->magic = DSRC_MAGIC;
+        }
+        source_pool_unlock();
+        if (s) break;
         /* **Only wait for something that is actually coming.**  Waiting when
          * nothing is retired is waiting for a slot that will never appear --
          * half a second per source, on an engine that asks for a lot of them.
@@ -473,9 +490,6 @@ static void * __cdecl sh_dispatch_source_create(void *type, unsigned long handle
                         "utterance has no worker and will be silent\n", cap);
         return dispatch_handle();
     }
-    g_src_made++;
-    memset(s, 0, sizeof(*s));
-    s->magic = DSRC_MAGIC;
     if (g_verbose) printf("  [gcd] source %p created\n", (void *)s);
     return s;
 }
@@ -695,6 +709,7 @@ static void __cdecl sh_dispatch_source_cancel(void *o)
 {
     dsource *s = as_source(o);
     if (!s) return;
+    source_pool_lock();
     s->running = 0;
     s->armed = 0;
     /* Wake it so it can leave rather than sitting out its delay: the slot is
@@ -703,6 +718,7 @@ static void __cdecl sh_dispatch_source_cancel(void *o)
     if (s->rearm) SetEvent(s->rearm);
     s->retired_at = ++g_retire_seq;
     s->retired = 1;
+    source_pool_unlock();
 }
 
 /* Nanoseconds since the process started, which is all either of these is used

@@ -86,6 +86,15 @@ def main():
                     ["winmm.lib", "ole32.lib", "mfuuid.lib"] +
                     ([] if dll else ["/LARGEADDRESSAWARE"]))
                 print(binary)
+            # Exercise dispatch-source lifetime without any engine or voice data.
+            check = out / "gcd_sources_check.exe"
+            run(common + ["/DTIGER_AAC_FALLBACK",
+                '/DTIGER_CHECK_HOST="' + (host / "tiger_host.c").as_posix() + '"',
+                str(ROOT / "tools/gcd_sources_check.c")] + objects +
+                ["/Fe" + str(check), "/link", "/LARGEADDRESSAWARE"] +
+                ["/LIBPATH:" + str(p) for p in libs] +
+                ["winmm.lib", "ole32.lib", "mfuuid.lib"])
+            run([str(check)])
         # Check the fetched notice, so a stale local licence cannot accompany
         # a dependency whose pinned archive says something different.
         notice = ROOT / "licenses/Glint-MIT.txt"

@@ -18,7 +18,9 @@ through the existing binding owner. A timed-out native thread is not interrupted
 the process is retired before the next synthesis request can acquire ownership.
 
 Snow Leopard retains retirement: a separate direct-JNI probe aborted on its
-third stop, after two exact recoveries. Its root cause is not established.
+third stop, after two exact recoveries. The dispatch-source reclamation race
+found in the follow-up below is fixed, but direct native reuse still fails
+audio checks and remains excluded.
 This policy also retains retirement for cancellation during an unacknowledged
 start, whose completion predicate could still describe the preceding request.
 
@@ -60,6 +62,41 @@ service restarts were recorded in any comparison capture.
 Small sequential runs on one phone, not randomized crossover or a latency
 guarantee. No Watch test or user listening A/B yet. Keep the fallback and
 investigate the Snow Leopard abort before expanding coverage.
+
+### Snow Leopard dispatch-source race
+
+The September 20 follow-up captured native stacks on the Nothing Phone.
+The original abort reported a destroyed mutex. Instrumented repetitions
+aborted in `pthread_detach`, called by `CloseHandle` from
+`sh_dispatch_source_create`: source creators could concurrently select and
+close the same retired slot. The slot scan, thread-handle close, claim and
+initialization now share a lock with retirement. The lock is released before
+waiting for pool space, and never spans a guest callback.
+
+`tools/gcd_sources_check.c` exercises eight concurrent callers without Apple
+data. The old code reported 8,200 duplicate/invalid-handle comparisons in
+8,000 allocations; the patch reports zero. The check is included in the native
+i686 Linux and Windows builds and passes on both. Native Windows Snow Leopard
+Alex and Lion Alex also pass three cancellation/replacement comparisons each;
+Linux Tiger Fred and Leopard Alex pass the streaming checks.
+
+This fixes a shared host race, not the whole Android reuse problem. Three
+instrumented direct-stop runs previously aborted; with the lock, three runs
+completed all 12 cycles each, but some replacement audio differed. With
+per-destruction tracing removed, two runs completed with mismatches and a third
+exited after exhausting the guest arena. Some `nativeFinish` returns still
+precede `nativeRenderComplete`; even a true completion flag did not guarantee
+exact replacement PCM in these research sequences. The diagnostic probe
+deliberately continued after failures to collect evidence; these are not
+passing recovery tests or supported worker behavior. Do not enable Snow
+Leopard cleanup on the strength of removing one abort.
+
+With Snow Leopard's existing retirement policy retained, the patched Android
+build passes 120 worker handoffs with exact replacement PCM and the audio,
+preview/service, volume and playback suite. The original app and test APKs
+were restored in place after each batch; no uninstall or data move was needed.
+Research artifacts and symbolized-stack evidence are local under
+`build/research/snow-stop-20260920/`.
 
 ## NVDA / Rog Ally
 
