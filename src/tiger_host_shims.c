@@ -323,6 +323,9 @@ static int g_ask_status;
  * deferred stop instead.  `tiger_host_serve.c` ends the utterance on this
  * rather than on 300 ms of silence -- see there for the measurements. */
 static unsigned g_defer_arm;
+/* Source callbacks may still be finishing a cancelled render without
+ * producing slices. Includes delivery queued behind another callback. */
+static volatile LONG g_dispatch_inflight;
 /* Where a concatenative utterance spends its time, under
  * TIGER_FLOAT_STATS.
  *

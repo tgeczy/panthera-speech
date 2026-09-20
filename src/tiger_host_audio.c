@@ -666,6 +666,10 @@ static int reset_scheduled_audio(void)
  * Native Leopard settles quickly; amd64 emulation needs over 350 ms for the
  * same request. Never reset the next timeline merely because 200 ms elapsed.
  * Keep completing and discarding slices until the queue and producer settle.
+ * A source callback can be busy between slices: Lion's cancelled post can
+ * announce completion from that callback after a replacement has begun.
+ * An empty audio queue alone must not authorize reuse while delivery is still
+ * queued or running, including the source's cancellation cleanup.
  * The deadline is a failure bound, not a delay added to successful cancels. */
 static int settle_cancelled_audio(void)
 {
@@ -673,7 +677,10 @@ static int settle_cancelled_audio(void)
     double deadline = wall_ms() + 10000.0;
     while (quiet < 15 && wall_ms() < deadline) {
         Sleep(2);
-        if (g_slices != last || !pacer_idle()) { last = g_slices; quiet = 0; }
+        if (g_slices != last || !pacer_idle() ||
+            InterlockedExchangeAdd(&g_dispatch_inflight, 0)) {
+            last = g_slices; quiet = 0;
+        }
         else quiet++;
     }
     if (quiet >= 15) return 1;

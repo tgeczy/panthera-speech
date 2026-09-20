@@ -86,8 +86,13 @@ static void source_deliver(dsource *s, void (__cdecl *fn)(void *), void *ctx,
 {
     source_queue *q = source_queue_of(s->queue);
     source_job job = {0};
+    InterlockedIncrement(&g_dispatch_inflight);
     job.source = s; job.fn = fn; job.ctx = ctx; job.cleanup = cleanup;
-    if (!q || !q->serial) { source_job_run(&job); return; }
+    if (!q || !q->serial) {
+        source_job_run(&job);
+        InterlockedDecrement(&g_dispatch_inflight);
+        return;
+    }
     job.done = CreateEvent(NULL, FALSE, FALSE, NULL);
     if (!job.done) die("cannot create dispatch delivery event");
     EnterCriticalSection(&q->lock);
@@ -98,4 +103,5 @@ static void source_deliver(dsource *s, void (__cdecl *fn)(void *), void *ctx,
     SetEvent(q->wake);
     WaitForSingleObject(job.done, INFINITE);
     CloseHandle(job.done);
+    InterlockedDecrement(&g_dispatch_inflight);
 }

@@ -302,6 +302,65 @@ queue changes above are separate from the NVDA joining fix.
 
 ## Validation
 
+### Consolidated candidate and the longer Lion interruption case
+
+The September 20 packaging pass rebuilt the Windows EXE/DLL, both SAPI DLLs,
+native i686 Linux and the normal Box/Glint Android libraries for both ARM ABIs.
+The fresh NVDA binaries passed 90 focused checks, including all four secure-screen
+DLL paths. Installed 32-bit and 64-bit SAPI each passed eight cold/warm voice
+controls and 24 exact purge/replacement comparisons. The original installed
+SAPI binaries were restored and verified; registration and settings were retained.
+
+Replaying Tomi's actual Guardian-to-Verge transition with Lion and Sequoia Alex
+at 400 wpm exposed another failure: a reused host sometimes returned only
+229-230 samples for the replacement. The published 3.2.0 runtime reproduced it
+too. Short replacement tests had missed it. Tracing showed a cancelled request's
+deferred-stop announcement arriving after the replacement was submitted, with
+another start following it. Clearing that announcement or counting starts was
+insufficient. Lion's CF status property was also readable (its `outputBusy`
+value is a CFNumber), but reported idle in the failing case. Those experimental
+changes were not retained.
+
+Cancellation settling now also requires all queued/running dispatch-source
+deliveries to finish. Previously an empty audio queue and 30 ms without a new
+slice could authorize reuse while a producer callback was still running.
+The counter covers event delivery and cancellation cleanup, on serial queues
+and on the existing direct-delivery path. The existing timeout and frontend
+retirement fallback remain. No private engine offsets or fixed audio trimming
+are involved.
+
+The native regression holds a source callback open with an empty audio queue
+and requires cancellation settling to wait. Removing the new condition makes
+that check fail; the updated Windows and Linux builds pass.
+
+With the extra guard, the full NVDA pipeline completed 12 Guardian-to-Verge
+replacements with ordinary worker management and another 12 with retirement
+disabled. Ordinary mid-render handoffs reached first nonquiet PCM in
+98.8-168.3 ms (median 117.3, nine cases). Forced reuse took 152.3-525.4 ms
+(median 397.7): keeping the same process is not always the fastest choice.
+These are simulated-player timings, not sound measured on the Ally.
+
+The long Sequoia render varies slightly even in uninterrupted controls, so its
+check rejects truncation rather than claiming byte identity. A separate run
+using the same interrupted post and a complete "Seven" replacement at 400 wpm
+passed 12 exact PCM comparisons with retirement disabled. All 90 NVDA checks
+and both installed SAPI checks passed again with the settling guard. Linux
+Tiger Fred and Leopard Alex streaming recovery checks passed; Snow/Lion data
+was not installed on that VM.
+
+The final release-signed Android candidate uses fresh normal ARM32/ARM64
+libraries and passes 26 JVM checks, 120 exact service handoffs and the playback
+suite. Worker reuse was Tiger 30/30, Leopard 28/30, Snow Leopard 24/30 and Lion
+30/30; the other handoffs used the existing retirement fallback. The original
+phone app and test APK were restored and verified by SHA-256. ARM32 built and
+passed its build checks but was not run on a Watch during this round.
+
+Artifacts and failed experiments are local under
+`build/research/reading-candidate-20260920/`. This remains a local candidate;
+no branch or release has been published.
+
+### Earlier branch checks
+
 - 26 Android JVM tests pass, including owning-thread execution, release of a
   blocked pull, failed cleanup and timeout without interrupting native work.
 - Device ownership checks and eight Binder retire/rebind cycles pass.

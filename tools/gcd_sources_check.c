@@ -90,9 +90,20 @@ static int check_cancel_cleanup(void)
     return 0;
 }
 
+static volatile LONG check_settle_started, check_settle_result;
+
+static DWORD WINAPI check_settle_worker(LPVOID arg)
+{
+    (void)arg;
+    InterlockedExchange(&check_settle_started, 1);
+    check_settle_result = settle_cancelled_audio();
+    return 0;
+}
+
 static int check_serial_delivery(void)
 {
     cleanup_check c[3] = {0};
+    HANDLE settling;
     void *queue = sh_dispatch_queue_create("serial-check", NULL);
     void *other = sh_dispatch_queue_create("independent-check", NULL);
     int i, failed = 0;
@@ -117,6 +128,14 @@ static int check_serial_delivery(void)
     /* Another queue must advance while the first queue is blocked. */
     if (WaitForSingleObject(c[2].entered, 5000) != WAIT_OBJECT_0) failed = 1;
     if (WaitForSingleObject(c[1].entered, 50) != WAIT_TIMEOUT) failed = 1;
+    /* No audio is queued, but A is still inside a guest callback and B is
+     * waiting for its queue. Neither may be mistaken for a settled channel. */
+    InitializeCriticalSection(&g_p_cs);
+    settling = CreateThread(NULL, 0, check_settle_worker, NULL, 0, NULL);
+    if (!settling) return 4;
+    for (i = 0; !check_settle_started && i < 5000; ++i) Sleep(1);
+    if (!check_settle_started || WaitForSingleObject(settling, 500) != WAIT_TIMEOUT)
+        failed = 1;
     SetEvent(c[0].leave);
     for (i = 0; i < 3; ++i) {
         dsource *s = as_source(c[i].source);
@@ -124,6 +143,10 @@ static int check_serial_delivery(void)
         if (c[i].errors) failed = 1;
         CloseHandle(c[i].entered); CloseHandle(c[i].leave);
     }
+    if (WaitForSingleObject(settling, 5000) != WAIT_OBJECT_0) return 5;
+    CloseHandle(settling);
+    if (!check_settle_result || InterlockedExchangeAdd(&g_dispatch_inflight, 0))
+        failed = 1;
     /* The guest context belongs to the queue, not to each short-lived timer. */
     if (!c[0].event_thread || c[0].event_thread != c[1].event_thread ||
         c[0].event_thread == c[2].event_thread) failed = 1;
