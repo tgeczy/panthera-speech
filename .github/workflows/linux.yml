@@ -169,7 +169,7 @@ jobs:
           cp tools/native_library_check.c "$out/"
           mkdir -p "$out/licenses" "$out/sources"
           git archive --format=tar.gz -o "$PWD/$out/sources/panthera.tar.gz" HEAD \
-            src build_linux.sh LICENSE licenses docs/linux-native.md tools/native_library_check.c tools/native_divide_check.c tools/aac_experiment \
+            src build_linux.sh LICENSE licenses docs/linux-native.md tools/native_library_check.c tools/native_divide_check.c tools/gcd_sources_check.c tools/aac_experiment \
             tools/build_linux_box64.py tools/translation_experiment
           if [ "${{ matrix.aac }}" = "glint" ]; then
             pin="$(python3 -c 'import sys; sys.path.insert(0,"tools/aac_experiment"); import glint; print(glint.PIN)')"
