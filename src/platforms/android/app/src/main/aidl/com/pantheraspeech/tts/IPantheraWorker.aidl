@@ -7,4 +7,5 @@ interface IPantheraWorker {
     byte[] pull(int capacity);
     boolean renderComplete();
     void finish();
+    boolean stopAndFinish(int timeoutMs);
 }

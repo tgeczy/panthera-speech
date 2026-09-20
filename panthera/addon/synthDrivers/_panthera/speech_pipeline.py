@@ -773,7 +773,7 @@ class SpeechPipelineMixin(MarkerPipelineMixin):
                                     #: nothing to ignore.
                                     log.debug(
                                         "%s: " % self.name +
-                                        "interrupted; next sound %.0f ms later"
+                                        "interrupted; first playback feed returned %.0f ms later"
                                         % ((time.perf_counter()
                                             - self._cancelledAt) * 1000.0))
                                 self._afterCancel = False

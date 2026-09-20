@@ -14,6 +14,7 @@ open class PantheraWorkerService : Service() {
     @Volatile private var opened = false
     private var phrasing: String? = null
     private var inflectionChanged = false
+    @Volatile private var activeGeneration: String? = null
     private val binder = object : IPantheraWorker.Stub() {
         override fun open(engine: String, dictionary: String, requestedPhrasing: String, inflection: Int): Int = runNative {
             if (opened && (phrasing != requestedPhrasing || (inflection == 50 && inflectionChanged))) return@runNative RECONFIGURE
@@ -31,6 +32,7 @@ open class PantheraWorkerService : Service() {
                            wpm: Int, volume: Int, generation: String, numbers: String,
                            expandAbbreviations: Boolean, inflection: Int): Int = runNative {
             check(opened)
+            activeGeneration = generation
             PantheraNative.nativeSetVolume(volume, generation)
             PantheraNative.nativeSetNumberStyle(numbers)
             PantheraNative.nativeSetExpandAbbreviations(expandAbbreviations)
@@ -60,6 +62,17 @@ open class PantheraWorkerService : Service() {
         override fun finish() { runNative {
             if (opened) PantheraNative.nativeFinish()
         } }
+        override fun stopAndFinish(timeoutMs: Int): Boolean {
+            // Snow Leopard aborted in the direct-stop probe; retain retirement.
+            // Only acknowledged starts reach this method from the owner.
+            if (!opened || activeGeneration !in setOf("tiger", "leopard", "lion")) return false
+            return PantheraCleanup.attempt(synthesis, timeoutMs.coerceIn(1, 120).toLong(),
+                stop = { PantheraNative.nativeStop() },
+                finish = {
+                    PantheraNative.nativeFinish()
+                    PantheraNative.nativeRenderComplete()
+                })
+        }
     }
     override fun onBind(intent: Intent): IBinder = binder
     override fun onDestroy() {

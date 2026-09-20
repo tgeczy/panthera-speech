@@ -506,8 +506,9 @@ object PantheraEngine {
     // This is a maximum opportunity to finish, never an unconditional sleep.
     private const val COMPLETION_GRACE_MS = 60L
     // The measured gain is for short labels (digits, Search, Messages).
-    // Waiting on paragraphs only delays the replacement before killing anyway.
+    // Longer requests use explicit native cleanup instead of waiting to render.
     private const val COMPLETION_GRACE_MAX_BYTES = 32
+    private const val NATIVE_CLEANUP_MS = 120
     @Volatile private var worker: IPantheraWorker? = null
     @Volatile private var request: PantheraRequest<IPantheraWorker>? = null
     @Volatile private var openedGen: String? = null
@@ -525,8 +526,10 @@ object PantheraEngine {
                     Thread.sleep(2)
                     complete = api.renderComplete()
                 }
+                val nativeCleanup = !complete && !allowGrace
+                if (nativeCleanup) complete = api.stopAndFinish(NATIVE_CLEANUP_MS)
                 android.util.Log.i("PantheraEngine", "Cancelled renderer settled in " +
-                    "${android.os.SystemClock.elapsedRealtime() - at} ms, grace=$allowGrace reused=$complete")
+                    "${android.os.SystemClock.elapsedRealtime() - at} ms, grace=$allowGrace native=$nativeCleanup reused=$complete")
                 complete
             },
             dispatchCancel = { cancellations.execute(it) })

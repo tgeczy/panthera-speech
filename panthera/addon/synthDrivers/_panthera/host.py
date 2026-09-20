@@ -57,6 +57,10 @@ REQ_MAGIC_STREAM = 0x54475234   # 'TGR4'
 REQ_MAGIC_MARKERS = 0x54475235  # 'TGR5', positioned interior sync records
 RSP_MAGIC = 0x54475253          # 'TGRS'
 
+# Local diagnostic packages opt in with this marker. Keep cancellation timing
+# without per-slice verbose output, which can itself distort the measurement.
+CANCEL_DIAGNOSTICS = os.path.isfile(os.path.join(os.path.dirname(__file__), "cancel-diagnostics"))
+
 
 def _readExactly(stream, n):
     """Read exactly `n` bytes or raise.  A pipe read can always come up short."""
@@ -163,6 +167,9 @@ class HostMixin(object):
                 env.pop("TIGER_HOST_VERBOSE", None)
         except Exception:
             env.pop("TIGER_HOST_VERBOSE", None)
+        if CANCEL_DIAGNOSTICS:
+            env["TIGER_CANCEL_TRACE"] = "1"
+            env.pop("TIGER_HOST_VERBOSE", None)
         if self._cancelEvent:
             env["TIGER_CANCEL_EVENT"] = self._cancelEventName
         params = self._phrasingParam()
@@ -185,7 +192,7 @@ class HostMixin(object):
                 self.name, self.TREE.HOST_DLL, self._mt, self._sd, self._voicesdir,
                 self._cancelEventName if self._cancelEvent else None,
                 ["%s=%s" % (k, env.get(k, ""))
-                 for k in ("TIGER_HOST_VERBOSE", "TIGER_PARAMS",
+                 for k in ("TIGER_HOST_VERBOSE", "TIGER_CANCEL_TRACE", "TIGER_PARAMS",
                            "TIGER_NO_ABBREV")])
         else:
             proc = subprocess.Popen(
