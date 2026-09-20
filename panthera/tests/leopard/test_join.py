@@ -34,7 +34,7 @@ def d():
     obj._queue = queue.Queue()
     obj._audioQueue = queue.Queue()
     obj._joinSentences = True
-    obj._spokeSinceCancel = True
+    obj._lastSpeechEpoch = 0
     obj._stopped = False
     obj._epoch = 0
     return obj
@@ -180,7 +180,7 @@ def test_the_first_utterance_after_a_cancel_never_waits(d, monkeypatch):
     word came out, which is exactly what a reader notices.
     """
     import time
-    d._spokeSinceCancel = False
+    d._lastSpeechEpoch = None
     monkeypatch.setattr(speech_pipeline, "JOIN_WAIT", 5.0)
     t = time.time()
     d._join([("text", S1), ("index", 1)], d._epoch)
@@ -231,7 +231,7 @@ def test_a_short_thing_with_a_full_stop_in_it_is_not_held(driver, text):
     of 2724" is a list position. Neither is prose, and neither is worth a
     breath -- which is the only thing the hold buys.
     """
-    driver._spokeSinceCancel = True
+    driver._lastSpeechEpoch = driver._epoch
     started = time.time()
     driver._join([("index", 1), ("text", text)], driver._epoch)
     elapsed = time.time() - started
@@ -245,7 +245,7 @@ def test_but_a_real_line_of_a_document_is_still_held(driver):
     line = ("The Chamber of Commerce warned on Tuesday that the higher "
             "tariffs would damage both economies and drive up costs.")
     assert len(line) >= pantheradriver.JOIN_MIN_CHARS
-    driver._spokeSinceCancel = True
+    driver._lastSpeechEpoch = driver._epoch
     started = time.time()
     driver._join([("index", 1), ("text", line)], driver._epoch)
     assert time.time() - started >= pantheradriver.JOIN_WAIT * 0.8, (

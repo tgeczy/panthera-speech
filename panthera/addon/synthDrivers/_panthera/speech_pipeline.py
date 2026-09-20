@@ -203,8 +203,10 @@ class SpeechPipelineMixin(MarkerPipelineMixin):
                     continue
                 self._flush(run, wpm, voice, adj, epoch, pending, vol,
                             trailing)
+                if self._stopped or self._epoch != epoch:
+                    break
                 if kind == "break":
-                    self._audioQueue.put(("audio", _silence(value), self._epoch))
+                    self._audioQueue.put(("audio", _silence(value), epoch))
                 elif kind == "pitch":
                     adj = value
                 elif kind == "volume":
@@ -221,7 +223,8 @@ class SpeechPipelineMixin(MarkerPipelineMixin):
                 else:
                     self._flush(run, wpm, voice, adj, epoch, pending, vol,
                                 trailing)
-                if continuous and self._inputMode is None:
+                if (continuous and self._inputMode is None
+                        and not self._stopped and self._epoch == epoch):
                     #: **The engine's own sentence pause, restored between
                     #: chunks.**  Inside one utterance the engine composes
                     #: about half a second between sentences at 180 wpm; a
@@ -246,12 +249,15 @@ class SpeechPipelineMixin(MarkerPipelineMixin):
                         SENTENCE_PAUSE_FACTOR / max(1, wpm)
                         * self.PAUSE_SCALE.get(self._pauseMode, 1.0))
                     if pause:
-                        self._audioQueue.put(("audio", pause, self._epoch))
+                        self._audioQueue.put(("audio", pause, epoch))
             for index in pending + trailing:    # nothing left to speak
                 self._audioQueue.put(("index", index, None))
             del pending[:]
             del trailing[:]
-            self._spokeSinceCancel = True
+            # A render may return after cancel(). Keep its identity: setting
+            # a shared boolean here made the replacement wait JOIN_WAIT,
+            # even though cancel() had just cleared that boolean.
+            self._lastSpeechEpoch = epoch
             self._audioQueue.put(("done", None, None))
 
     def _reportIndexes(self, items):
@@ -320,10 +326,9 @@ class SpeechPipelineMixin(MarkerPipelineMixin):
         if not self._joinSentences and self._modeAfter(
                 _joinFragments([v for k, v in item if k == "text"])) is None:
             return item
-        #: Only while reading continuously.  NVDA marks those lines with an
-        #: index; nothing else it sends this driver carries one, so an index is
-        #: both the signal that more text is coming and the thing that asks for
-        #: it.  Without this, arrowing through a list would be held too.
+        #: Indexed text can continue a say-all run, but navigation speech can
+        #: carry indexes too. The epoch and prose checks below keep the first
+        #: announcement after an interruption from waiting for another line.
         if not any(kind == "index" for kind, _ in item):
             return item
         #: A break, a pitch change or a rate change divides the utterance where
@@ -371,7 +376,7 @@ class SpeechPipelineMixin(MarkerPipelineMixin):
             #: syntax carries no sentence end and no minimum length, and the
             #: indexes have already been reported, which is what asks NVDA
             #: for the next verse.
-            block = (self._spokeSinceCancel
+            block = (self._lastSpeechEpoch == epoch
                      and (carried or (_sentenceEnds(text) >= 1
                                       and len(text) >= JOIN_MIN_CHARS)))
             try:
@@ -561,7 +566,7 @@ class SpeechPipelineMixin(MarkerPipelineMixin):
                          (firstAt[0] - started) * 1000.0,
                          (done - started) * 1000.0,
                          "" if self._epoch == epoch
-                         else " (interrupted; the host was retired)"))
+                         else " (interrupted)"))
         # After the words and before the gap, whatever the render did: an
         # index is never lost, and one that rode behind a cancelled utterance
         # is NVDA's to ignore.

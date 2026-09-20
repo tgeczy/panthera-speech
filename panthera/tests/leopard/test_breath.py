@@ -122,7 +122,7 @@ def test_joining_two_lines_is_what_makes_them_breathe(driver):
     driver._queue = queue.Queue()
     driver._audioQueue = queue.Queue()
     driver._joinSentences = True
-    driver._spokeSinceCancel = True
+    driver._lastSpeechEpoch = driver._epoch
 
     driver._queue.put([("text", S2), ("index", 2)])
     joined = driver._join([("text", S1), ("index", 1)], driver._epoch)

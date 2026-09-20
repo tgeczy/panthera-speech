@@ -82,6 +82,53 @@ diagnostic package. This package does not promise an NVDA speed improvement.
 Local evidence and repeatable build/device runners are under
 `build/research/android-cancel-20260920/`. No engine or voice data is packaged.
 
+### Indexed-post regression found on the Ally X
+
+Tomi reported a repeatable 0.6-0.8 s delay navigating from a long post to a
+shorter one with Lion driving Sequoia's Alex bank, rate 100 (400 wpm), boost off.
+His diagnostic log showed a separate NVDA driver fault: at 13:17:10.678 the
+replacement arrived, cancellation finished at .715, but the driver did not
+start rendering the replacement until 13:17:11.073. The same host was reused.
+
+An interrupted `_run` set `_spokeSinceCancel = True` after `cancel()` had
+cleared it. The next indexed, one-sentence post therefore waited `JOIN_WAIT`
+(350 ms) as though it continued a say-all run. Longer posts bypassed that
+hold, explaining the directional difference. The same interrupted path
+appended its sentence pause with the new epoch, making stale silence playable
+and consuming the diagnostic's "first playback feed" timestamp before the
+replacement text even reached the engine.
+
+The driver now records the rendering epoch for joining and keeps every pause
+with its originating epoch. A cancelled render cannot authorize a joiner wait
+or append a new request's silence. Ongoing say-all joining remains enabled.
+The generic interruption log no longer claims every interrupted host was
+retired; actual retirement has its own log.
+
+Replayed the two texts as NVDA supplied them, including index commands, with
+Lion and the Sequoia bank at 400 wpm, abbreviation expansion off, Leopard
+phrasing. Nine mid-render interruptions on this development PC fell from
+461-486 ms to 99-165 ms; three interruptions after rendering had already ended
+were 43-57 ms across the runs. Measurement: first nonquiet PCM at the simulated
+player, **not physical sound on the Ally**. The earlier reproduction omitted
+indexes and could not exercise this failure. Original Lion Alex was also
+tested during diagnosis; the long-post warm PCM controls were not consistently
+byte-identical even without cancellation, so no exact-PCM claim is made for
+this fixture.
+
+Three deterministic regressions first failed on the original code and pass
+with the fix: no join wait after in-render cancellation, and no stale sentence
+pause with joining on or off. The existing cancelled-break check now also
+requires no leftover silence. 65 marker, joiner, breath and sentence-pause
+checks pass; two checks requiring explicit engine variables skip. Breathing
+and playback-marker engine checks are included among the passes.
+
+`pantheraspeech-3.2.0-reading-interruption.nvda-addon` contains this fix and
+diagnostics with the unchanged 3.2.0 native binaries. Worker retirement policy
+is unchanged. Local evidence is in `build/research/sequoia-cancel-20260920/`;
+the original Ally log is kept outside the repository. User listening on the
+fixed package is still pending. This fix is in the shared Leopard/Snow/Lion
+NVDA driver, not Tiger's separate driver or the Android/SAPI/Linux frontends.
+
 ## Validation
 
 - 26 Android JVM tests pass, including owning-thread execution, release of a

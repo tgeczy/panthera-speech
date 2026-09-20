@@ -44,7 +44,7 @@ def _bare(join, player=None):
     d._queue = queue.Queue()
     d._audioQueue = queue.Queue()
     d._joinSentences = join
-    d._spokeSinceCancel = True
+    d._lastSpeechEpoch = 0
     d._stopped = False
     d._epoch = 0
     d._inputMode = None
@@ -95,6 +95,62 @@ def _run(d, item):
     d._queue.put(None)
     d._run()
     return _shape(_drain(d._audioQueue))
+
+
+def _cancelDuringRender(join):
+    """Finish an interrupted indexed post with its replacement already queued.
+
+    The render owns the old epoch even though cancel() has advanced the driver.
+    No timing sleeps: observe whether the replacement asks to wait for more text.
+    """
+    d = _bare(join)
+    d._markerStreaming = not join
+    d._cancelEvent = None
+    d._rendering = False
+    d._retiring = False
+    waits, beforeReplacement, rendered = [], [], []
+
+    class ObservedQueue(queue.Queue):
+        def get(self, block=True, timeout=None):
+            if timeout is not None:
+                waits.append(timeout)
+                # A missing next sentence normally spends JOIN_WAIT here.
+                return super().get(block=False)
+            return super().get(block=block)
+
+    d._queue = ObservedQueue()
+    old = S1 * 15  # Longer than JOIN_MAX_CHARS; no wait on this first post.
+
+    def render(text, wpm, voice, pitch=0, sink=None, volume=0):
+        rendered.append(text)
+        if len(rendered) == 1:
+            d.cancel()
+            d._queue.put([("text", S1), ("index", 2)])
+        else:
+            beforeReplacement.extend(_drain(d._audioQueue))
+            sink(_silence(10))
+            d._queue.put(None)
+        return b""
+
+    d._render = render
+    d._queue.put([("text", old), ("index", 1)])
+    d._run()
+    assert rendered == [old, S1]
+    return waits, beforeReplacement
+
+
+def test_cancelled_post_cannot_make_its_replacement_wait_for_say_all():
+    waits, _ = _cancelDuringRender(True)
+    assert not any(timeout > 0 for timeout in waits), (
+        "The first post after cancel waited for another sentence")
+
+
+@pytest.mark.parametrize("join", [True, False])
+def test_cancelled_post_cannot_append_silence_to_the_new_utterance(join):
+    _, beforeReplacement = _cancelDuringRender(join)
+    assert not [item for item in beforeReplacement
+                if item[0] == "audio" and item[2] == 1], (
+        "The cancelled post appended its sentence pause with the new epoch")
 
 
 #: The shape the EarCons and Speech Rules add-on sends, and the shape NVDA's
@@ -177,11 +233,9 @@ def test_with_breathing_off_an_index_is_never_lost_when_the_run_is_cancelled():
     raw = _drain(d._audioQueue)
     reported = [v for k, v, _t in raw if k in ("mark", "index")]
     assert reported == [7]
-    # The rendered words were dropped by the sink.  What may still be there
-    # is the break's own silence, which rides the *new* epoch and has always
-    # been fed -- it is silence.  Nothing from the cancelled run may be.
-    stale = [(k, len(v)) for k, v, t in raw if k == "audio" and t == 0]
-    assert not stale, "audio from the cancelled run reached the queue: %r" % (stale,)
+    # Neither the rendered words nor the abandoned break may delay what
+    # follows. Silence relabelled with the new epoch was audible as lag too.
+    assert not [item for item in raw if item[0] == "audio"]
 
 
 # -- the feeder: when a mark is reported --------------------------------------

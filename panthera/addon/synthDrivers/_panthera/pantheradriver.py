@@ -545,11 +545,11 @@ class PantheraDriver(HostMixin, SpeechPipelineMixin, SynthDriver):
         #: process -- nothing is passed to the host -- so changing it takes
         #: effect on the next utterance and needs no restart.
         self._fixStress = True
-        #: Whether anything has been spoken since the last cancel.  Joining
+        #: Which cancellation epoch last rendered speech. Joining
         #: never waits for the *first* utterance of a run, so starting to read
         #: is as immediate as it was; from the second on, the next line is
         #: normally queued already and the wait is zero anyway.
-        self._spokeSinceCancel = False
+        self._lastSpeechEpoch = None
         #: Whether a non-default inflection has been sent to the engine and is
         #: still in force on the channel. Volume needs no such flag any more:
         #: it is sent on every utterance, because the level is per-voice and
@@ -832,9 +832,9 @@ class PantheraDriver(HostMixin, SpeechPipelineMixin, SynthDriver):
         left interruption silently broken while sound was still playing.
         """
         self._epoch += 1
-        #: Whatever was being held for joining belongs to the run that has just
-        #: been cancelled, and the next utterance must not wait behind it.
-        self._spokeSinceCancel = False
+        #: Advancing the epoch also invalidates the joiner's last speech.
+        #: A cancelled render can finish later; its old epoch cannot make
+        #: the first replacement wait for another say-all sentence.
         #: And so does an input mode a cancelled run left open: the next
         #: thing spoken is the user doing something else, not verse five.
         self._inputMode = None
