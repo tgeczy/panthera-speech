@@ -28,7 +28,8 @@ bringing bits of the old text along with it.
 - The existing short-label behavior, Direct Boot, imported data and settings
   are retained. The final candidate passed 120 exact replacement-audio checks
   and the playback suite on the Nothing Phone running Android 16. Both ARM
-  builds were rebuilt; this round did not include a new Watch listening test.
+  builds were rebuilt. Tomi tested the release-signed 3.3.0 on the Nothing
+  Phone and Galaxy Watch and found no regressions during rapid swiping.
 
 ## Shared runtime, SAPI and Linux
 
@@ -42,6 +43,9 @@ SAPI and Linux receive the shared runtime fixes too. SAPI keeps its existing
 interruption policy; it does not acquire Android's worker-reuse policy. Its
 installer also retains the 3.2.0 revision-2 fix for preserving which engine
 generations you registered. Thanks again to x0 for that report.
+
+Tomi also tested long posts through SAPI and found its speed on par with the
+NVDA add-on.
 
 Linux support stays the same: native **i686** is the recommended x86 build,
 including on x86-64 systems with 32-bit runtime support; **AArch64** uses
