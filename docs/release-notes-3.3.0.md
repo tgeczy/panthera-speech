@@ -14,8 +14,7 @@ bringing bits of the old text along with it.
 - **Tiger drops the rest of a cancelled speech sequence**, including queued
   breaks and changes that belonged to it.
 - Your Say All joining choice stays as it is. The breathing and audio-position
-  marker work from 3.2.0 remains in place. Tomi also completed about ten minutes
-  of Say All without a stop.
+  marker work from 3.2.0 remains in place.
 
 ## Android
 
