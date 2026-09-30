@@ -31,6 +31,9 @@ The delay is the engine's own 5000 ms, logged by `TIGER_GCD_LOG=1`.  Waiting
 six and a half is enough to be past it and short enough to stay in a suite.
 """
 import time
+import threading
+
+import pytest
 
 #: Longer than the engine's own five seconds, with enough margin that a loaded
 #: machine cannot make the test pass by being slow to get here.
@@ -63,3 +66,51 @@ def test_speech_survives_a_silence(driver):
     assert elapsed < 5.0, (
         "the render after a silence took %.1f s; it takes about a third of a "
         "second warm" % elapsed)
+
+
+@pytest.mark.parametrize("join", [False, True])
+@pytest.mark.parametrize("cancel_first", [False, True])
+def test_first_announcement_after_idle_reaches_playback(
+        driver, monkeypatch, join, cancel_first):
+    """No direct render may wake the host before the first NVDA request.
+
+    Covers the driver, native engine, indexes and simulated playback. Device
+    sleep and the real NVDA speech manager still require separate investigation.
+    """
+    from speech.commands import IndexCommand
+    from synthDriverHandler import synthDoneSpeaking, synthIndexReached
+
+    if not any(voice[0] == "Alex" for voice in driver._voices):
+        pytest.skip("Lion Alex voice data is not installed")
+    driver._joinSentences = join
+    driver._voiceId = "Alex"
+    driver._wpm = lambda adj=0: 180
+    completed = threading.Event()
+    indexes = []
+    audio = bytearray()
+    feed = driver._player.feed
+
+    def capture(data, *args, **kwargs):
+        audio.extend(data)
+        return feed(data, *args, **kwargs)
+
+    monkeypatch.setattr(driver._player, "feed", capture)
+    monkeypatch.setattr(synthDoneSpeaking, "notify", lambda **kw: completed.set())
+    monkeypatch.setattr(synthIndexReached, "notify", lambda **kw: indexes.append(kw["index"]))
+
+    def announce(index):
+        completed.clear()
+        audio.clear()
+        if cancel_first:
+            driver.cancel()
+        driver.speak([TEXT, IndexCommand(index)])
+        assert completed.wait(20), "the single announcement never completed"
+        assert indexes == list(range(1, index + 1)), "missing or duplicate index"
+        assert any(audio), "no speech reached playback"
+        return bytes(audio)
+
+    baseline = announce(1)
+    host = driver._proc
+    time.sleep(IDLE)
+    assert announce(2) == baseline, "first announcement after idle lost or changed audio"
+    assert driver._proc is host, "the driver replaced an idle host"
