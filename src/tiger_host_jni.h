@@ -75,6 +75,18 @@ int panthera_set_phrasing(const char *style);
  * A negative level leaves volume to the caller's embedded commands. */
 void panthera_set_volume(int level, const char *generation);
 
+/* Pitch as an **offset in tenths of a semitone** from the current voice's own
+ * pitch, not an absolute value: Fred sits near 127 Hz and Bruce near 135, so
+ * an absolute scale would mean a different thing for every voice.  0 is the
+ * voice as recorded.  Clamped to an octave either way, the same twelve
+ * semitones the NVDA driver uses, so an offset means the same on both.
+ *
+ * The same quantity serve mode's request header carries, and set the same way
+ * volume is: between utterances, under synthesis ownership, taking effect from
+ * the next one.  It is re-applied on every utterance, so an embedded
+ * "[[pbas ...]]" in the text cannot outlive the utterance that carried it. */
+void panthera_set_pitch(int tenthsSemitone);
+
 /* Ask the engine to stop the utterance in progress; makes a blocked
  * panthera_render / panthera_pull return with whatever it has.  Safe from
  * another thread. */

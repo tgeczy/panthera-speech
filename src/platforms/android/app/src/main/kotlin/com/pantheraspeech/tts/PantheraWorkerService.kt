@@ -30,10 +30,17 @@ open class PantheraWorkerService : Service() {
         override fun shutdown() { android.os.Process.killProcess(android.os.Process.myPid()) }
         override fun start(voice: String, creator: Int, voiceId: Int, text: ByteArray,
                            wpm: Int, volume: Int, generation: String, numbers: String,
-                           expandAbbreviations: Boolean, inflection: Int): Int = runNative {
+                           expandAbbreviations: Boolean, inflection: Int, pitch: Int): Int = runNative {
             check(opened)
             activeGeneration = generation
             PantheraNative.nativeSetVolume(volume, generation)
+            // Tenths of a semitone from the voice's own pitch. Sent on every
+            // request rather than when it changes: a screen reader raises the
+            // pitch for one capital letter and drops it again immediately, so
+            // "when it changes" is every request anyway, and the native side
+            // re-applies it regardless to keep an embedded [[pbas]] in the text
+            // from outliving the utterance that carried it.
+            PantheraNative.nativeSetPitch(pitch)
             PantheraNative.nativeSetNumberStyle(numbers)
             PantheraNative.nativeSetExpandAbbreviations(expandAbbreviations)
             // The same 0..100 -> pmod 0..200 scale as NVDA/SAPI. At the

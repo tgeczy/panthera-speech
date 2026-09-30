@@ -62,8 +62,8 @@ android {
         minSdk = 26
         targetSdk = 35
         testInstrumentationRunner = "com.pantheraspeech.tts.EngineSmokeTest"
-        versionCode = 7
-        versionName = "3.3.0"
+        versionCode = 8
+        versionName = "3.3.1"
 
         // Native libraries are prebuilt by build_jni_so.sh. Both ABIs pass
         // the four-generation device suite; each device selects its own ABI.
@@ -118,6 +118,16 @@ android {
             if (signingProperties.isFile) signingConfig = signingConfigs.getByName("release")
         }
     }
+
+    // The device suite instruments the debug build by default.  `-PreleaseTests`
+    // points it at the release one, which is the only way to run it against a
+    // release already on a phone: instrumentation requires the test APK and its
+    // target to carry the same signature, so a debug-signed test cannot
+    // instrument the signed build people actually install.  Swapping the
+    // release out for a debug build instead is not an option worth having --
+    // uninstalling takes the engine data with it, and Alex alone is 670 MB
+    // somebody copied over MTP.
+    if (project.hasProperty("releaseTests")) testBuildType = "release"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

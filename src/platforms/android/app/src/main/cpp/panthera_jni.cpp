@@ -79,6 +79,16 @@ Java_com_pantheraspeech_tts_PantheraNative_nativeSetVolume(
     }
 }
 
+// Tenths of a semitone away from the voice's own pitch, 0 being the voice as
+// recorded. A client's TextToSpeech.setPitch reaches the service as a ratio in
+// SynthesisRequest.getPitch(); the conversion to semitones happens there, so
+// that this boundary carries the same quantity serve mode's header does.
+JNIEXPORT void JNICALL
+Java_com_pantheraspeech_tts_PantheraNative_nativeSetPitch(
+        JNIEnv *, jclass, jint tenthsSemitone) {
+    panthera_set_pitch((int)tenthsSemitone);
+}
+
 // How to read numbers the engine gets wrong: "off", "fix" or "words".
 // A setting rather than a per-utterance argument, because it is a preference;
 // it takes effect from the next utterance.

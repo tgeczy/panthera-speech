@@ -40,7 +40,11 @@ def start():
 def render(proc, text, voice="Fred", wpm=180, pitch=0, commands=False):
     t = text.encode("utf-8")
     v = voice.encode("utf-8")
-    proc.stdin.write(struct.pack("<IiIIII", REQ, wpm, pitch,
+    # 'i' for pitch, not 'I': the protocol carries it as a signed i32 because it
+    # is an offset from the voice's own pitch, so half its range is negative.
+    # Packed unsigned, this tool could only ever ask for a raised pitch and
+    # refused a lowered one outright -- which is how it was found.
+    proc.stdin.write(struct.pack("<IiiIII", REQ, wpm, pitch,
                                  1 if commands else 0, len(v), len(t)) + v + t)
     proc.stdin.flush()
     head = proc.stdout.read(12)

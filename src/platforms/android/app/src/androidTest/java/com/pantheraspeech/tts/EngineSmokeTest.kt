@@ -27,6 +27,7 @@ class EngineSmokeTest : Instrumentation() {
     private var audioOnly = false
     private var testGeneration: String? = null
     private var latency: String? = null
+    private var pitchCheck = false
     private var zipImport: String? = null
     private var zipName = "tiger.zip"
     override fun onCreate(arguments: Bundle?) {
@@ -40,6 +41,7 @@ class EngineSmokeTest : Instrumentation() {
         audioOnly = arguments?.getString("audioOnly") == "true"
         testGeneration = arguments?.getString("testGeneration")
         latency = arguments?.getString("latency")
+        pitchCheck = arguments?.getString("pitch") == "true"
         super.onCreate(arguments); start()
     }
 
@@ -56,6 +58,91 @@ class EngineSmokeTest : Instrumentation() {
     /** Click an option the way a finger would, so the change counts as the user's. */
     private fun pick(group: android.widget.RadioGroup, index: Int) {
         (group.getChildAt(index) as android.widget.RadioButton).performClick()
+    }
+
+    /** The pitch a caller asks for reaches the engine and changes the audio.
+     *
+     * Through the platform client and `setPitch`, deliberately: the bug in #23
+     * was not that the engine cannot change pitch -- it can, and has on Windows
+     * all along -- but that `SynthesisRequest.getPitch()` was never read, so
+     * every request rendered at the voice's own pitch however loudly the caller
+     * asked otherwise. A test that called the native setter directly would have
+     * passed against the broken build.
+     *
+     * A screen reader indicating a capital letter is exactly this: one request
+     * raised, the next back at 1.0. So the last leg checks that coming back
+     * down returns the *original bytes* -- if an offset leaked into the channel
+     * and stayed there, pitch would climb for the rest of the session and every
+     * render after the capital would be wrong.
+     */
+    private fun checkPitch() {
+        val results = Bundle()
+        var tts: TextToSpeech? = null
+        try {
+            val ready = CountDownLatch(1)
+            val client = TextToSpeech(targetContext, { if (it == TextToSpeech.SUCCESS) ready.countDown() },
+                "com.pantheraspeech.tts")
+            tts = client
+            check(ready.await(60, TimeUnit.SECONDS)) { "the engine never initialized" }
+            check(client.setLanguage(Locale.US) >= TextToSpeech.LANG_AVAILABLE)
+            check(client.setSpeechRate(1.0f) == TextToSpeech.SUCCESS)
+            val gen = PantheraEngine.activeGen(targetContext)
+            val voice = PantheraEngine.scanVoices(targetContext, gen)
+                .firstOrNull { it.name == (nativeVoice ?: "Alex") }
+                ?: PantheraEngine.scanVoices(targetContext, gen).firstOrNull()
+                ?: error("no voices in $gen")
+            PantheraEngine.prefs(targetContext).edit()
+                .putBoolean("override_voice", false).commit()
+            check(client.voices.any { it.name == voice.id })
+            check(client.setVoice(client.voices.first { it.name == voice.id }) == TextToSpeech.SUCCESS)
+            results.putString("voice", voice.id)
+
+            fun render(tag: String, ratio: Float): ByteArray {
+                check(client.setPitch(ratio) == TextToSpeech.SUCCESS) { "setPitch($ratio) refused" }
+                val file = File(targetContext.filesDir, "pitch-$tag.wav")
+                val done = CountDownLatch(1)
+                var failure: String? = null
+                client.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                    override fun onStart(utteranceId: String) {}
+                    override fun onDone(utteranceId: String) { if (utteranceId == tag) done.countDown() }
+                    override fun onError(utteranceId: String) {
+                        if (utteranceId == tag) { failure = "synthesis failed"; done.countDown() }
+                    }
+                    override fun onError(utteranceId: String, code: Int) {
+                        if (utteranceId == tag) { failure = "synthesis failed: $code"; done.countDown() }
+                    }
+                })
+                check(client.synthesizeToFile("Capital A", Bundle(), file, tag) == TextToSpeech.SUCCESS)
+                check(done.await(60, TimeUnit.SECONDS)) { "timed out at pitch $ratio" }
+                check(failure == null) { "pitch $ratio: $failure" }
+                val bytes = file.readBytes()
+                check(bytes.size > 1000) { "pitch $ratio rendered ${bytes.size} bytes" }
+                results.putString(tag, "${bytes.size} bytes " +
+                    MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) })
+                Log.i("PantheraTest", "pitch $ratio -> ${bytes.size} bytes")
+                return bytes
+            }
+
+            val normal = render("normal", 1.0f)
+            val high = render("high", 1.5f)
+            val low = render("low", 0.75f)
+            val back = render("back", 1.0f)
+            check(!high.contentEquals(normal)) {
+                "pitch 1.5 rendered the same bytes as 1.0: the request is still being ignored"
+            }
+            check(!low.contentEquals(normal)) { "pitch 0.75 rendered the same bytes as 1.0" }
+            check(!high.contentEquals(low)) { "raised and lowered pitch rendered alike" }
+            check(back.contentEquals(normal)) {
+                "returning to pitch 1.0 did not return the original audio: an offset outlived its request"
+            }
+            results.putString("verdict", "pitch changes the audio and returning to 1.0 restores it")
+            finish(Activity.RESULT_OK, results)
+        } catch (e: Throwable) {
+            results.putString("failure", Log.getStackTraceString(e))
+            finish(Activity.RESULT_CANCELED, results)
+        } finally {
+            tts?.shutdown()
+        }
     }
 
     private fun checkNativeGeneration(gen: String) {
@@ -268,6 +355,7 @@ class EngineSmokeTest : Instrumentation() {
         if (latency == "handoff") { PantheraWorkerCheck.runHandoffProbe(this); return }
         latency?.let { PantheraLatencyCheck.run(this, it); return }
         nativeGen?.let { checkNativeGeneration(it); return }
+        if (pitchCheck) { checkPitch(); return }
         var tts: TextToSpeech? = null
         var resultCode = Activity.RESULT_CANCELED
         val results = Bundle()

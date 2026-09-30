@@ -76,6 +76,22 @@ static unsigned g_pt_voice_creator;  /* last voice selected, to skip re-selectin
 static int      g_pt_voice_id;
 static int      g_pt_have_voice;
 
+/* Pitch, exactly as serve mode carries it: an offset in **tenths of a
+ * semitone** from whatever the current voice's own 'pbas' is, because every
+ * voice has a different natural pitch and an absolute scale would mean a
+ * different thing for each.  `g_pt_basepitch` is that voice's own value, read
+ * back from the engine when the voice is selected; 0 means we could not read
+ * it, and then no offset is applied at all rather than one applied to nothing.
+ *
+ * Android delivers this: a client's `TextToSpeech.setPitch` arrives as
+ * `SynthesisRequest.getPitch()`, and a screen reader raising the pitch for a
+ * capital letter is the same request with a different number in it.  Until
+ * this existed the whole property was dropped on the floor, so both the
+ * system pitch slider and TalkBack's "change pitch for capitals" did nothing
+ * (issue #23). */
+static unsigned g_pt_basepitch;      /* the current voice's own pbas, Fixed */
+static int      g_pt_pitch;          /* tenths of a semitone away from it */
+
 /* Clamp one float sample to int16, the way write_wav does. */
 static short pt_clip(double v)
 {
@@ -121,7 +137,42 @@ static int pt_use_voice(const char *voiceDir, unsigned creator, int voiceId)
                         cf_pinned(voiceDir));
     if (err) { fprintf(stderr, "panthera: SEUseVoice -> OSErr %d\n", err); return err; }
     g_pt_voice_creator = creator; g_pt_voice_id = voiceId; g_pt_have_voice = 1;
+    /* Ask the voice what it sounds like before anything changes it, the way
+     * serve mode does on the same call.  This has to happen here rather than
+     * at speak time: once an offset has been written, 'pbas' reads back as the
+     * offset pitch, and asking again would compound it every utterance. */
+    {
+        speech_api api = speech_api_of(&g_mt);
+        g_pt_basepitch = 0;
+        if (!get_param(&api, g_chan, PARAM_PITCH, &g_pt_basepitch))
+            g_pt_basepitch = 0;
+    }
     return 0;
+}
+
+/* Apply the requested offset to the current voice's own pitch.
+ *
+ * Re-applied on EVERY utterance rather than only when it changes, for the
+ * reason serve mode gives: embedded "[[pbas ...]]" in the text changes the
+ * channel for good, so one stray command in a web page would otherwise follow
+ * the user around until they happened to move a slider.  One cheap setter call
+ * buys immunity from that. */
+static void pt_apply_pitch(const speech_api *api)
+{
+    unsigned fx;
+    if (!g_pt_basepitch) return;      /* nothing to offset from; leave it alone */
+    fx = (unsigned)((int)g_pt_basepitch + (g_pt_pitch * 65536) / 10);
+    set_param(api, g_chan, PARAM_PITCH, fx);
+}
+
+void panthera_set_pitch(int tenthsSemitone)
+{
+    /* An octave either way, which is as far as any of these stay recognisable
+     * -- the same PITCH_SEMITONES = 12 the NVDA driver clamps to, so a given
+     * offset means the same thing on both platforms. */
+    if (tenthsSemitone >  120) tenthsSemitone =  120;
+    if (tenthsSemitone < -120) tenthsSemitone = -120;
+    g_pt_pitch = tenthsSemitone;
 }
 
 /* write_wav's float->int16, factored so a rendered utterance is byte-identical
@@ -296,6 +347,7 @@ int panthera_speak_start(const char *voiceDir, unsigned creator, int voiceId,
     if (err) return err;
     api = speech_api_of(&g_mt);
     if (wpm > 0) set_param(&api, g_chan, PARAM_RATE, (unsigned)wpm << 16);
+    pt_apply_pitch(&api);
     rewritten = pt_numbers(text);
     if (rewritten) text = rewritten;
     err = speak_with_volume(&api, g_chan, text, strlen(text), voiceDir);
@@ -381,6 +433,7 @@ int panthera_render(const char *voiceDir, unsigned creator, int voiceId,
     /* Rate, in words per minute, as a Fixed 16.16.  Re-applied every utterance
      * because embedded commands in the text can change the channel for good. */
     if (wpm > 0) set_param(&api, g_chan, PARAM_RATE, (unsigned)wpm << 16);
+    pt_apply_pitch(&api);
 
     {
         /* The same rewriting speak_start does -- both entry points, or the

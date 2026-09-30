@@ -82,6 +82,28 @@ class PantheraTtsService : TextToSpeechService() {
         PantheraEngine.stop()
     }
 
+    /** Android's pitch ratio -> tenths of a semitone away from the voice's own
+     * pitch, which is what the engine is told and what the NVDA driver sends on
+     * Windows.
+     *
+     * The framework's number is a **ratio times 100**: 100 is the voice as
+     * recorded, 150 is half again as high. The engine's scale is musical -- one
+     * unit is one semitone -- so the two are a logarithm apart rather than
+     * proportional, and treating 150 as "fifty units up" would put a capital
+     * letter four octaves above the sentence around it.
+     *
+     * 100 -> 0 exactly, so anything that leaves the pitch alone (which is most
+     * callers, and every caller before this existed) is unaffected. Out-of-range
+     * and nonsense values answer 0 rather than throwing: this runs on every
+     * utterance, and a bad number is not worth failing an announcement over.
+     */
+    private fun pitchSemitoneTenths(requested: Int): Int {
+        if (requested <= 0 || requested == 100) return 0
+        val tenths = 120.0 * (Math.log(requested / 100.0) / Math.log(2.0))
+        if (!tenths.isFinite()) return 0
+        return Math.round(tenths).toInt().coerceIn(-120, 120)
+    }
+
     override fun onSynthesizeText(request: SynthesisRequest, callback: SynthesisCallback) {
         stopRequested = false
         PantheraEngine.withSynthesis {
@@ -101,12 +123,22 @@ class PantheraTtsService : TextToSpeechService() {
         android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO)
 
         val text = request.charSequenceText?.toString() ?: ""
+        // What the caller asked for with TextToSpeech.setPitch, as a ratio where
+        // 100 is the voice's own pitch. A screen reader indicating a capital
+        // letter by pitch sends one request at, say, 150 and the next at 100.
+        //
+        // **This was dropped entirely until now** (issue #23), so neither the
+        // system pitch slider nor TalkBack's "change pitch for capitals" did
+        // anything at all -- the only way to hear a capital was to have TalkBack
+        // say the word "capital".
+        val pitch = pitchSemitoneTenths(request.pitch)
         // Opt-in device benchmark: tie the first audible sample to Android's
         // playback-position callback instead of mistaking onStart for sound.
         val latencyProbe = request.params.getBoolean("com.pantheraspeech.tts.latency_probe", false)
         var probeMarked = false
         Log.i("PantheraTts", "synth: voice=${request.voiceName} lang=${request.language} " +
-            "rate=${request.speechRate} verified=${PantheraEngine.verified(this)} textLen=${text.length}")
+            "rate=${request.speechRate} pitch=${request.pitch}->${pitch} " +
+            "verified=${PantheraEngine.verified(this)} textLen=${text.length}")
 
         if (!PantheraEngine.verified(this)) {
             Log.w("PantheraTts", "not verified -> error"); callback.error(TextToSpeech.ERROR_SERVICE); return
@@ -148,7 +180,7 @@ class PantheraTtsService : TextToSpeechService() {
         for (piece in pieces) {
             if (stopRequested) break
             val started = PantheraEngine.speakStart(
-                this, voice, PantheraText.bytes(piece), snapshot.wpm(request.speechRate), snapshot)
+                this, voice, PantheraText.bytes(piece), snapshot.wpm(request.speechRate), snapshot, pitch)
             if (started != 0) {
                 if (stopRequested) return
                 Log.w("PantheraTts", "speakStart -> $started")

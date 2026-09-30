@@ -3,7 +3,8 @@ interface IPantheraWorker {
     int open(String engine, String dictionary, String phrasing, int inflection);
     void shutdown();
     int start(String voice, int creator, int voiceId, in byte[] text, int wpm,
-              int volume, String generation, String numbers, boolean expandAbbreviations, int inflection);
+              int volume, String generation, String numbers, boolean expandAbbreviations, int inflection,
+              int pitch);
     byte[] pull(int capacity);
     boolean renderComplete();
     void finish();

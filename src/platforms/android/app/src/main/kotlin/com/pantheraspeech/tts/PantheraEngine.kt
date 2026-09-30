@@ -588,7 +588,8 @@ object PantheraEngine {
     }
 
     fun speakStart(ctx: Context, voice: VoiceInfo, text: ByteArray, wpm: Int,
-                   snapshot: Settings = settings(ctx, voice.gen)): Int = synchronized(lock) {
+                   snapshot: Settings = settings(ctx, voice.gen),
+                   pitch: Int = 0): Int = synchronized(lock) {
         try {
             val owned = checkNotNull(request) { "Speech requires withSynthesis" }
             val next = open(ctx, voice.gen, snapshot.phrasing, snapshot.inflection)
@@ -596,7 +597,8 @@ object PantheraEngine {
             // lost in the interval before nativeSpeakStart marks itself active.
             if (!owned.attach(next)) return@synchronized -1
             next.start(voice.dir, voice.creator, voice.voiceId, text, wpm,
-                snapshot.engineVolume(voice.gen), voice.gen, snapshot.numbers, snapshot.expandAbbreviations, snapshot.inflection)
+                snapshot.engineVolume(voice.gen), voice.gen, snapshot.numbers, snapshot.expandAbbreviations, snapshot.inflection,
+                pitch)
                 .also { if (it == 0) owned.started(text.size <= COMPLETION_GRACE_MAX_BYTES) }
         } catch (e: Exception) {
             android.util.Log.e("PantheraEngine", "Speech failed", e); -1

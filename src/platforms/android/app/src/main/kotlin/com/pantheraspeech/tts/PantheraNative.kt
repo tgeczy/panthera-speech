@@ -59,6 +59,15 @@ object PantheraNative {
     external fun nativeSetNumberStyle(style: String)
 
     external fun nativeSetVolume(level: Int, generation: String)
+
+    /** Pitch as an offset in tenths of a semitone from the current voice's own
+     * pitch, 0 being the voice as recorded; clamped to an octave either way.
+     *
+     * An offset, not an absolute value, because every voice has its own natural
+     * pitch -- the same quantity, on the same scale, that the NVDA driver sends
+     * the host on Windows. The ratio a caller sets with TextToSpeech.setPitch
+     * becomes semitones in PantheraTtsService, before it reaches here. */
+    external fun nativeSetPitch(tenthsSemitone: Int)
     external fun nativeSetExpandAbbreviations(expand: Boolean)
     external fun nativeSetPhrasing(style: String): Int
 
