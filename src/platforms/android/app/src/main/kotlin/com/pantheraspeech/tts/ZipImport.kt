@@ -52,7 +52,9 @@ object ZipImport {
     const val VERSION_PLIST = "Speech/Synthesizers/MacinTalk.SpeechSynthesizer/Contents/version.plist"
     const val DICTIONARY = "SpeechDictionary.framework/Versions/A/SpeechDictionary"
     const val VOICES = "Speech/Voices/"
-    private const val IMPORTING = ".importing"
+    /** Visible so that removing a generation also clears a half-finished
+     * import of it, the way it clears ProtectedStorage.MOVING. */
+    const val IMPORTING = ".importing"
 
     /** The bytes, twice over: a fresh stream from the start for the import,
      * and the same file as a channel when it can be seeked, for the check. */

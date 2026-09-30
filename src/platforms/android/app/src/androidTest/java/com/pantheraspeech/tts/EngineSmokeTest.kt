@@ -28,6 +28,11 @@ class EngineSmokeTest : Instrumentation() {
     private var testGeneration: String? = null
     private var latency: String? = null
     private var pitchCheck = false
+    private var removeGen: String? = null
+    private var report = false
+    private var chooseGen: String? = null
+    /** Set by a mode that changed preferences; run before it finishes. */
+    private var restoreAfter: (() -> Unit)? = null
     private var zipImport: String? = null
     private var zipName = "tiger.zip"
     override fun onCreate(arguments: Bundle?) {
@@ -42,6 +47,9 @@ class EngineSmokeTest : Instrumentation() {
         testGeneration = arguments?.getString("testGeneration")
         latency = arguments?.getString("latency")
         pitchCheck = arguments?.getString("pitch") == "true"
+        removeGen = arguments?.getString("remove")
+        report = arguments?.getString("report") == "true"
+        chooseGen = arguments?.getString("chooseGen")
         super.onCreate(arguments); start()
     }
 
@@ -58,6 +66,183 @@ class EngineSmokeTest : Instrumentation() {
     /** Click an option the way a finger would, so the change counts as the user's. */
     private fun pick(group: android.widget.RadioGroup, index: Int) {
         (group.getChildAt(index) as android.widget.RadioButton).performClick()
+    }
+
+    /** What is on this device, and what each generation occupies.  Read-only:
+     * the question anybody has to answer before running the removal mode, and
+     * the answer a bug report about missing voices needs. */
+    private fun reportInstalled() {
+        val results = Bundle()
+        try {
+            for (gen in PantheraEngine.GENERATIONS) {
+                val present = PantheraEngine.genPresent(targetContext, gen)
+                val voices = PantheraEngine.scanVoices(targetContext, gen).size
+                val bytes = PantheraEngine.removableSize(targetContext, listOf(gen))
+                results.putString(gen, if (!present && bytes == 0L) "absent"
+                    else "present=$present voices=$voices bytes=$bytes")
+            }
+            results.putString("installed", PantheraEngine.installedGens(targetContext).toString())
+            results.putString("active", PantheraEngine.activeGen(targetContext))
+            results.putString("verified", PantheraEngine.verified(targetContext).toString())
+            results.putString("dataRoot", PantheraEngine.dataRoot(targetContext).path)
+            results.putString("inbox", PantheraEngine.inboxRoot(targetContext)?.path ?: "unavailable")
+            finish(Activity.RESULT_OK, results)
+        } catch (e: Throwable) {
+            results.putString("failure", Log.getStackTraceString(e))
+            finish(Activity.RESULT_CANCELED, results)
+        }
+    }
+
+    /** Every preference, to be handed back to `restorePrefs` afterwards.
+     *
+     * These modes run on somebody's own phone, against their own data, so they
+     * put the settings back the way they found them -- the main suite already
+     * does this with `originalPreferences`, and a check that silently leaves a
+     * different generation selected is a check that broke something. */
+    private fun savePrefs(): Map<String, Any?> =
+        PantheraEngine.prefs(targetContext).all.toMap()
+
+    private fun restorePrefs(saved: Map<String, Any?>) {
+        val editor = PantheraEngine.prefs(targetContext).edit().clear()
+        for ((key, value) in saved) when (value) {
+            is Boolean -> editor.putBoolean(key, value)
+            is Int -> editor.putInt(key, value)
+            is Long -> editor.putLong(key, value)
+            is Float -> editor.putFloat(key, value)
+            is String -> editor.putString(key, value)
+            is Set<*> -> @Suppress("UNCHECKED_CAST") editor.putStringSet(key, value as Set<String>)
+        }
+        editor.commit()
+    }
+
+    /** Select a generation's default voice, the way the settings picker does.
+     *
+     * A maintenance mode, not a check: `-e chooseGen lion` puts the engine back
+     * on a chosen generation after something else has moved it -- a removal of
+     * the active one, say, which quite correctly falls back to whatever is
+     * still installed. */
+    private fun chooseGeneration(gen: String) {
+        val results = Bundle()
+        try {
+            val voices = PantheraEngine.scanVoices(targetContext, gen)
+            check(voices.isNotEmpty()) { "no voices in $gen" }
+            val wanted = PantheraEngine.defaultVoiceName(targetContext, gen)
+            val voice = voices.firstOrNull { it.name.equals(wanted, true) }
+                ?: voices.firstOrNull { it.name.equals(nativeVoice ?: "Alex", true) }
+                ?: voices.firstOrNull { it.name.equals("Fred", true) }
+                ?: voices.first()
+            PantheraEngine.chooseVoice(targetContext, voice)
+            // chooseVoice writes with apply(), which is asynchronous, and
+            // instrumentation kills this process the moment the mode finishes --
+            // so the choice has to be forced to disk here or it is only ever
+            // true in memory and the next run reads the old one. Found exactly
+            // that way. The app itself is unaffected: its process lives on, and
+            // a choice that did go missing is ignored anyway, because activeGen
+            // prefers a generation that is present to one merely stored.
+            PantheraEngine.prefs(targetContext).edit()
+                .putString(PantheraEngine.voicePrefKey(voice.gen), voice.name)
+                .putString(PantheraEngine.PREF_GEN, voice.gen)
+                .commit()
+            results.putString("active", PantheraEngine.activeGen(targetContext))
+            results.putString("voice", voice.id)
+            results.putString("verified", PantheraEngine.verified(targetContext).toString())
+            check(PantheraEngine.activeGen(targetContext) == gen) { "still on ${PantheraEngine.activeGen(targetContext)}" }
+            finish(Activity.RESULT_OK, results)
+        } catch (e: Throwable) {
+            results.putString("failure", Log.getStackTraceString(e))
+            finish(Activity.RESULT_CANCELED, results)
+        }
+    }
+
+    /** Render one utterance with a voice from `gen`, through the platform
+     * client, so that generation's worker process is up and holding its engine
+     * mapped.  -> what happened, for the report. */
+    private fun warmWorker(gen: String): String {
+        var tts: TextToSpeech? = null
+        return try {
+            val voice = PantheraEngine.scanVoices(targetContext, gen).firstOrNull()
+                ?: return "no voices in $gen"
+            val ready = CountDownLatch(1)
+            val client = TextToSpeech(targetContext, { if (it == TextToSpeech.SUCCESS) ready.countDown() },
+                "com.pantheraspeech.tts")
+            tts = client
+            check(ready.await(60, TimeUnit.SECONDS)) { "the engine never initialized" }
+            val saved = savePrefs()
+            restoreAfter = { restorePrefs(saved) }
+            PantheraEngine.prefs(targetContext).edit()
+                .putBoolean("override_voice", false)
+                .putString(PantheraEngine.PREF_GEN, gen).commit()
+            val match = client.voices.firstOrNull { it.name == voice.id }
+                ?: return "voice ${voice.id} not listed"
+            check(client.setVoice(match) == TextToSpeech.SUCCESS)
+            val done = CountDownLatch(1)
+            client.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                override fun onStart(utteranceId: String) {}
+                override fun onDone(utteranceId: String) { done.countDown() }
+                override fun onError(utteranceId: String) { done.countDown() }
+                override fun onError(utteranceId: String, code: Int) { done.countDown() }
+            })
+            val file = File(targetContext.filesDir, "warm-$gen.wav")
+            check(client.synthesizeToFile("Hello there.", Bundle(), file, "warm") == TextToSpeech.SUCCESS)
+            check(done.await(60, TimeUnit.SECONDS)) { "warm-up render timed out" }
+            "spoke ${voice.name} (${file.length()} bytes), worker for $gen is live"
+        } catch (e: Throwable) {
+            "warm-up failed: ${e.message}"
+        } finally {
+            tts?.shutdown()
+            restoreAfter?.invoke(); restoreAfter = null
+        }
+    }
+
+    /** Remove one generation and report what the app believes afterwards.
+     *
+     * **Destructive, and named explicitly for that reason**: `-e remove tiger`
+     * deletes tiger's engine data on the device it runs on.  It takes a
+     * generation rather than defaulting to one so that nobody loses 670 MB to a
+     * typo, and it refuses a generation that is not there instead of reporting
+     * a cheerful zero.
+     *
+     * What it reports is the state a resurrection would show up in: the bytes
+     * freed, what is still installed, whether the gate still stands, and every
+     * folder still bearing the generation's name.  `foldersLeft` is the whole
+     * point -- a copy surviving in the inbox is one `migrate` away from
+     * undoing the removal, and this is where that would be visible.
+     */
+    private fun checkRemoval(gen: String) {
+        val results = Bundle()
+        try {
+            check(gen in PantheraEngine.GENERATIONS) { "not a generation: $gen" }
+            val before = PantheraEngine.installedGens(targetContext)
+            check(gen in before) { "$gen is not installed; installed: $before" }
+            results.putString("installedBefore", before.toString())
+            results.putString("sizeBefore",
+                PantheraEngine.removableSize(targetContext, listOf(gen)).toString())
+            // Speak with it first, so the removal has a live worker process to
+            // retire with the engine and its voice banks actually mmapped. A
+            // generation that was never spoken has no worker, which is the easy
+            // case; this is the one where unlinking underneath a mapping would
+            // hold the space until that process happened to die.
+            results.putString("warmed", warmWorker(gen))
+            val freed = PantheraEngine.removeGenerations(targetContext, listOf(gen))
+            results.putString("freed", freed.toString())
+            val after = PantheraEngine.installedGens(targetContext)
+            results.putString("installedAfter", after.toString())
+            results.putString("verifiedAfter", PantheraEngine.verified(targetContext).toString())
+            results.putString("activeAfter", PantheraEngine.activeGen(targetContext))
+            results.putString("voicesAfter", PantheraEngine.allVoices(targetContext).size.toString())
+            // Any copy left anywhere is the failure this test exists to catch.
+            val left = PantheraEngine.generationFolders(
+                listOfNotNull(PantheraEngine.dataRoot(targetContext),
+                              PantheraEngine.inboxRoot(targetContext)), gen)
+            results.putString("foldersLeft", left.joinToString().ifEmpty { "none" })
+            check(gen !in after) { "$gen is still installed" }
+            check(left.isEmpty()) { "copies of $gen survive: $left" }
+            results.putString("verdict", "$gen removed, no copy left behind")
+            finish(Activity.RESULT_OK, results)
+        } catch (e: Throwable) {
+            results.putString("failure", Log.getStackTraceString(e))
+            finish(Activity.RESULT_CANCELED, results)
+        }
     }
 
     /** The pitch a caller asks for reaches the engine and changes the audio.
@@ -91,6 +276,8 @@ class EngineSmokeTest : Instrumentation() {
                 .firstOrNull { it.name == (nativeVoice ?: "Alex") }
                 ?: PantheraEngine.scanVoices(targetContext, gen).firstOrNull()
                 ?: error("no voices in $gen")
+            val saved = savePrefs()
+            restoreAfter = { restorePrefs(saved) }
             PantheraEngine.prefs(targetContext).edit()
                 .putBoolean("override_voice", false).commit()
             check(client.voices.any { it.name == voice.id })
@@ -142,6 +329,7 @@ class EngineSmokeTest : Instrumentation() {
             finish(Activity.RESULT_CANCELED, results)
         } finally {
             tts?.shutdown()
+            restoreAfter?.invoke(); restoreAfter = null
         }
     }
 
@@ -356,6 +544,9 @@ class EngineSmokeTest : Instrumentation() {
         latency?.let { PantheraLatencyCheck.run(this, it); return }
         nativeGen?.let { checkNativeGeneration(it); return }
         if (pitchCheck) { checkPitch(); return }
+        if (report) { reportInstalled(); return }
+        chooseGen?.let { chooseGeneration(it); return }
+        removeGen?.let { checkRemoval(it); return }
         var tts: TextToSpeech? = null
         var resultCode = Activity.RESULT_CANCELED
         val results = Bundle()

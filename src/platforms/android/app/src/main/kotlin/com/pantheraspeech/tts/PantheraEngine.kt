@@ -462,6 +462,97 @@ object PantheraEngine {
         }
     }
 
+    // ---- removing a generation's data --------------------------------------
+    //
+    // Switching a generation off (setGenOffered) hides its voices and keeps its
+    // files; this is the other half, for somebody who has decided they do not
+    // want a generation on the phone at all.  Alex alone is 670 MB, so this is
+    // the difference between an engine somebody chose and a folder they cannot
+    // reach without a file manager.
+
+    /** What removing these generations would free, in bytes: every copy of
+     * each, in every folder it is in. */
+    fun removableSize(ctx: Context, gens: Collection<String>): Long =
+        gens.sumOf { gen -> generationFolders(ctx, gen).sumOf { ProtectedStorage.size(it) } }
+
+    /** Every folder holding a copy of this generation, across all three roots
+     * and including a half-finished import or move.
+     *
+     * **All of them, not just the one the engine reads.**  Data outside
+     * protected storage is moved in again by `migrate` on the next unlock, so
+     * deleting only the live copy would have the generation reappear by itself
+     * -- from the user's point of view, a removal that did not take.
+     *
+     * Free of Context so the desktop JVM can test it, the same reason
+     * ProtectedStorage is: which folders get deleted is the part of a removal
+     * worth being sure about, and it is pure file arithmetic. */
+    fun generationFolders(roots: List<File>, gen: String): List<File> =
+        roots.distinctBy { it.absolutePath }.flatMap { root ->
+            listOf(File(root, gen), File(root, gen + ProtectedStorage.MOVING),
+                   File(root, gen + ZipImport.IMPORTING))
+        }.filter { it.isDirectory }
+
+    private fun generationFolders(ctx: Context, gen: String): List<File> =
+        generationFolders(candidateRoots(ctx), gen)
+
+    /** Delete these generations' files and forget their settings.
+     *
+     * `progress(generation)` is called as each one begins.  Returns the bytes
+     * freed.  Never call it on the main thread: it retires worker processes and
+     * deletes hundreds of megabytes.
+     *
+     * The order matters.  A generation's worker has the engine and its voice
+     * banks mmapped, in a process of its own; unlinking underneath it would
+     * leave the space held until that process happened to die.  So the worker
+     * is retired first and waited for, exactly as an import does before it
+     * replaces a folder. */
+    fun removeGenerations(ctx: Context, gens: Collection<String>,
+                          progress: (String) -> Unit = {}): Long {
+        var freed = 0L
+        val wanted = gens.filter { it in GENERATIONS }
+        for (gen in wanted) {
+            progress(gen)
+            // Retiring is best-effort: a generation that was never spoken has
+            // no worker to retire, and a worker that will not die is not a
+            // reason to refuse the removal -- its files unlink either way and
+            // the space returns when it exits.
+            try { PantheraWorkers.restart(gen) }
+            catch (e: Throwable) { Log.w("PantheraEngine", "worker for $gen did not retire", e) }
+            for (folder in generationFolders(ctx, gen)) {
+                val size = ProtectedStorage.size(folder)
+                if (folder.deleteRecursively()) freed += size
+                else Log.w("PantheraEngine", "could not remove $folder")
+            }
+        }
+        forgetGenerations(ctx, wanted)
+        refreshVoiceCatalogue()
+        // Re-run the gate rather than leaving it set: with the last generation
+        // gone, `verified` has to become false or the service keeps reporting a
+        // language it can no longer speak.  activeGen picks presence over a
+        // stored choice, so removing the chosen one strands nothing.
+        checkEngine(ctx)
+        return freed
+    }
+
+    /** Drop the stored choices belonging to generations that are gone, so a
+     * later re-import starts clean instead of inheriting settings the person
+     * cannot see any more -- including an off switch, which would make a
+     * freshly imported generation silently absent. */
+    private fun forgetGenerations(ctx: Context, gens: Collection<String>) {
+        val p = prefs(ctx)
+        val editor = p.edit()
+        val perGeneration = listOf(PREF_VOLUME, PREF_RATE, PREF_NUMBER_STYLE, PREF_COMMANDS,
+                                   PREF_ABBREVIATIONS, PREF_PHRASING, PREF_INFLECTION)
+        for (gen in gens) {
+            editor.remove(voicePrefKey(gen))
+            for (key in perGeneration) editor.remove(settingKey(key, gen))
+            if (p.getString(PREF_GEN, null) == gen) editor.remove(PREF_GEN)
+        }
+        val disabled = disabledGens(ctx).toMutableSet()
+        if (disabled.removeAll(gens.toSet())) editor.putStringSet(PREF_DISABLED_GENS, disabled)
+        editor.apply()
+    }
+
     // Settings are read together once per utterance, after resolving its voice.
     // Legacy global values remain the fallback until a generation is customized.
     fun settingKey(key: String, gen: String) = "${key}_$gen"

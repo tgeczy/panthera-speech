@@ -34,6 +34,9 @@ class SettingsActivity : Activity() {
 
     private lateinit var status: TextView
     private lateinit var importStatus: TextView
+    private lateinit var removeStatus: TextView
+    private lateinit var removeButton: Button
+    @Volatile private var removing = false
     private var engineHolder: LinearLayout? = null
     private var importDialog: android.app.AlertDialog? = null
     private var importBar: android.widget.ProgressBar? = null
@@ -172,6 +175,7 @@ class SettingsActivity : Activity() {
      * with a stub that does nothing but say so; better to say so here. */
     private fun pickZip() {
         if (importJob != null) { toast("An import is already running."); return }
+        if (removing) { toast("Engine data is being removed; wait for it to finish."); return }
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
             type = "*/*"
@@ -201,6 +205,7 @@ class SettingsActivity : Activity() {
      * once OK is pressed -- do it. */
     private fun importZip(source: ZipImport.Source, confirm: Boolean) {
         if (importJob != null) { toast("An import is already running."); return }
+        if (removing) { toast("Engine data is being removed; wait for it to finish."); return }
         importStatus.text = "Checking ${source.name}…"
         val checking = android.app.AlertDialog.Builder(this)
             .setTitle("Checking zip")
@@ -475,6 +480,22 @@ class SettingsActivity : Activity() {
             "screen after a restart, before the phone is unlocked. The folder " +
             "above is empty again afterwards; that is the move, not a loss."))
         moveStatus = body("").also { root.addView(it) }
+
+        // The other direction.  Switching a generation off in Engine settings
+        // hides its voices and keeps the files; this is for somebody who has
+        // decided they do not want one on the phone at all.  Alex alone is
+        // 670 MB, and without this the only way out is a file manager.
+        root.addView(body(
+            "\nTo free the space a generation takes, remove its files here. This " +
+            "deletes the engine data you imported; it does not uninstall the app, " +
+            "and you can import the generation again later. To keep the files but " +
+            "hide a generation's voices, use the switches in Engine settings instead."))
+        removeButton = Button(this).apply {
+            text = "Remove engine data"
+            setOnClickListener { pickRemovals() }
+        }
+        root.addView(removeButton)
+        removeStatus = body("").also { root.addView(it) }
 
         root.addView(heading("2.  Check the engine"))
         root.addView(Button(this).apply {
@@ -1211,6 +1232,100 @@ class SettingsActivity : Activity() {
         } catch (e: Exception) {
             updateStatus?.text = "No browser could open $url."
         }
+    }
+
+    // ---- removing engine data ----------------------------------------------
+
+    /** Check off any number of generations, then confirm once for all of them.
+     *
+     * Multi-choice because somebody clearing space is usually clearing more than
+     * one, and a dialog per generation would ask the same frightening question
+     * four times.  Sizes are in the list, since "which of these is the 670 MB
+     * one" is the actual question being answered. */
+    private fun pickRemovals() {
+        if (removing) { toast("A removal is already running."); return }
+        if (importJob != null) { toast("An import is running; wait for it to finish."); return }
+        val gens = PantheraEngine.installedGens(this) +
+            PantheraEngine.presentButUnsupportedGens(this)
+        if (gens.isEmpty()) {
+            removeStatus.text = "There is no engine data to remove."
+            toast("No engine data is installed.")
+            return
+        }
+        val labels = gens.map { gen ->
+            val bytes = PantheraEngine.removableSize(this, listOf(gen))
+            val voices = PantheraEngine.scanVoices(this, gen).size
+            "${PantheraEngine.genLabel(gen)} — ${ZipImport.sizeText(bytes)}, $voices voice(s)"
+        }.toTypedArray()
+        val checked = BooleanArray(gens.size)
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Remove engine data")
+            .setMultiChoiceItems(labels, checked) { _, which, isChecked -> checked[which] = isChecked }
+            .setPositiveButton("Remove…") { _, _ ->
+                val chosen = gens.filterIndexed { i, _ -> checked[i] }
+                if (chosen.isEmpty()) toast("Nothing was selected.") else confirmRemoval(chosen)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    /** Name what goes and what it frees, and say plainly what survives.
+     *
+     * Deleting hundreds of megabytes the person spent an evening copying over
+     * MTP deserves a second question -- and one that says the files are theirs
+     * to put back, so the answer is a decision rather than a fright. */
+    private fun confirmRemoval(gens: List<String>) {
+        val bytes = PantheraEngine.removableSize(this, gens)
+        val names = gens.joinToString(", ") { PantheraEngine.genLabel(it) }
+        val remaining = PantheraEngine.installedGens(this).filter { it !in gens }
+        val after = if (remaining.isEmpty())
+            "\n\nThis removes the last generation, so the engine will have no voices " +
+            "until you import one again, and apps will stop offering it."
+        else "\n\nStill installed afterwards: " +
+            remaining.joinToString(", ") { PantheraEngine.genLabel(it) } + "."
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Remove $names?")
+            .setMessage("This deletes the engine files for $names and frees about " +
+                        "${ZipImport.sizeText(bytes)}. Your own copy of the speech data is " +
+                        "not touched, so you can import it again later." + after)
+            .setPositiveButton("Remove") { _, _ -> startRemoval(gens) }
+            .setNegativeButton("Cancel") { _, _ -> removeStatus.text = "Nothing was removed." }
+            .show()
+    }
+
+    /** Off the main thread: it retires worker processes and deletes hundreds of
+     * megabytes, either of which would freeze the screen where it stands. */
+    private fun startRemoval(gens: List<String>) {
+        removing = true
+        removeButton.isEnabled = false
+        removeStatus.text = "Removing…"
+        Thread({
+            val freed = try {
+                PantheraEngine.removeGenerations(this, gens) { gen ->
+                    runOnUiThread { removeStatus.text = "Removing ${PantheraEngine.genLabel(gen)}…" }
+                }
+            } catch (e: Throwable) {
+                Log.w("PantheraSettings", "removal failed", e)
+                runOnUiThread {
+                    removing = false
+                    removeButton.isEnabled = true
+                    removeStatus.text = "Removal failed: ${e.message}"
+                }
+                return@Thread
+            }
+            runOnUiThread {
+                removing = false
+                removeButton.isEnabled = true
+                val names = gens.joinToString(", ") { PantheraEngine.genLabel(it) }
+                removeStatus.text = "Removed $names, freeing ${ZipImport.sizeText(freed)}."
+                toast("Removed $names.")
+                // The voice list, the gate and the generation switches all move
+                // when data goes; rebuild them rather than leave a list naming
+                // voices that are not there any more.
+                refresh()
+                refreshSettings(true)
+            }
+        }, "panthera-remove").apply { priority = Thread.MIN_PRIORITY }.start()
     }
 
     private fun toast(t: String) = Toast.makeText(this, t, Toast.LENGTH_SHORT).show()
