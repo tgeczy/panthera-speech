@@ -87,6 +87,22 @@ The multilingual **Compact** voices on that disc are Nuance Vocalizer — a
 different synthesizer with a commercial lineage that is still live. They are
 neither extracted nor listed, and that is a decision rather than an oversight.
 
+### Newer voice files, unofficially
+
+A Mac running macOS 15 (Sequoia) keeps its downloadable voices under
+`/System/Library/AssetsV2`: one directory per asset, named in hexadecimal, with
+the `.SpeechVoice` bundle inside a folder called `AssetData` — one level deeper
+than older systems put it. Copied into `Speech\Voices` under a name of your
+choosing, such as `alex-sequoia`, such a voice is listed and spoken like any
+other, because [`read_voices`](../panthera/addon/synthDrivers/_panthera/pantheratrees.py)
+names a voice after its folder rather than after the name inside its
+`VoiceDescription` — the same property that lets two banks of Alex sit side by
+side.
+
+That is an accommodation, not a supported configuration. 10.7's synthesizer is
+what does the speaking, no newer generation is listed anywhere in this project,
+and whether a particular newer voice works is the user's to find out.
+
 ## What is different to live with
 
 Three things surface as behaviour rather than as code, and all three are

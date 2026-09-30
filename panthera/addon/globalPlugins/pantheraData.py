@@ -372,6 +372,18 @@ It needs Python 3.8 or newer installed (tested on 3.13).
 If you would rather keep the engine on another drive, put its full path into a
 file called lionspeech-data.txt in the configuration folder instead.
 
+Newer voice files work here too. A Mac running macOS 15 (Sequoia) keeps its
+downloadable voices under /System/Library/AssetsV2: one directory per asset,
+named in hexadecimal, with the .SpeechVoice bundle inside a folder called
+AssetData -- one level deeper than older systems put it. Copied into
+Speech\\Voices under a name of your choosing, such as alex-sequoia, such a voice
+is listed and spoken like any other, because a voice is named after its folder
+rather than the name inside it.
+
+This is not a supported configuration and nothing here was built for it. 10.7's
+synthesizer is what does the speaking, and whether a particular newer voice
+works is yours to find out.
+
 The multilingual "Compact" voices on that image are neither extracted nor
 listed. They are a different synthesizer with a different lineage, and this
 project does not load them.
