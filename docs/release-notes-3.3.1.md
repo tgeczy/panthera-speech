@@ -1,8 +1,9 @@
 # Panthera 3.3.1
 
-**An Android release.** Pitch changes are heard on Android at last, and engine
-data you no longer want can be removed from the phone. The NVDA add-on, the
-SAPI voices and the Linux builds are unchanged.
+Pitch changes are heard on Android at last, engine data you no longer want can
+be removed from the phone, and **every updater now knows which version it is
+actually looking at** -- which is why this release carries a new add-on and a
+new SAPI installer even though the speech they produce has not changed.
 
 ## Pitch changes are heard again (#23)
 
@@ -68,17 +69,45 @@ speaking, then restarting the app twice and walking back through Setup, where
 a missed copy would have reappeared. It stayed gone, the remaining generations
 were untouched, and Tiger imported cleanly again afterwards.
 
+## Every updater reads the version off the file, not off the release
+
+**Check for updates could tell you a version was available and then hand you the
+one you already had** -- again and again, every time you pressed it.
+
+A release carries four things that do not move in step: the add-on, the SAPI
+installer, the Android APK and the Linux tarballs. Only one release can be
+GitHub's "latest". All three updaters read the version from the release's tag,
+which names the release and not the file inside it, so a release tagged newer
+than its add-on claimed an add-on update that did not exist -- and kept claiming
+it, because what you had installed never caught up with a tag. This project
+already had that shape: the 3.0.2 release carries the 3.0.0 add-on and installer,
+and the 3.0.0 release carries the 3.0.2 APK.
+
+The way round it was to leave an Android-only release unmarked, so the desktop
+updaters never saw it. That worked and it cost something real: the newest release
+was then findable only by knowing it was there, and anyone who went to "latest"
+landed on an older set of files. For somebody moving through a releases page with
+a screen reader, hunting for which of several entries holds the current download
+is work nobody should have to do.
+
+So each thing is now versioned by **its own filename**.
+`pantheraspeech-3.3.1.nvda-addon` says 3.3.1 wherever it sits, and the updaters
+walk the recent releases for the newest file of their own kind. A release can
+therefore keep older files alongside new ones -- so that everything for a version
+is in one place -- and still never offer you something you have. From now on the
+newest release is simply the latest one, with every file in it.
+
+Nothing about this changes what the voices sound like.
+
 ## Everything else
 
-No change to the NVDA add-on, the SAPI voices or the Linux builds. The NVDA
-add-on, the SAPI installer and the Linux tarballs attached below are the 3.3.0
-files, unchanged and kept here so that everything for this version can be found
-in one place; your add-on and SAPI installs will not offer you an update, and do
-not need one.
+Linux support is unchanged, and the tarballs attached here are the 3.3.0 builds.
 
 No Apple engines or voice data are included. Keep using your extracted data.
 
 ## Updating
 
-On Android, **Check for updates** on the app's Setup page, or install the APK
-below. Nothing to do on NVDA or SAPI.
+Press **Check for updates** in the speech data manager (NVDA's Tools menu) or in
+the SAPI settings window, and this release installs itself; on Android, Check for
+updates on the app's Setup page. The NVDA add-on, the SAPI installer, the APK and
+the Linux tarballs are all attached below.
