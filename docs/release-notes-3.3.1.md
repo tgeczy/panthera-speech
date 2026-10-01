@@ -1,40 +1,44 @@
 # Panthera 3.3.1
 
-**An Android release.** Capital letters can be heard on Android, and engine
+**An Android release.** Pitch changes are heard on Android at last, and engine
 data you no longer want can be removed from the phone. The NVDA add-on, the
 SAPI voices and the Linux builds are unchanged.
 
-## Capital letters are heard again (#23)
+## Pitch changes are heard again (#23)
 
-Thanks to Christopher for reporting this.
+Thanks to Christopher for reporting this, which arrived as a question about
+capital letters and turned out to be bigger than that.
 
-Snow Leopard Alex on Android gave no sign of a capital letter. The only way to
-hear one was to set TalkBack to say the word "capital" aloud.
+**Panthera's Android service never read the pitch a calling app asked for.**
+Every request was spoken at the voice's own pitch, however loudly the caller
+asked otherwise. The engines were never the problem: pitch has worked on Windows
+since the beginning, and asked through the host directly, Snow Leopard Alex
+answers every offset across an octave either way with audibly different speech.
 
-The engines were never the problem. Pitch has worked on Windows since the
-beginning, and asked through the host directly, Snow Leopard Alex answers every
-offset across an octave either way with audibly different speech. What was
-missing sat in Panthera's own Android service: it never read the pitch the
-calling app asked for. Every request was spoken at the voice's own pitch,
-however loudly the caller asked otherwise.
+So nothing that asked for a pitch got it. That includes **the system pitch
+slider**, in Android's own Text-to-speech settings -- if you had given up on
+that slider, it is worth another try -- and it includes every pitch change a
+screen reader makes to tell you something.
 
-So a screen reader indicating a capital by raising the pitch was asking into
-the void — and so was **the system pitch slider**, in Android's own
-Text-to-speech settings. Both work now. If you had given up on that slider,
-it is worth another try.
+The easiest one to hear is **deleting text**: TalkBack speaks the character it
+removed at a raised pitch, and on Panthera that character used to come back at
+the same pitch as everything else. Tomi confirmed it by ear this way. For
+capital letters specifically, how TalkBack marks them is TalkBack's own setting
+rather than Panthera's -- saying the word "capital" is what it does by default,
+and it does not announce every capital as you type the way VoiceOver does. If
+you set it to change pitch instead, that now works.
 
 The offset uses the same scale the NVDA add-on uses: an octave either way from
-whatever the voice's own pitch is, so one setting means one thing whichever
-voice is speaking, and a capital is raised by the same amount on both
-platforms. Nothing changes for an app that never asks for a pitch, which is
-most of them.
+whatever the voice's own pitch is, so one setting means one thing whichever voice
+is speaking, and the same request is raised by the same amount on both platforms.
+Nothing changes for an app that never asks for a pitch, which is most of them.
 
-Measured on the Nothing Phone through Android's own speech client, not through
-a shortcut into the engine — the gap was in the layer a shortcut would have
-skipped. The same words render differently at normal, raised and lowered
-pitch, and coming back to normal reproduces the original audio exactly. That
-last check is the capital-letter case itself: one word raised, the next back
-down, with nothing left behind to drift the pitch of everything after it.
+Measured on the Nothing Phone through Android's own speech client, not through a
+shortcut into the engine -- the gap was in the layer a shortcut would have
+skipped. The same words render differently at normal, raised and lowered pitch,
+and coming back to normal reproduces the original audio exactly. That last check
+is the one that matters for a raised character: one word up, the next back down,
+with nothing left behind to drift the pitch of everything after it.
 
 ## Removing engine data from the phone
 
