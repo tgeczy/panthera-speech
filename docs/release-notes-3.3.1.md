@@ -25,8 +25,11 @@ removed at a raised pitch, and on Panthera that character used to come back at
 the same pitch as everything else. Tomi confirmed it by ear this way. For
 capital letters specifically, how TalkBack marks them is TalkBack's own setting
 rather than Panthera's -- saying the word "capital" is what it does by default,
-and it does not announce every capital as you type the way VoiceOver does. If
-you set it to change pitch instead, that now works.
+and it does not announce every capital as you type the way VoiceOver does. If you
+would rather hear them by pitch, TalkBack can do that: in TalkBack settings,
+under **Verbosity** or **Keyboard feedback** depending on your version, set the
+capital letters option to change pitch. It reaches the engine by the same route a
+deleted character does, so if one is audible the other is too.
 
 The offset uses the same scale the NVDA add-on uses: an octave either way from
 whatever the voice's own pitch is, so one setting means one thing whichever voice
