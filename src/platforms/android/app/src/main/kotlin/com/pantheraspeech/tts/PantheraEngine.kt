@@ -17,6 +17,19 @@ object PantheraEngine {
     const val PREF_DEFAULT_VOICE = "default_voice"   // voice name, e.g. "Fred"
     const val PREF_VOLUME = "volume"
     const val PREF_RATE = "rate_wpm"                 // 0 = follow the requesting app
+    /** Raises the top of the rate, and nothing else.
+     *
+     * 500 was never the engine's limit, it was ours: the host honours whatever it
+     * is asked for and stays steady well past anything useful -- Alex delivers 853
+     * wpm when asked for 800 and 1598 when asked for 1500, measured. The NVDA
+     * driver has had this switch and the same 1200 ceiling for a while, and SAPI
+     * reaches 1200 too; Android was the one front end that could not, which is how
+     * somebody at "the fastest setting" was still asking for more. Credit to Jade.
+     *
+     * A switch rather than a wider slider, for the reason the driver gives: a wider
+     * slider would silently make everyone's existing setting faster, which is the
+     * same mistake as a volume control that defaults to half. */
+    const val PREF_RATE_BOOST = "rate_boost"
 
     /**
      * How numbers are read: "off", "fix" (the default) or "words".
@@ -541,7 +554,7 @@ object PantheraEngine {
     private fun forgetGenerations(ctx: Context, gens: Collection<String>) {
         val p = prefs(ctx)
         val editor = p.edit()
-        val perGeneration = listOf(PREF_VOLUME, PREF_RATE, PREF_NUMBER_STYLE, PREF_COMMANDS,
+        val perGeneration = listOf(PREF_VOLUME, PREF_RATE, PREF_RATE_BOOST, PREF_NUMBER_STYLE, PREF_COMMANDS,
                                    PREF_ABBREVIATIONS, PREF_PHRASING, PREF_INFLECTION)
         for (gen in gens) {
             editor.remove(voicePrefKey(gen))
@@ -568,11 +581,28 @@ object PantheraEngine {
     fun supportsPhrasing(generation: String) = generation != GEN_TIGER
     data class Settings(val volume: Int, val rate: Int, val numbers: String,
                         val acceptCommands: Boolean = false, val expandAbbreviations: Boolean = true,
-                        val phrasing: String = "fewest", val inflection: Int = 50) {
+                        val phrasing: String = "fewest", val inflection: Int = 50,
+                        val rateBoost: Boolean = false) {
         fun engineVolume(generation: String) = if (volume < 0) defaultVolume(generation) else volume
-        fun wpm(requestRate: Int): Int = if (rate > 0) rate.coerceIn(80, 500)
-            else (180 * (if (requestRate <= 0) 100 else requestRate) / 100).coerceIn(80, 500)
+
+        /** The top of the rate, raised only by the switch. */
+        val rateCeiling: Int get() = if (rateBoost) RATE_CEILING_BOOST else RATE_CEILING
+
+        /** **Both ways in, deliberately.** A rate set here is one branch; the
+         * other is following the system's own text-to-speech rate, which is where
+         * a screen reader's speed lives. Lifting only the first would leave
+         * somebody who had turned TalkBack up to 400% still capped -- and that is
+         * the likelier way to meet the ceiling, since it needs no visit here. */
+        fun wpm(requestRate: Int): Int = if (rate > 0) rate.coerceIn(80, rateCeiling)
+            else (180 * (if (requestRate <= 0) 100 else requestRate) / 100).coerceIn(80, rateCeiling)
     }
+
+    /** The engine's rate range, and where the switch moves the top to.  The same
+     * 1200 the NVDA driver and the SAPI voices reach, so one setting means one
+     * speed whichever front end is speaking. */
+    const val RATE_FLOOR = 80
+    const val RATE_CEILING = 500
+    const val RATE_CEILING_BOOST = 1200
     fun settings(ctx: Context, gen: String = activeGen(ctx)): Settings {
         val values = prefs(ctx).all
         fun value(key: String): Any? = values[settingKey(key, gen)] ?: values[key]
@@ -584,7 +614,8 @@ object PantheraEngine {
             (value(PREF_COMMANDS) as? Boolean) ?: false,
             (value(PREF_ABBREVIATIONS) as? Boolean) ?: true,
             (value(PREF_PHRASING) as? String)?.takeIf { it in PHRASING_VALUES } ?: "fewest",
-            ((value(PREF_INFLECTION) as? Int) ?: 50).coerceIn(0, 100))
+            ((value(PREF_INFLECTION) as? Int) ?: 50).coerceIn(0, 100),
+            (value(PREF_RATE_BOOST) as? Boolean) ?: false)
     }
     fun volume(ctx: Context): Int = settings(ctx).volume
 

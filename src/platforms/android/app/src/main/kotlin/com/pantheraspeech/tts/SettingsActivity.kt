@@ -51,6 +51,7 @@ class SettingsActivity : Activity() {
     private var pageHolders: List<View> = emptyList()
     private var pad = 0
     private var rateSlider: ValueSlider? = null
+    private var rateBoostCheck: android.widget.CheckBox? = null
     private var volumeSlider: ValueSlider? = null
     private var inflectionSlider: ValueSlider? = null
     private var volumeLevels = PantheraEngine.volumeLevels(PantheraEngine.VOLUME_SYSTEM_DEFAULT)
@@ -370,7 +371,12 @@ class SettingsActivity : Activity() {
         phrasingChoice?.select(PantheraEngine.PHRASING_VALUES.indexOf(settings.phrasing))
         phrasingHelp?.text = if (phrasesSupported) "How often the engine inserts pauses within a sentence. Applies from the next request."
             else "Engine phrase breaks are available with Leopard and later. Tiger does not support this setting."
+        // Boost is per generation, like the rate it raises, so switching
+        // generations moves both the switch and the slider's top.
+        rateBoostCheck?.isChecked = settings.rateBoost
+        rateSlider?.max = rateSteps()
         rateSlider?.progress = wpmToProgress(settings.rate)
+        rateSlider?.refreshValue()
         volumeLevels = PantheraEngine.volumeLevels(settings.volume)
         volumeSlider?.max = volumeLevels.lastIndex
         volumeSlider?.progress = volumeLevels.indexOf(settings.volume)
@@ -642,9 +648,34 @@ class SettingsActivity : Activity() {
             "text-to-speech screen. Setting a rate here overrides it — worth " +
             "doing when an app asks for a speed you did not choose."))
         val savedRate = PantheraEngine.settings(this).rate
-        rateSlider = addSlider(root, "Speech rate", RATE_MAX - RATE_MIN + 1,
+        rateSlider = addSlider(root, "Speech rate", rateSteps(),
             wpmToProgress(savedRate), { rateText(progressToWpm(it)) }) {
             p.edit().putInt(PantheraEngine.settingKey(PantheraEngine.PREF_RATE, PantheraEngine.activeGen(this)), progressToWpm(it)).apply()
+        }
+        // The switch raises the top of the slider above and nothing else.  A
+        // wider slider on its own would have made everyone's existing setting
+        // faster the moment they updated, which is the mistake the NVDA driver
+        // avoided the same way.
+        root.addView(body(
+            "Rate boost raises the top of the slider above from ${PantheraEngine.RATE_CEILING} to ${PantheraEngine.RATE_CEILING_BOOST} words per " +
+            "minute, and raises the ceiling on the system rate this engine follows. " +
+            "The voices stay steady well past anything most people want; nothing " +
+            "changes until you ask for more speed."))
+        rateBoostCheck = android.widget.CheckBox(this).apply {
+            id = View.generateViewId()
+            text = "Rate boost"
+            isChecked = PantheraEngine.settings(this@SettingsActivity).rateBoost
+            setOnCheckedChangeListener { _, checked ->
+                val key = PantheraEngine.settingKey(PantheraEngine.PREF_RATE_BOOST,
+                                                    PantheraEngine.activeGen(this@SettingsActivity))
+                if (checked != p.getBoolean(key, false)) {
+                    // commit, not apply: the slider below is re-ranged from the
+                    // stored value on the very next line.
+                    p.edit().putBoolean(key, checked).commit()
+                    retuneRateSlider()
+                }
+            }
+            root.addView(this)
         }
 
         root.addView(heading("Volume"))
@@ -996,10 +1027,31 @@ class SettingsActivity : Activity() {
 
     private fun rateText(wpm: Int) =
         if (wpm <= 0) "Follow the system's rate" else "$wpm words per minute"
+    /** Re-range the rate slider after the boost switch moved its top.
+     *
+     * The stored rate is read again rather than taken from the slider's current
+     * position: with the switch going off, a saved 1100 shows at the new top of
+     * 500 while the preference keeps saying 1100, so turning it back on returns
+     * the rate the person actually chose. */
+    private fun retuneRateSlider() {
+        val slider = rateSlider ?: return
+        val saved = PantheraEngine.settings(this).rate
+        slider.max = rateSteps()
+        slider.progress = wpmToProgress(saved)
+    }
+
+    /** The top of the rate as it stands, which the boost switch moves. */
+    private fun rateCeiling() = PantheraEngine.settings(this).rateCeiling
+
+    private fun rateSteps() = rateCeiling() - RATE_MIN + 1
+
+    /** A saved rate above the current top shows at the top rather than being
+     * rewritten: turning the switch off and on again must not cost somebody the
+     * 1100 they chose, and `Settings.wpm` clamps when it is read anyway. */
     private fun wpmToProgress(wpm: Int) =
-        if (wpm <= 0) 0 else (wpm - RATE_MIN + 1).coerceIn(1, RATE_MAX - RATE_MIN + 1)
+        if (wpm <= 0) 0 else (wpm - RATE_MIN + 1).coerceIn(1, rateSteps())
     private fun progressToWpm(p: Int) =
-        if (p == 0) 0 else (p + RATE_MIN - 1).coerceIn(RATE_MIN, RATE_MAX)
+        if (p == 0) 0 else (p + RATE_MIN - 1).coerceIn(RATE_MIN, rateCeiling())
 
     // ---- behaviour ---------------------------------------------------------
 
@@ -1331,9 +1383,10 @@ class SettingsActivity : Activity() {
     private fun toast(t: String) = Toast.makeText(this, t, Toast.LENGTH_SHORT).show()
 
     private companion object {
-        // The engine's own range; PantheraEngine clamps to it as well.
-        const val RATE_MIN = 80
-        const val RATE_MAX = 500
+        // The engine's own range lives in PantheraEngine, which clamps to it as
+        // well; the top moves with the rate-boost switch, so it is asked for
+        // rather than held here.
+        const val RATE_MIN = PantheraEngine.RATE_FLOOR
         // Which generation the voice list shows: a generation name, or all.
         const val PREF_VOICE_FILTER = "voice_filter"
         const val FILTER_ALL = "all"

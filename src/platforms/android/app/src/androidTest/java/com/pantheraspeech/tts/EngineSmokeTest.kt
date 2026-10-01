@@ -28,6 +28,7 @@ class EngineSmokeTest : Instrumentation() {
     private var testGeneration: String? = null
     private var latency: String? = null
     private var pitchCheck = false
+    private var rateCheck = false
     private var removeGen: String? = null
     private var report = false
     private var chooseGen: String? = null
@@ -47,6 +48,7 @@ class EngineSmokeTest : Instrumentation() {
         testGeneration = arguments?.getString("testGeneration")
         latency = arguments?.getString("latency")
         pitchCheck = arguments?.getString("pitch") == "true"
+        rateCheck = arguments?.getString("rate") == "true"
         removeGen = arguments?.getString("remove")
         report = arguments?.getString("report") == "true"
         chooseGen = arguments?.getString("chooseGen")
@@ -260,6 +262,90 @@ class EngineSmokeTest : Instrumentation() {
      * and stayed there, pitch would climb for the rest of the session and every
      * render after the capital would be wrong.
      */
+    /** The rate boost switch reaches the engine, and the speech is faster for it.
+     *
+     * Through the platform client, so the whole chain is under test: the
+     * preference, the ceiling in `Settings.wpm`, the worker and the host. Before
+     * this, a rate above 500 was clamped away without a word, so somebody already
+     * at the top of the slider asking for more got exactly what they had. Credit
+     * to Jade, who reported hearing precisely that.
+     *
+     * The measure is duration rather than a hash: a rate that is accepted and then
+     * ignored renders the same length, and that is the failure this looks for.
+     */
+    private fun checkRate() {
+        val results = Bundle()
+        var tts: TextToSpeech? = null
+        val prefs = PantheraEngine.prefs(targetContext)
+        val saved = prefs.all.toMap()
+        try {
+            val gen = PantheraEngine.activeGen(targetContext)
+            val rateKey = PantheraEngine.settingKey(PantheraEngine.PREF_RATE, gen)
+            val boostKey = PantheraEngine.settingKey(PantheraEngine.PREF_RATE_BOOST, gen)
+            val ready = CountDownLatch(1)
+            val client = TextToSpeech(targetContext, { if (it == TextToSpeech.SUCCESS) ready.countDown() },
+                "com.pantheraspeech.tts")
+            tts = client
+            check(ready.await(60, TimeUnit.SECONDS)) { "the engine never initialized" }
+            check(client.setLanguage(Locale.US) >= TextToSpeech.LANG_AVAILABLE)
+            check(client.setSpeechRate(1.0f) == TextToSpeech.SUCCESS)
+            prefs.edit().putBoolean("override_voice", true).commit()
+
+            fun frames(tag: String, wpm: Int, boost: Boolean): Int {
+                prefs.edit().putInt(rateKey, wpm).putBoolean(boostKey, boost).commit()
+                val settings = PantheraEngine.settings(targetContext, gen)
+                results.putString(tag + "Asked", wpm.toString() + " boost=" + boost
+                    + " -> " + settings.wpm(100) + " wpm")
+                val file = File(targetContext.filesDir, "rate-" + tag + ".wav")
+                val done = CountDownLatch(1)
+                var failure: String? = null
+                client.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                    override fun onStart(utteranceId: String) {}
+                    override fun onDone(utteranceId: String) { if (utteranceId == tag) done.countDown() }
+                    override fun onError(utteranceId: String) {
+                        if (utteranceId == tag) { failure = "synthesis failed"; done.countDown() }
+                    }
+                    override fun onError(utteranceId: String, code: Int) {
+                        if (utteranceId == tag) { failure = "synthesis failed " + code; done.countDown() }
+                    }
+                })
+                val text = "The quick brown fox jumps over the lazy dog, and then says it again."
+                check(client.synthesizeToFile(text, Bundle(), file, tag) == TextToSpeech.SUCCESS)
+                check(done.await(90, TimeUnit.SECONDS)) { "timed out at " + wpm + " wpm" }
+                check(failure == null) { wpm.toString() + " wpm: " + failure }
+                val n = ((file.length() - 44) / 2).toInt()
+                check(n > 1000) { wpm.toString() + " wpm rendered " + n + " frames" }
+                results.putString(tag, n.toString() + " frames")
+                return n
+            }
+
+            // 500 was always reachable, so asking for 1200 with the switch off has
+            // to render exactly what 500 does -- clamped, not refused. Then the
+            // switch earning its name.
+            val atFive = frames("unboosted500", 500, false)
+            val clampedTwelve = frames("clamped1200", 1200, false)
+            val atTwelve = frames("boosted1200", 1200, true)
+            check(PantheraEngine.settings(targetContext, gen).rateCeiling == 1200)
+            check(clampedTwelve == atFive) {
+                "1200 with the switch off should match 500: " + clampedTwelve + " vs " + atFive
+            }
+            check(atTwelve < atFive) {
+                "1200 with the switch on was not faster than 500: " + atTwelve + " vs " + atFive
+            }
+            val ratio = atFive.toDouble() / atTwelve
+            results.putString("speedup", String.format(Locale.US, "%.2fx", ratio))
+            check(ratio > 1.5) { "only " + ratio + "x faster; the rate is not reaching the engine" }
+            results.putString("verdict", "the switch raises the ceiling and the speech is faster for it")
+            finish(Activity.RESULT_OK, results)
+        } catch (e: Throwable) {
+            results.putString("failure", Log.getStackTraceString(e))
+            finish(Activity.RESULT_CANCELED, results)
+        } finally {
+            tts?.shutdown()
+            restorePrefs(saved)
+        }
+    }
+
     private fun checkPitch() {
         val results = Bundle()
         var tts: TextToSpeech? = null
@@ -544,6 +630,7 @@ class EngineSmokeTest : Instrumentation() {
         latency?.let { PantheraLatencyCheck.run(this, it); return }
         nativeGen?.let { checkNativeGeneration(it); return }
         if (pitchCheck) { checkPitch(); return }
+        if (rateCheck) { checkRate(); return }
         if (report) { reportInstalled(); return }
         chooseGen?.let { chooseGeneration(it); return }
         removeGen?.let { checkRemoval(it); return }
