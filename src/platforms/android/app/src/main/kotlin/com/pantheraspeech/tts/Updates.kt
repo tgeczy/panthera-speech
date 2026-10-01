@@ -19,19 +19,29 @@ import java.net.URL
  * kept for the same reason: an engine that quietly contacts a server on its
  * own tells that server when its owner picked the phone up.
  *
- * `/releases/latest` is not consulted. That is pinned to the newest release
- * carrying the desktop files, so the NVDA and SAPI updaters stay quiet about
- * Android-only releases; this walks the recent releases for the newest one
- * that carries an APK. The version comparison is pure and tested; the fetch
- * is the smallest piece that reaches the network.
+ * `/releases/latest` is not consulted, and **the version does not come from the
+ * tag**. A release carries assets for things that do not move together -- the
+ * APK, the add-on, the SAPI installer, the Linux tarballs -- so a release whose
+ * tag is newer than its APK would announce an update that is not there, offer
+ * the file already installed, and go on offering it, because what is installed
+ * never catches up with a tag. Each thing is versioned by its own asset's
+ * filename instead: `panthera-android-3.3.1.apk` says 3.3.1 wherever it hangs.
+ * This walks the recent releases for the newest such APK. The version
+ * comparison is pure and tested; the fetch is the smallest piece that reaches
+ * the network.
  */
 object Updates {
     const val RELEASES_API =
         "https://api.github.com/repos/tgeczy/panthera-speech/releases?per_page=20"
     const val RELEASES_PAGE = "https://github.com/tgeczy/panthera-speech/releases"
 
+    /** What this project's APK asset is called. Pinned to the shape rather than
+     * to `.apk` alone, so a second APK ever attached to a release -- a sibling
+     * project's, a one-off build -- is not mistaken for this one. */
+    val APK_ASSET = Regex("""^panthera-android-\d[\d.]*\.apk$""", RegexOption.IGNORE_CASE)
+
     class Release(val version: String, val page: String, val apk: String) {
-        /** "3.1.0" out of "pantheraspeech/v3.1.0". */
+        /** "3.3.1" out of "panthera-android-3.3.1.apk". */
         val number: String get() = parseVersion(version)?.joinToString(".") ?: version
     }
 
@@ -64,29 +74,35 @@ object Updates {
         return false
     }
 
-    /** The newest published release in the API's answer that carries an APK,
-     * or null when none does. Drafts and pre-releases are passed over. */
+    /** The newest APK across the published releases, by the version in its own
+     * filename -- not by the tag of the release carrying it.
+     *
+     * Releases arrive newest first, but the newest **APK** decides: a later
+     * release that carries only desktop files must not hide an APK published
+     * before it, and a release carrying an older APK for people who want one
+     * must not claim to be an upgrade of it. Drafts and pre-releases are passed
+     * over, so a draft under test never advertises itself.
+     *
+     * -> null when no release carries an APK this recognises. */
     fun newestApk(json: String): Release? {
         val releases = org.json.JSONArray(json)
         var best: Release? = null
         for (i in 0 until releases.length()) {
             val r = releases.getJSONObject(i)
             if (r.optBoolean("draft", false) || r.optBoolean("prerelease", false)) continue
-            val tag = if (r.has("tag_name")) r.getString("tag_name") else r.optString("name", "")
-            if (parseVersion(tag) == null) continue
             val assets = r.optJSONArray("assets") ?: continue
-            var apk: String? = null
+            val page = if (r.has("html_url")) r.getString("html_url") else RELEASES_PAGE
             for (j in 0 until assets.length()) {
                 val a = assets.getJSONObject(j)
-                if (a.optString("name", "").endsWith(".apk", ignoreCase = true)
-                        && a.has("browser_download_url")) {
-                    apk = a.getString("browser_download_url")
-                    break
-                }
+                val name = a.optString("name", "")
+                if (!APK_ASSET.matches(name) || !a.has("browser_download_url")) continue
+                if (parseVersion(name) == null) continue
+                // Newest release first, so a strict comparison keeps the page
+                // link on the first release carrying a given APK.
+                if (best == null || isNewer(name, best.version))
+                    best = Release(name, page, a.getString("browser_download_url"))
+                break
             }
-            if (apk == null) continue
-            val page = if (r.has("html_url")) r.getString("html_url") else RELEASES_PAGE
-            if (best == null || isNewer(tag, best.version)) best = Release(tag, page, apk)
         }
         return best
     }

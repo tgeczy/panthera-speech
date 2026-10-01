@@ -410,14 +410,17 @@ class SpeechDataDialog(wx.Dialog):
         installed = updates.installed_version()
 
         def ask():
-            tag, detail, addon = updates.latest_release()
-            wx.CallAfter(self._updateAnswer, installed, tag, detail, addon)
+            available, detail, addon = updates.latest_release()
+            wx.CallAfter(self._updateAnswer, installed, available, detail, addon)
 
         threading.Thread(target=ask, daemon=True,
                          name="panthera-update-check").start()
 
-    def _updateAnswer(self, installed, tag, detail, addon):
+    def _updateAnswer(self, installed, available, detail, addon):
         """Back on the UI thread with whatever the check found.
+
+        `available` is a version, read out of the add-on asset's own filename
+        rather than a release tag -- see `updates.RELEASES_API`.
 
         **The update is fetched and handed to NVDA, not linked to.**  A page
         of assets is homework: find the right file among several, download
@@ -432,18 +435,18 @@ class SpeechDataDialog(wx.Dialog):
         if self.updateButton is not None:
             self.updateButton.Enable(True)
         self.statusText.SetLabel("")
-        if tag is None:
+        if available is None:
             # Translators: shown when the update check could not reach GitHub.
             gui.messageBox(_("Could not check for updates:\n\n%s") % detail,
                            _DIALOG_TITLE, wx.OK | wx.ICON_WARNING)
             return
-        if not updates.is_newer(tag, installed):
+        if not updates.is_newer(available, installed):
             # Translators: shown when the installed add-on is the newest one.
             gui.messageBox(
                 _("You have the newest version, %s.") % installed,
                 _DIALOG_TITLE, wx.OK | wx.ICON_INFORMATION)
             return
-        newest = ".".join(str(n) for n in updates.parse_version(tag))
+        newest = ".".join(str(n) for n in updates.parse_version(available))
         if not addon:
             # Translators: shown when a newer add-on exists; %s are versions.
             answer = gui.messageBox(

@@ -21,14 +21,35 @@ tested and the fetch is kept to the smallest piece of code that can be wrong.
 import os
 import re
 
-#: GitHub's own "newest published release" endpoint.  It excludes drafts and
-#: prereleases without being asked to, which is exactly the wanted behaviour:
-#: a draft under test must never advertise itself to everybody.
-LATEST_API = ("https://api.github.com/repos/tgeczy/panthera-speech"
-              "/releases/latest")
+#: The recent releases, newest first.  **Not `/releases/latest`**, and the
+#: version does **not** come from the tag.
+#:
+#: Only one release can be the "latest" one, and a release carries assets for
+#: four things that do not move together: the add-on, the SAPI installer, the
+#: APK and the Linux tarballs.  Reading the version off the tag meant that a
+#: release whose tag was newer than its add-on announced an add-on update that
+#: did not exist -- offer it and the updater hands over the file it already
+#: has, then offers it again forever, because what is installed never catches
+#: up with the tag.  The old answer was to leave such a release unmarked, which
+#: left the newest release findable only by knowing it was there.
+#:
+#: So each thing is versioned by **its own asset's filename**, and the newest
+#: such asset across these releases wins.  `pantheraspeech-3.3.0.nvda-addon`
+#: says 3.3.0 wherever it hangs, so a release may carry an older add-on for
+#: people who want one without ever claiming to be an upgrade of it.
+#:
+#: Drafts and prereleases are skipped here rather than by the endpoint: a draft
+#: under test must never advertise itself to everybody.
+RELEASES_API = ("https://api.github.com/repos/tgeczy/panthera-speech"
+                "/releases?per_page=20")
 
 #: Where to send somebody who wants it.  The human page, not the API.
-LATEST_PAGE = "https://github.com/tgeczy/panthera-speech/releases/latest"
+LATEST_PAGE = "https://github.com/tgeczy/panthera-speech/releases"
+
+#: What the add-on's own asset is called.  Pinned to the shape rather than to
+#: `.nvda-addon` alone, so that a second add-on ever attached to a release --
+#: a sibling project's, a one-off build -- is not mistaken for this one.
+ADDON_ASSET = re.compile(r"^pantheraspeech-\d[\d.]*\.nvda-addon$", re.I)
 
 #: Tags are `pantheraspeech/v2.0.0`; older ones and hand-typed ones may be
 #: `v2.0.0` or `2.0.0`.  Anything after the numbers -- `-rc1`, `-beta` -- is
@@ -110,10 +131,48 @@ def _secure():
         return False
 
 
+def newest_addon(releases):
+    """-> (versionString, pageUrl, addonUrl) for the newest add-on asset.
+
+    `releases` is GitHub's list, newest release first.  The answer is the
+    highest version found in an add-on asset's **filename**, with the page of
+    the release that carries it -- and when the same add-on hangs on more than
+    one release, the newest of those, because that is where somebody following
+    the link expects to land.
+
+    -> (None, None, None) when no release carries an add-on this recognises.
+    """
+    best = None
+    for release in releases or []:
+        if release.get("draft") or release.get("prerelease"):
+            continue
+        page = release.get("html_url") or LATEST_PAGE
+        for asset in release.get("assets") or []:
+            name = asset.get("name") or ""
+            url = asset.get("browser_download_url")
+            if not url or not ADDON_ASSET.match(name):
+                continue
+            version = parse_version(name)
+            if version is None:
+                continue
+            #: Newest first in the list, so `>` and not `>=`: the first
+            #: release carrying a given add-on keeps the page link.
+            if best is None or version > best[0]:
+                best = (version, name, page, url)
+            break
+    if best is None:
+        return None, None, None
+    return ".".join(str(n) for n in best[0]), best[2], best[3]
+
+
 def latest_release(timeout=10, opener=None):
     """-> (versionString, pageUrl, addonUrl) -- or (None, reason, None).
 
-    `addonUrl` is the `.nvda-addon` asset itself, when the release carries
+    The version is the one in the add-on asset's own filename, never the
+    release tag; see `RELEASES_API` for why that distinction is the whole
+    point of this function.
+
+    `addonUrl` is the `.nvda-addon` asset itself, when a release carries
     exactly the file NVDA installs; the caller downloads it and hands it to
     NVDA, whose own install dialog is still the thing that asks.  Sending
     somebody to a web page to find the right link themselves is homework a
@@ -141,19 +200,17 @@ def latest_release(timeout=10, opener=None):
                 with urllib.request.urlopen(request, timeout=timeout) as r:
                     return r.read()
 
-        payload = json.loads(opener(LATEST_API).decode("utf-8"))
+        payload = json.loads(opener(RELEASES_API).decode("utf-8"))
     except Exception as e:
         return None, (str(e) or e.__class__.__name__), None
-    tag = payload.get("tag_name") or payload.get("name")
-    if not parse_version(tag):
-        return None, "the newest release does not name a version", None
-    addon = None
-    for asset in payload.get("assets") or []:
-        name = asset.get("name") or ""
-        if name.endswith(".nvda-addon") and asset.get("browser_download_url"):
-            addon = asset["browser_download_url"]
-            break
-    return tag, (payload.get("html_url") or LATEST_PAGE), addon
+    #: A single release object, should the endpoint ever be pointed back at
+    #: `/releases/latest`: treated as a list of one rather than crashing.
+    if isinstance(payload, dict):
+        payload = [payload]
+    version, page, addon = newest_addon(payload)
+    if version is None:
+        return None, "no release offers an add-on to update to", None
+    return version, page, addon
 
 
 def fetch(url, timeout=60):
