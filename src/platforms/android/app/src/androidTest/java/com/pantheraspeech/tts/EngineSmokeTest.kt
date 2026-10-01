@@ -279,7 +279,18 @@ class EngineSmokeTest : Instrumentation() {
         val prefs = PantheraEngine.prefs(targetContext)
         val saved = prefs.all.toMap()
         try {
-            val gen = PantheraEngine.activeGen(targetContext)
+            // The service refuses to speak until the gate has been passed, and a
+            // device whose data was just restored has not passed it. Run the same
+            // check the button runs, and run it again at the end so the gate is
+            // left reflecting what is actually on disk rather than what the
+            // preferences said before.
+            check(PantheraEngine.checkEngine(targetContext)) { "no engine data on this device" }
+            // `-e testGeneration lion` points it at one generation rather than
+            // whichever is active: how much faster a voice gets is the engine's own
+            // business, and Alex is the voice people ask this question about.
+            val gen = testGeneration ?: PantheraEngine.activeGen(targetContext)
+            if (testGeneration != null)
+                prefs.edit().putString(PantheraEngine.PREF_GEN, gen).commit()
             val rateKey = PantheraEngine.settingKey(PantheraEngine.PREF_RATE, gen)
             val boostKey = PantheraEngine.settingKey(PantheraEngine.PREF_RATE_BOOST, gen)
             val ready = CountDownLatch(1)
@@ -343,6 +354,7 @@ class EngineSmokeTest : Instrumentation() {
         } finally {
             tts?.shutdown()
             restorePrefs(saved)
+            PantheraEngine.checkEngine(targetContext)
         }
     }
 

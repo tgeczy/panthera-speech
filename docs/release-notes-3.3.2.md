@@ -21,10 +21,23 @@ reader's own speed lives. If you have TalkBack turned up and Panthera set to
 follow it, you were being quietly held at 500 without ever visiting these
 settings.
 
-The voices hold up. Measured on the same host the app runs, the same sentence
-takes 4.34 seconds at the default 180 words per minute, 1.58 at 500, and 0.67 at
-1200 — six and a half times faster than normal, two and a half times faster than
-the old top, with Snow Leopard Alex steady the whole way.
+The voices hold up. On the desktop, through the same host the app runs, the same
+sentence takes 4.34 seconds at the default 180 words per minute, 1.58 at 500 and
+0.67 at 1200 — six and a half times faster than normal, with Snow Leopard Alex
+steady the whole way.
+
+On a Galaxy S22 running Android 16, asking for 1200 instead of 500 gives:
+
+| Generation | How much faster |
+| --- | --- |
+| Tiger | 1.69x |
+| Leopard | 1.93x |
+| Snow Leopard, Alex | 2.08x |
+| Lion, Alex | 2.09x |
+
+How much faster a voice actually gets is the engine's own business, which is why
+the table is not one number. Alex gains the most, which is the voice this came up
+about.
 
 It is a switch rather than a wider slider on purpose: widening the slider would
 have made everyone's existing setting faster the moment they updated. **Nothing
