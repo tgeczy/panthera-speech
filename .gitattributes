@@ -1,0 +1,3 @@
+# Served to users as a raw download and run by cmd.exe, so it keeps its CRLF
+# line endings exactly as committed.
+tools/push_engines.cmd -text
