@@ -53,11 +53,16 @@ $GenLabels = [ordered]@{ tiger = 'Tiger'; leopard = 'Leopard'; snowleopard = 'Sn
 $PlatformToolsUrl = 'https://dl.google.com/android/repository/platform-tools-latest-windows.zip'
 $PlatformToolsPage = 'https://developer.android.com/tools/releases/platform-tools'
 $OwnTools = Join-Path $env:LOCALAPPDATA 'Panthera\platform-tools'
+# The adb.exe someone chose by hand, remembered for next time.
+$ChosenAdbFile = Join-Path $env:LOCALAPPDATA 'Panthera\adb-path.txt'
 
 # ---- finding things on this PC ---------------------------------------------
 
 function Find-Adb {
     $cands = @()
+    if (Test-Path -LiteralPath $ChosenAdbFile) {
+        $cands += ([IO.File]::ReadAllText($ChosenAdbFile)).Trim()
+    }
     $onPath = Get-Command adb.exe -ErrorAction SilentlyContinue
     if ($onPath) { $cands += $onPath.Source }
     $here = Split-Path -Parent $env:PANTHERA_PUSH_SELF
@@ -66,7 +71,21 @@ function Find-Adb {
     if ($env:ANDROID_HOME) { $cands += (Join-Path $env:ANDROID_HOME 'platform-tools\adb.exe') }
     if ($env:ANDROID_SDK_ROOT) { $cands += (Join-Path $env:ANDROID_SDK_ROOT 'platform-tools\adb.exe') }
     $cands += (Join-Path $env:LOCALAPPDATA 'Android\Sdk\platform-tools\adb.exe')
-    foreach ($c in $cands) { if ($c -and (Test-Path -LiteralPath $c)) { return $c } }
+    # Where people unzip the platform tools by hand: a folder of its own at the
+    # top of the drive, or wherever the download landed.  Each with or without
+    # the zip's own platform-tools folder inside.
+    $drive = $env:SystemDrive + '\'
+    $roots = @((Join-Path $drive 'adb'), (Join-Path $drive 'platform-tools'),
+               (Join-Path $drive 'Android'), (Join-Path $drive 'Android\sdk'))
+    if ($env:USERPROFILE) {
+        $roots += @($env:USERPROFILE, (Join-Path $env:USERPROFILE 'Downloads'),
+                    (Join-Path $env:USERPROFILE 'Downloads\platform-tools-latest-windows'))
+    }
+    foreach ($r in $roots) {
+        $cands += (Join-Path $r 'adb.exe')
+        $cands += (Join-Path $r 'platform-tools\adb.exe')
+    }
+    foreach ($c in $cands) { if ($c -and (Test-Path -LiteralPath $c -PathType Leaf)) { return $c } }
     return $null
 }
 
@@ -505,10 +524,12 @@ $pairCode = Add-Control (New-Object System.Windows.Forms.TextBox) 322 342 210 23
 $pair = Add-Control (New-Object System.Windows.Forms.Button) 540 341 88 25 'Pair with the device'
 $pair.Text = '&Pair'
 
-$wifi = Add-Control (New-Object System.Windows.Forms.Button) 12 378 300 25 "Keep a watch's Wi-Fi on while it is connected to the phone"
+$wifi = Add-Control (New-Object System.Windows.Forms.Button) 12 378 200 25 "Keep a watch's Wi-Fi on while it is connected to the phone"
 $wifi.Text = "Keep a &watch's Wi-Fi on…"
-$getAdb = Add-Control (New-Object System.Windows.Forms.Button) 322 378 306 25 "Download Google's adb"
-$getAdb.Text = "Download Google's &adb…"
+$ownAdb = Add-Control (New-Object System.Windows.Forms.Button) 220 378 200 25 'Use my own adb.exe'
+$ownAdb.Text = '&Use my own adb.exe…'
+$getAdb = Add-Control (New-Object System.Windows.Forms.Button) 428 378 200 25 "Download Google's adb"
+$getAdb.Text = "Dow&nload Google's adb…"
 
 $push = Add-Control (New-Object System.Windows.Forms.Button) 12 416 300 32 'Push engines'
 $push.Text = 'Push &engines'
@@ -530,7 +551,7 @@ function Write-Log([string]$text) {
 
 function Set-Busy([bool]$on) {
     $script:busy = $on
-    foreach ($c in @($browse, $folder, $genList, $device, $refresh, $address, $connect, $pairAddress, $pairCode, $pair, $wifi, $getAdb, $push)) {
+    foreach ($c in @($browse, $folder, $genList, $device, $refresh, $address, $connect, $pairAddress, $pairCode, $pair, $wifi, $ownAdb, $getAdb, $push)) {
         $c.Enabled = -not $on
     }
     $cancel.Enabled = $on
@@ -539,7 +560,7 @@ function Set-Busy([bool]$on) {
 function Start-Task([string]$task, $params) {
     if ($script:busy) { return }
     if (-not $script:adb -and $task -ne 'getadb') {
-        Write-Log "adb is not on this PC yet. Choose Download Google's adb first."
+        Write-Log "adb was not found. Choose Use my own adb.exe if you have it, or Download Google's adb."
         return
     }
     $params.Adb = $script:adb
@@ -661,10 +682,38 @@ $wifi.Add_Click({
 })
 $getAdb.Add_Click({
     $answer = [System.Windows.Forms.MessageBox]::Show($form,
-        "adb is part of Google's Android platform tools. Choose Yes to download them from Google's own server, dl.google.com, into`r`n$OwnTools`r`nThe download is checked to be signed by Google before it is used.`r`n`r`nChoose No to open Google's download page instead. If you download them yourself, unzip the platform-tools folder next to this file and open this again.",
+        "adb is part of Google's Android platform tools. Choose Yes to download them from Google's own server, dl.google.com, into`r`n$OwnTools`r`nThe download is checked to be signed by Google before it is used.`r`n`r`nChoose No to open Google's download page instead. If you download them yourself, unzip them and choose Use my own adb.exe.",
         'Panthera', 'YesNoCancel', 'Question')
     if ($answer -eq 'Yes') { Start-Task 'getadb' @{ Url = $PlatformToolsUrl; Into = $OwnTools } }
     elseif ($answer -eq 'No') { Start-Process $PlatformToolsPage }
+})
+$ownAdb.Add_Click({
+    $dlg = New-Object System.Windows.Forms.OpenFileDialog
+    $dlg.Title = 'Choose adb.exe, in your platform-tools folder'
+    $dlg.Filter = 'adb.exe|adb.exe|Programs (*.exe)|*.exe'
+    if ($script:adb) { $dlg.InitialDirectory = Split-Path -Parent $script:adb }
+    if ($dlg.ShowDialog($form) -ne 'OK') { return }
+    $chosen = $dlg.FileName
+    # A copy of adb.exe without the two DLLs beside it does not start, so try
+    # it once before relying on it.
+    $out = ''
+    try { $out = (& $chosen version 2>&1 | Out-String) } catch { $out = $_.Exception.Message }
+    if ($out -notmatch 'Android Debug Bridge') {
+        Write-Log "That file did not answer as adb. Choose adb.exe inside the platform-tools folder, where AdbWinApi.dll sits beside it."
+        return
+    }
+    $script:adb = $chosen
+    try {
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ChosenAdbFile) | Out-Null
+        [IO.File]::WriteAllText($ChosenAdbFile, $chosen)
+    } catch {}
+    Write-Log "Using adb from $chosen. It will be used next time too."
+    # Pairing by code arrived in platform tools 30 (2020); a watch needs it.
+    # Case-sensitive: the first line's "version 1.0.41" is adb's protocol, not the tools.
+    if ($out -cnotmatch 'Version (\d+)\.' -or [int]$Matches[1] -lt 30) {
+        Write-Log "This adb is older than 2020, so it cannot pair over Wi-Fi, which a watch needs. A phone on a USB cable still works. For a watch, choose Download Google's adb."
+    }
+    Start-Task 'devices' @{}
 })
 $push.Add_Click({
     $s = Selected-Serial
@@ -693,7 +742,7 @@ $form.Add_Shown({
         Write-Log "Using adb from $script:adb"
         Start-Task 'devices' @{}
     } else {
-        Write-Log "adb was not found on this PC. Choose Download Google's adb to fetch it."
+        Write-Log "adb was not found on this PC. If you have it in a folder of your own, choose Use my own adb.exe. Otherwise choose Download Google's adb to fetch it."
     }
     $folder.Focus()
 })
