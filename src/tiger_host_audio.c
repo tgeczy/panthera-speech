@@ -321,6 +321,25 @@ static pending  g_pending[PACE_QCAP];
 static int      g_p_head, g_p_tail, g_p_count;
 static CRITICAL_SECTION g_p_cs;
 static volatile LONG    g_pacer_stop;
+/* Set on every enqueue, so a pacer that has stopped polling wakes for the
+ * first slice of the next utterance.  Auto-reset: the wait consumes it.
+ *
+ * **The pacer used to poll every 2 ms for the life of the process**, speaking
+ * or not.  On Windows 11 a windowless process gets the 15.6 ms tick whatever
+ * timeBeginPeriod asked for, so that was 63 wakeups a second; on Android and
+ * Linux nanosleep means what it says, and an idle Lion worker on a Nothing
+ * Phone measured 667 a second and 1.2% of a core -- per worker, and a phone
+ * keeps one per generation it has used.  Issue #25 was battery drain on a
+ * Pixel 7.  With the wait below the same worker measured 11-13 a second.
+ *
+ * The 2 ms poll is kept while speech is flowing -- between slices it is part
+ * of what spaces the engine's empty-slot ticking, and that is measured, not
+ * guessed -- and only after PACE_IDLE_AFTER_MS of empty queue does the pacer
+ * block here instead.  The wait is bounded so that a lost signal costs at
+ * most PACE_IDLE_WAIT_MS, never a wedged channel. */
+static HANDLE   g_p_wake;
+#define PACE_IDLE_AFTER_MS 500.0
+#define PACE_IDLE_WAIT_MS  100
 /* Set while the utterance in progress has been cancelled.
  *
  * The pacer sleeps out a slice's own duration before completing it, because
@@ -395,7 +414,8 @@ static void queue_completion(slice_done_t p, void *u, void *s, unsigned frames)
             g_p_drops++;
         }
         LeaveCriticalSection(&g_p_cs);
-        if (!full || waited >= PACE_QWAIT_MS) return;
+        if (!full) { if (g_p_wake) SetEvent(g_p_wake); return; }
+        if (waited >= PACE_QWAIT_MS) return;
         Sleep(1);
         waited++;
     }
@@ -592,6 +612,7 @@ static int timeline_check(void)
 
 static DWORD WINAPI pacer_thread(LPVOID arg)
 {
+    double last_job = wall_ms();
     (void)arg;
     tiger_thread_is_audio("pacer");
     while (!g_pacer_stop) {
@@ -610,7 +631,13 @@ static DWORD WINAPI pacer_thread(LPVOID arg)
             g_p_busy = 1;
         }
         LeaveCriticalSection(&g_p_cs);
-        if (!have) { Sleep(2); continue; }
+        if (!have) {
+            if (g_p_wake && wall_ms() - last_job >= PACE_IDLE_AFTER_MS)
+                WaitForSingleObject(g_p_wake, PACE_IDLE_WAIT_MS);
+            else
+                Sleep(2);
+            continue;
+        }
         {
             /* Real playback would take frames/rate seconds, but the engine
              * only needs *enough* time for its worker to render ahead, and
@@ -640,6 +667,7 @@ static DWORD WINAPI pacer_thread(LPVOID arg)
          * thread hands it a stack Windows aligned to four. */
         call_aligned2((void *)job.proc, job.udata, job.slice);
         g_p_busy = 0;
+        last_job = wall_ms();
     }
     return 0;
 }

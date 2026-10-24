@@ -691,6 +691,7 @@ static int host_open(const char *mtpath, const char *sdpath)
     timeBeginPeriod(1);
     init_rune_locale();
     InitializeCriticalSection(&g_p_cs);
+    g_p_wake = CreateEvent(NULL, FALSE, FALSE, NULL);
     CreateThread(NULL, 0, pacer_thread, NULL, 0, NULL);
 
     g_thunks = (unsigned char *)VirtualAlloc(NULL, MAX_MISSING * THUNK_SZ,
