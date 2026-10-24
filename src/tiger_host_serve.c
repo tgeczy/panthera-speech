@@ -465,7 +465,9 @@ static int serve(image *mt, void *chan, const char *voicesdir)
         char name[128];
         char *text;
 
+        timer_res_busy(0);              /* waiting: the pacer may let go */
         if (!read_all(g_in, &magic, 4)) return 0;      /* driver went away */
+        timer_res_busy(1);
         if (magic != REQ_MAGIC && magic != REQ_MAGIC_STREAM &&
             magic != REQ_MAGIC_MARKERS) return 1;
         marked = (magic == REQ_MAGIC_MARKERS);

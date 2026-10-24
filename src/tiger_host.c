@@ -688,7 +688,9 @@ static int host_open(const char *mtpath, const char *sdpath)
      * costs 15 ms and an utterance renders at wall-clock speed no matter how
      * low the pace goes.  Ask for 1 ms resolution and the pacer means what it
      * says. */
+    InitializeCriticalSection(&g_res_cs);
     timeBeginPeriod(1);
+    g_res_held = 1;
     init_rune_locale();
     InitializeCriticalSection(&g_p_cs);
     g_p_wake = CreateEvent(NULL, FALSE, FALSE, NULL);

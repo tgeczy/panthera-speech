@@ -340,6 +340,41 @@ static volatile LONG    g_pacer_stop;
 static HANDLE   g_p_wake;
 #define PACE_IDLE_AFTER_MS 500.0
 #define PACE_IDLE_WAIT_MS  100
+
+/* **The 1 ms timer is held only while there is speech to make.**
+ *
+ * host_open asks for it, because without it Sleep(1) is 15.6 ms and the
+ * engine's own waits become the whole cost of an utterance.  But it used to
+ * be held for the life of the process, and NVDA keeps a host for the whole
+ * session.  Before Windows 10 2004 that request sets the tick for the entire
+ * machine -- every process on a laptop woken a thousand times a second for
+ * as long as Panthera was the synthesizer -- and Windows' own energy report
+ * names an idle host as an outstanding 1 ms request on 11 too.
+ *
+ * So serve mode marks each request busy from the moment its magic arrives
+ * until the loop comes back for the next one; the pacer, once it has been
+ * idle long enough to stop polling, gives the resolution back if no request
+ * is in hand; the next request takes it again before the engine sees any
+ * text.  One lock, so a request arriving as the pacer lets go cannot be left
+ * rendering without it.  The one-shot render never clears busy and holds the
+ * timer to the end, as it always did.  Elsewhere both calls are no-ops. */
+static CRITICAL_SECTION g_res_cs;
+static int g_res_held, g_res_busy = 1;
+
+static void timer_res_busy(int busy)
+{
+    EnterCriticalSection(&g_res_cs);
+    g_res_busy = busy;
+    if (busy && !g_res_held) { timeBeginPeriod(1); g_res_held = 1; }
+    LeaveCriticalSection(&g_res_cs);
+}
+
+static void timer_res_release_if_idle(void)
+{
+    EnterCriticalSection(&g_res_cs);
+    if (g_res_held && !g_res_busy) { timeEndPeriod(1); g_res_held = 0; }
+    LeaveCriticalSection(&g_res_cs);
+}
 /* Set while the utterance in progress has been cancelled.
  *
  * The pacer sleeps out a slice's own duration before completing it, because
@@ -632,9 +667,10 @@ static DWORD WINAPI pacer_thread(LPVOID arg)
         }
         LeaveCriticalSection(&g_p_cs);
         if (!have) {
-            if (g_p_wake && wall_ms() - last_job >= PACE_IDLE_AFTER_MS)
+            if (g_p_wake && wall_ms() - last_job >= PACE_IDLE_AFTER_MS) {
+                timer_res_release_if_idle();
                 WaitForSingleObject(g_p_wake, PACE_IDLE_WAIT_MS);
-            else
+            } else
                 Sleep(2);
             continue;
         }
