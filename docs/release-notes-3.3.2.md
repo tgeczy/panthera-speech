@@ -1,8 +1,7 @@
 # Panthera 3.3.2
 
-**An Android release.** Alex can be asked to go much faster, and Panthera no
-longer drains the battery while it sits silent. The NVDA add-on and the SAPI
-voices are the 3.3.1 files.
+**An Android release.** Alex can be asked to go much faster. Nothing else
+changes, and the NVDA add-on and the SAPI voices are the 3.3.1 files.
 
 ## Rate boost on Android: up to 1200 words per minute
 
@@ -49,29 +48,6 @@ Boost is remembered per generation, like the rate it raises, and a rate above th
 current top is kept rather than rewritten — turn the switch off and back on and
 the number you chose is still there.
 
-## Battery: no more work while nothing is being said
-
-Credit to Christopher, who found the battery going quickly with Snow Leopard Alex
-and asked whether that was a bug or just the price of emulation. It was some of
-both, and the bug part was ours.
-
-The engine runs in its own background process, so a screen reader's next word
-does not have to wait for it to load. Inside that process, the thread that keeps
-the audio on time checked for new work every 2 milliseconds, forever, whether
-anything was being spoken or not. On a phone with BackTalk and Panthera, an idle
-worker woke **667 times a second** and used about 1% of a processor core while
-the phone sat silent, which also kept the processor out of its low-power states.
-
-Now, once speech has stopped for half a second, that thread waits to be told
-there is something to say. The same idle worker wakes about 12 times a second and
-uses next to nothing. While speech is playing nothing changes: the audio is the
-same, and the first word after a pause comes just as quickly, because the worker
-still stays loaded. It now costs almost nothing to keep it that way.
-
-What this does not change is the cost of speaking itself. While Alex is talking,
-the original Mac code is being translated for your phone's processor as it runs,
-and that takes more power than a voice written for Android.
-
 ## Everything else
 
 The NVDA add-on and the SAPI installer attached below are the **3.3.1** files,
@@ -79,10 +55,6 @@ unchanged. Your add-on and SAPI installs will not offer you an update, and do no
 need one — which is itself the first outing for the updater fix that shipped in
 3.3.1: before it, a release tagged newer than the add-on it carried would have
 offered you that add-on over and over.
-
-The desktop host had the same idle check, at a smaller cost: on Windows it woke
-about 63 times a second. The fix is in the shared code and comes to NVDA, SAPI
-and Linux with their next release.
 
 Linux support is unchanged, and the tarballs here are the 3.3.0 builds.
 
