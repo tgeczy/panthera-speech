@@ -128,5 +128,27 @@ std::wstring prepare_text(const std::wstring &text, bool commands,
     return out;
 }
 
+std::wstring strip_commands(const std::wstring &text, std::vector<size_t> &positions) {
+    static const std::wregex command(L"\\[\\s*\\[([^\\]]{0,64})\\]\\s*\\]");
+    std::wstring out; size_t at=0;
+    std::vector<std::pair<size_t,size_t>> spans;
+    for(auto i=std::wsregex_iterator(text.begin(),text.end(),command);
+        i!=std::wsregex_iterator();++i){
+        out.append(text,at,i->position()-at);
+        spans.push_back({(size_t)i->position(),(size_t)(i->position()+i->length())});
+        at=i->position()+i->length();
+    }
+    out.append(text,at,std::wstring::npos);
+    for(size_t &p:positions){
+        size_t removed=0;
+        for(auto &s:spans){
+            if(p<=s.first)break;
+            removed+=(p<s.second?p:s.second)-s.first;
+        }
+        p-=removed;
+    }
+    return out;
+}
+
 
 } // namespace panthera_sapi

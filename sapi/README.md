@@ -155,6 +155,22 @@ Native control names and parents are checked alongside saving and reopening;
 the diagnostics checkbox participates in the same persistence checks.
 Pauses has no effect on Tiger, as its accessible description explains.
 
+An application's markup is honoured as SAPI asks: `<rate>` adds to the
+application's rate and `<volume>` is a share of its volume, `<pitch>` reaches
+the words it encloses wherever they fall in the text, `<spell>` reads its text
+character by character in the engine's own literal mode, `<silence>` is that
+much silence, and **ISpVoice::Skip** moves by sentences and speech goes on
+from there. Text in one state is one engine utterance; a change of state is
+a new one, as the NVDA driver flushes on its pitch, rate and volume commands.
+Bookmarks are placed by the engine itself: a mark between words becomes a
+`[[sync]]` and its event goes out at the frame the engine reached it, before
+the audio that follows, so JAWS's mark between every word and NVDA's index at
+the end of a line both arrive on time. A mark next to text that makes no sound
+is still answered, and no mark is reported after an interruption. Write is
+retried until the application has taken every byte, because Windows 7's SAPI
+takes none while its buffer is full, and each utterance ends with 50 ms of
+silence for applications that stop the device the moment Speak returns.
+
 Application volume is applied to each PCM chunk, including changes during
 speech. Mute retains the utterance's duration, and restoring 100 returns the
 original samples without restarting the host. Embedded commands retain their
