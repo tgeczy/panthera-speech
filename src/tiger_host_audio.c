@@ -1100,7 +1100,7 @@ static int __cdecl sh_AudioUnitAddPropertyListener(au_obj *unit, unsigned id,
  * of here wants -- NVDA's WavePlayer included. */
 static void write_wav(const char *path)
 {
-    FILE *f = fopen(path, "wb");
+    FILE *f = u8_fopen(path, U8_MODE("wb"));
     unsigned rate = (unsigned)(g_rate + 0.5), i;
     unsigned data_bytes = g_pcm_n * 2, riff = 36 + data_bytes;
     unsigned byte_rate = rate * g_channels * 2;

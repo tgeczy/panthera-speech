@@ -94,7 +94,7 @@ static int cli_render(int argc, char **argv)
     _snprintf(voices,sizeof voices,"%s/Speech/Voices",tree);
     if(!text){
         char block[4096]; size_t got;
-        in=input&&strcmp(input,"-")?fopen(input,"rb"):stdin;
+        in=input&&strcmp(input,"-")?u8_fopen(input,U8_MODE("rb")):stdin;
         if(!in){perror(input);goto done;}
         while((got=fread(block,1,sizeof block,in))!=0){
             if(source.len+got>1024*1024||memchr(block,0,got)){
@@ -137,7 +137,7 @@ static int cli_render(int argc, char **argv)
     if(nframes>=PCM_CAP){
         fprintf(stderr,"utterance reached the four-minute buffer; split at paragraph boundaries\n");goto done;
     }
-    if(!wav)wav=fopen(output,"wb");
+    if(!wav)wav=u8_fopen(output,U8_MODE("wb"));
     if(!wav){perror(output);goto done;}
     _setmode(_fileno(wav),_O_BINARY);
     {

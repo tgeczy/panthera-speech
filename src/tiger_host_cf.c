@@ -370,7 +370,7 @@ static void * __cdecl sh_CFBundleCopyResourceURL(const void *bundle,
         else
             _snprintf(path, sizeof(path), "%s/%s", dir, nm);
         path[sizeof(path) - 1] = 0;
-        if (_access(path, 4) == 0) {
+        if (u8_access(path, 4) == 0) {
             if (g_verbose) printf("  [cf] resource -> %s\n", path);
             return cf_new(path);
         }
@@ -422,7 +422,7 @@ static void * __cdecl sh_CFStringCreateWithCStringNoCopy(void *alloc,
 static cfobj *cf_data(const char *path)
 {
     cfobj *o;
-    FILE *f = fopen(path, "rb");
+    FILE *f = u8_fopen(path, U8_MODE("rb"));
     long n;
     if (!f) return NULL;
     fseek(f, 0, SEEK_END); n = ftell(f); fseek(f, 0, SEEK_SET);
@@ -923,7 +923,7 @@ static int cf_params_file(char *buf, size_t n, char *shown, size_t shownlen)
     strncpy(cut + 1, "params.txt", sizeof(path) - (size_t)(cut + 1 - path) - 1);
     path[sizeof(path) - 1] = 0;
 
-    f = fopen(path, "rb");
+    f = u8_fopen(path, U8_MODE("rb"));
     if (!f) return 0;
     got = fread(buf, 1, n - 1, f);
     fclose(f);

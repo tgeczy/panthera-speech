@@ -9,7 +9,7 @@ static unsigned char *read_file(const char *path, size_t *len)
 {
     unsigned char *buf;
     long n;
-    FILE *f = fopen(path, "rb");
+    FILE *f = u8_fopen(path, U8_MODE("rb"));   /* UTF-8: see tiger_host.c */
     if (!f) die("cannot open %s", path);
     fseek(f, 0, SEEK_END); n = ftell(f); fseek(f, 0, SEEK_SET);
     buf = (unsigned char *)malloc(n);

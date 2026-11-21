@@ -235,7 +235,7 @@ static int voice_spec(const char *dir, unsigned *creator, int *id)
     FILE *f;
     _snprintf(path, sizeof(path), "%s/Contents/Resources/VoiceDescription", dir);
     path[sizeof(path) - 1] = 0;
-    f = fopen(path, "rb");
+    f = u8_fopen(path, U8_MODE("rb"));      /* UTF-8: see tiger_host.c */
     if (!f) return 0;
     if (fread(h, 1, sizeof(h), f) != sizeof(h)) { fclose(f); return 0; }
     fclose(f);

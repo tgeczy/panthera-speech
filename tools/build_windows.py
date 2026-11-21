@@ -83,7 +83,7 @@ def main():
                 run(common + (["/LD"] if dll else []) + [str(obj)] + objects +
                     ["/Fe" + str(binary), "/link"] +
                     ["/LIBPATH:" + str(p) for p in libs] +
-                    ["winmm.lib", "ole32.lib", "mfuuid.lib"] +
+                    ["winmm.lib", "ole32.lib", "mfuuid.lib", "shell32.lib"] +
                     ([] if dll else ["/LARGEADDRESSAWARE"]))
                 print(binary)
             # Exercise dispatch-source lifetime without any engine or voice data.
@@ -93,7 +93,7 @@ def main():
                 str(ROOT / "tools/gcd_sources_check.c")] + objects +
                 ["/Fe" + str(check), "/link", "/LARGEADDRESSAWARE"] +
                 ["/LIBPATH:" + str(p) for p in libs] +
-                ["winmm.lib", "ole32.lib", "mfuuid.lib"])
+                ["winmm.lib", "ole32.lib", "mfuuid.lib", "shell32.lib"])
             run([str(check)])
         # Check the fetched notice, so a stale local licence cannot accompany
         # a dependency whose pinned archive says something different.

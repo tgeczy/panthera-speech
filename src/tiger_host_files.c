@@ -122,7 +122,7 @@ static int __cdecl sh_open(const char *path, int flags, int mode)
     int fd;
     (void)flags; (void)mode;
     if (!path) { printf("  [open] NULL path\n"); return -1; }
-    fd = _open(path, _O_RDONLY | _O_BINARY);
+    fd = u8_open(path);                  /* UTF-8, as the guest means it */
     if (fd < 0) printf("  [open] FAILED errno=%d: %s\n", errno, path);
     else if (g_verbose) printf("  [open] fd %d <- %s\n", fd, path);
     return fd;
@@ -161,7 +161,7 @@ static int find_runtime(const char *start, const char **names, int count,
         for (i = 0; i < count; i++) {
             _snprintf(out, n, "%s/%s", dir, names[i]);
             out[n - 1] = 0;
-            if (_access(out, 4) == 0) return 1;
+            if (u8_access(out, 4) == 0) return 1;
         }
     }
     return 0;
@@ -245,10 +245,8 @@ static int stat_into(const darwin_stat_layout *L, const char *path,
     HANDLE fh;
     unsigned dev = 1, ino;
     if (!path || !st) return -1;
-    if (_stat64(path, &s) != 0) return -1;
-    fh = CreateFileA(path, FILE_READ_ATTRIBUTES,
-                     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                     NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    if (u8_stat64(path, &s) != 0) return -1;
+    fh = u8_attributes_handle(path);
     ino = file_ident(fh, &dev);
     if (fh != INVALID_HANDLE_VALUE) CloseHandle(fh);
     if (!ino) { dev = 1; ino = path_ident(path); }

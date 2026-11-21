@@ -230,9 +230,12 @@ class DllHost(object):
             for i, entry in enumerate(env):
                 block[i] = entry.encode("mbcs")
             reqw, rspr = ctypes.c_void_p(), ctypes.c_void_p()
+            #: Paths as UTF-8, which the library reads exactly; "mbcs"
+            #: turned any character outside the code page into "?" and the
+            #: engine could not be found (panthera-speech#27).
             err = dll.pt_open(
-                mt.encode("mbcs"), sd.encode("mbcs"),
-                voicesdir.encode("mbcs"),
+                mt.encode("utf-8"), sd.encode("utf-8"),
+                voicesdir.encode("utf-8"),
                 cancelName.encode("mbcs") if cancelName else None,
                 block, ctypes.byref(reqw), ctypes.byref(rspr))
             if err:

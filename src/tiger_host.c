@@ -26,6 +26,7 @@
 #define WIN32_LEAN_AND_MEAN
 #ifdef _WIN32
 #include <windows.h>
+#include <shellapi.h>        /* CommandLineToArgvW; LEAN_AND_MEAN leaves it out */
 #include <io.h>
 #include <mmsystem.h>
 
@@ -78,6 +79,95 @@
  * corrupt an utterance in a way that is very hard to trace back to a printf.
  * Redirecting here is safer than remembering at each call site. */
 #define printf(...) fprintf(stderr, __VA_ARGS__)
+
+/* ---- paths are UTF-8 ------------------------------------------------------
+ *
+ * **Every path in this host is UTF-8**, which is what a Mac path is to begin
+ * with: CF, the guest, and SpeechDictionary's `sqlite3_open` all take it.
+ * Windows' narrow file calls read their argument in the ANSI code page
+ * instead, and `main`'s `argv` arrives in it too -- so an engine folder under
+ * a profile the code page cannot spell (Cyrillic on Western Windows, "Gergő"
+ * under 1252) reached the host as "Gerg?", nothing opened, and the voice
+ * loaded in NVDA and never spoke (panthera-speech#27).
+ *
+ * So `main` rebuilds `argv` as UTF-8 from the wide command line, and every
+ * file the host or the guest opens goes through these, which take UTF-8 and
+ * call the wide functions.  Text that is not valid UTF-8 -- a client that
+ * still sends the code page -- is read in the code page, as it always was, so
+ * nothing that spoke before can stop.  Off Windows a path is bytes and these
+ * are the plain calls. */
+#ifdef _WIN32
+static wchar_t *u8_wide(const char *s)
+{
+    UINT cp = CP_UTF8;
+    DWORD flags = MB_ERR_INVALID_CHARS;
+    int n = MultiByteToWideChar(cp, flags, s, -1, NULL, 0);
+    wchar_t *w;
+    if (n <= 0) { cp = CP_ACP; flags = 0; n = MultiByteToWideChar(cp, flags, s, -1, NULL, 0); }
+    if (n <= 0) return NULL;
+    w = (wchar_t *)malloc(sizeof(wchar_t) * (size_t)n);
+    if (w && MultiByteToWideChar(cp, flags, s, -1, w, n) <= 0) { free(w); w = NULL; }
+    return w;
+}
+static char *u8_narrow(const wchar_t *w)
+{
+    int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, NULL, 0, NULL, NULL);
+    char *s = n > 0 ? (char *)malloc((size_t)n) : NULL;
+    if (s && WideCharToMultiByte(CP_UTF8, 0, w, -1, s, n, NULL, NULL) <= 0) { free(s); s = NULL; }
+    return s;
+}
+static int u8_open(const char *path)
+{
+    wchar_t *w = u8_wide(path);
+    int fd = w ? _wopen(w, _O_RDONLY | _O_BINARY) : -1;
+    free(w);
+    return fd;
+}
+static FILE *u8_fopen(const char *path, const wchar_t *mode)
+{
+    wchar_t *w = u8_wide(path);
+    FILE *f = w ? _wfopen(w, mode) : NULL;
+    free(w);
+    return f;
+}
+static int u8_stat64(const char *path, struct _stat64 *s)
+{
+    wchar_t *w = u8_wide(path);
+    int r = w ? _wstat64(w, s) : -1;
+    free(w);
+    return r;
+}
+static int u8_access(const char *path, int mode)
+{
+    wchar_t *w = u8_wide(path);
+    int r = w ? _waccess(w, mode) : -1;
+    free(w);
+    return r;
+}
+static HANDLE u8_attributes_handle(const char *path)
+{
+    wchar_t *w = u8_wide(path);
+    HANDLE h = w ? CreateFileW(w, FILE_READ_ATTRIBUTES,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                               NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL)
+                 : INVALID_HANDLE_VALUE;
+    free(w);
+    return h;
+}
+#define U8_MODE(m) L##m
+#else
+static int u8_open(const char *path) { return _open(path, _O_RDONLY | _O_BINARY); }
+static FILE *u8_fopen(const char *path, const char *mode) { return fopen(path, mode); }
+static int u8_stat64(const char *path, struct _stat64 *s) { return _stat64(path, s); }
+static int u8_access(const char *path, int mode) { return _access(path, mode); }
+static HANDLE u8_attributes_handle(const char *path)
+{
+    return CreateFileA(path, FILE_READ_ATTRIBUTES,
+                       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                       NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+}
+#define U8_MODE(m) m
+#endif
 
 /* ---- Mach-O, only the parts used here ---------------------------------- */
 
@@ -844,6 +934,23 @@ int main(int argc, char **argv)
     unsigned creator = 'mtk3';
     int voiceid = 1;
     int spec_given = 0;
+
+#ifdef _WIN32
+    /* `argv` as UTF-8, from the wide command line: see "paths are UTF-8"
+     * above.  Kept as it came only if the two disagree on the count, which
+     * would be a parse difference and not a path. */
+    {
+        int wargc = 0, ok = 1;
+        LPWSTR *wargv = CommandLineToArgvW(GetCommandLineW(), &wargc);
+        if (wargv && wargc == argc) {
+            char **u = (char **)calloc((size_t)argc + 1, sizeof(char *));
+            for (i = 0; u && i < argc; i++)
+                if (!(u[i] = u8_narrow(wargv[i]))) ok = 0;
+            if (u && ok) argv = u;
+        }
+        if (wargv) LocalFree(wargv);
+    }
+#endif
 
     if(argc>1&&!strcmp(argv[1],"--help")){cli_help();return 0;}
     if(argc>1&&!strcmp(argv[1],"--render"))return cli_render(argc,argv);
