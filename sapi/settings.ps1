@@ -291,19 +291,6 @@ function Test-AnyVoicesUnder([string]$root) {
     return @(Get-ChildItem -Path $glob -Directory -ErrorAction SilentlyContinue).Count -gt 0
 }
 
-# **The places speech data is kept, best first -- and a folder with voices in
-# it beats a folder that merely exists.**
-#
-# Two passes over one list, which is the whole point.  An emptied folder still
-# stands: Tomi had NVDA's `macintalk` holding nothing but a README and a
-# do-not-ask marker left by a declined prompt, and his real data sitting in
-# bare `%APPDATA%\macintalk` -- so a first-match-that-exists search picked the
-# empty one, reported no speech data, and told him none had been found in any
-# of the usual places while it was sitting in one of them.
-#
-# So: anything with voices in it, in order of preference; then anything that
-# exists at all, so an empty chosen folder is still what the messages name;
-# then the default for a machine with nothing yet.
 # --- the elevated trip ---------------------------------------------------
 # One argument for a Windows command line, quoted by the rules the program at
 # the other end parses it with (panthera-speech#35).  A backslash is literal
@@ -343,10 +330,23 @@ function Invoke-Elevated([string]$Arguments) {
 }
 
 # A message box, behind a name the settings test can replace.
-function Show-Message([string]$Text, [string]$Icon = 'Information') {
+function Show-Message([string]$Text, [string]$Icon = 'None') {
     [Windows.Forms.MessageBox]::Show($form, $Text, 'Panthera SAPI', 'OK', $Icon) | Out-Null
 }
 
+# **The places speech data is kept, best first -- and a folder with voices in
+# it beats a folder that merely exists.**
+#
+# Two passes over one list, which is the whole point.  An emptied folder still
+# stands: Tomi had NVDA's `macintalk` holding nothing but a README and a
+# do-not-ask marker left by a declined prompt, and his real data sitting in
+# bare `%APPDATA%\macintalk` -- so a first-match-that-exists search picked the
+# empty one, reported no speech data, and told him none had been found in any
+# of the usual places while it was sitting in one of them.
+#
+# So: anything with voices in it, in order of preference; then anything that
+# exists at all, so an empty chosen folder is still what the messages name;
+# then the default for a machine with nothing yet.
 function Resolve-DataRoot {
     if ($DataRoot) { return $DataRoot }
     $candidates = @()
@@ -1543,7 +1543,7 @@ function Invoke-ChooseRoot([bool]$explain = $true) {
 }
 $chooseRoot.Add_Click({ Invoke-ChooseRoot $true })
 
-$open.Add_Click({ New-Item -ItemType Directory -Force $data | Out-Null; Start-Process explorer.exe -ArgumentList (ConvertTo-Argument $data) })
+$open.Add_Click({ New-Item -ItemType Directory -Force $data | Out-Null; Invoke-Item -LiteralPath $data })
 $extract.Add_Click({
     $picker = New-Object Windows.Forms.OpenFileDialog; $picker.Title='Choose a Mac OS X install disc image'; $picker.Filter='Disc images|*.iso;*.dmg;*.cdr|All files|*.*'
     if ($picker.ShowDialog($form) -eq 'OK') {

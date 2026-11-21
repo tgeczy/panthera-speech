@@ -122,7 +122,7 @@ def test_the_stat_check_runs_from_outside_the_code_page():
     """`--stat-check` stats the host itself and its folder, by a path it
     asks Windows for -- in the code page, until this was fixed, which the
     strict UTF-8 helpers then refused."""
-    module, _tree_ = _tree("leopard")
+    module = _module("leopard")             # for HOST_EXE; no tree needed
     if not os.path.isfile(module.HOST_EXE):
         pytest.skip("panthera_host.exe not built; run sh build.sh")
     with unicode_tree.folder() as holder:
