@@ -130,7 +130,7 @@ public:
 class FakeSite : public ISpTTSEngineSite {
     LONG refs;
 public:
-    std::vector<BYTE> audio; ULONG marks; DWORD abortAfter; bool abortNow;
+    std::vector<BYTE> audio; ULONG marks; DWORD abortAfter; std::atomic<bool> abortNow;
     USHORT volume=100, laterVolume=100;
     DWORD changeVolumeAfter=0;
     long rate=0;
@@ -705,6 +705,26 @@ int wmain(int argc, wchar_t **argv) {
         check(bAsked<a.lastWrite,"the second voice asked to speak while the first was speaking");
         check(b.firstWrite>a.lastWrite,"the second voice waits its turn: no byte of it before the first is done");
         check(a.audio==alone&&b.audio==alone,"both utterances are whole, as they sound alone");
+
+        /* And the one waiting may give up its place: cancelled while it
+         * waits, it returns then -- not when the voice ahead finishes -- and
+         * says nothing, while the voice speaking is untouched. */
+        FakeSite c(0), d(0);
+        std::atomic<bool> cDone(false);
+        std::atomic<LONGLONG> dReturned(0);
+        HRESULT hc=E_FAIL, hd=E_FAIL;
+        std::thread tc([&]{ hc=say_script(e,LONGLINE,c); cDone=true; });
+        while(!c.firstWrite&&!cDone)Sleep(1);
+        std::thread td([&]{
+            hd=say_script(other,LONGLINE,d);
+            LARGE_INTEGER now; QueryPerformanceCounter(&now); dReturned=now.QuadPart;
+        });
+        Sleep(20);                                       /* d is waiting its turn */
+        d.abortNow=true;
+        td.join(); tc.join();
+        check(SUCCEEDED(hd)&&d.audio.empty(),"a voice cancelled while waiting its turn says nothing");
+        check(dReturned<c.lastWrite,"it gives up its place at once, not after the voice ahead finishes");
+        check(SUCCEEDED(hc)&&c.audio==alone,"the voice that was speaking is untouched");
         other->Release();
     }
 

@@ -244,7 +244,18 @@ public:
         bool speaks=false;
         for(auto &r:runs)if(!r.silenceMs&&!r.text.empty())speaks=true;
 
-        CsLock lock(&g_hostLock);
+        /* **Two voices take turns; they never talk over each other** (#57,
+         * by design).  One voice holds the host for its whole utterance and
+         * the next waits -- but the one waiting may give up its place: an
+         * application that cancels it while it waits is answered then, not
+         * when the voice ahead of it finishes (Tomi, 2026-11-21: "if
+         * canceled yes").  The site is asked between tries, every 5 ms and
+         * only while another voice holds the host. */
+        while(!TryEnterCriticalSection(&g_hostLock)){
+            if(site->GetActions()&SPVES_ABORT)return S_OK;   /* gave up its turn */
+            Sleep(5);
+        }
+        CsAdopt lock(&g_hostLock);
         bool ok=true, aborted=false; int status=0;
         unsigned long long total=0;
         std::wstring pmod;

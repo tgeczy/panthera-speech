@@ -30,4 +30,13 @@ struct CsLock {
 private:
     CRITICAL_SECTION *cs;
 };
+/* The same, for a lock already entered -- by TryEnterCriticalSection, say. */
+struct CsAdopt {
+    explicit CsAdopt(CRITICAL_SECTION *value): cs(value) {}
+    ~CsAdopt() { LeaveCriticalSection(cs); }
+    CsAdopt(const CsAdopt &) = delete;
+    CsAdopt &operator=(const CsAdopt &) = delete;
+private:
+    CRITICAL_SECTION *cs;
+};
 }
