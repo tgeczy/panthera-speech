@@ -97,6 +97,23 @@ class ZipImportTest {
         assertTrue(plan.refusal!!, plan.refusal!!.contains("cannot tell which generation"))
     }
 
+    /** The bounded read behind the check (#55): an honest entry whole, in
+     * one array of its own size; a size that lies or is unknown grows only up
+     * to the cap; one byte past the cap is refused, and the count of what was
+     * taken is right either way. */
+    @Test fun aCappedReadKeepsWhatFitsAndRefusesWhatDoesNot() {
+        val data = ByteArray(1000) { it.toByte() }
+        fun read(declared: Long, cap: Long, bytes: ByteArray = data) =
+            ZipImport.readCapped(bytes.inputStream(), declared, cap)
+        read(1000, 4096).let { assertArrayEquals(data, it.bytes); assertEquals(1000, it.read) }
+        read(10, 4096).let { assertArrayEquals("a size that lies low", data, it.bytes) }
+        read(-1, 4096).let { assertArrayEquals("an unknown size", data, it.bytes) }
+        read(1000, 1000).let { assertArrayEquals("exactly the cap", data, it.bytes) }
+        read(1000, 999).let { assertNull("one byte past the cap", it.bytes); assertEquals(1000, it.read) }
+        read(-1, 999).let { assertNull(it.bytes) }
+        read(0, 4096, ByteArray(0)).let { assertArrayEquals(ByteArray(0), it.bytes); assertEquals(0, it.read) }
+    }
+
     @Test fun aSingleEngineAtTheRootStillImports() {
         val file = archive(engine(""))
         for (source in sources(file)) {

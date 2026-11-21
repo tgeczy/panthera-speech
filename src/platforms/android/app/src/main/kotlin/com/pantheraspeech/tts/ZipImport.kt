@@ -396,18 +396,36 @@ object ZipImport {
         }
         // At most the largest cap, whatever the entry declares: a damaged or
         // lying size would otherwise inflate into the heap (#55).
-        return stream.use { input ->
-            val held = java.io.ByteArrayOutputStream()
-            val buffer = ByteArray(1 shl 16)
-            var size = 0L
-            while (true) {
-                val n = input.read(buffer); if (n < 0) break
-                size += n
-                if (size > ENGINE_CAP) return null
-                held.write(buffer, 0, n)
+        return stream.use { readCapped(it, entry.size, ENGINE_CAP).bytes }
+    }
+
+    /** What [readCapped] read: the bytes, or null when there were more than
+     * the cap; and how many bytes it took from the stream either way. */
+    class Capped(val bytes: ByteArray?, val read: Long)
+
+    /** At most `cap` bytes of `input` (#55).  The buffer is the size the entry
+     * declares, so an honest entry costs exactly its size, read in place --
+     * no doubling buffer and no copy: at 60 MB the check holds one array, not
+     * three.  A size that lies, or is unknown, grows the buffer only up to
+     * the cap; one byte past it and the entry is refused. */
+    fun readCapped(input: InputStream, declared: Long, cap: Long): Capped {
+        var buf = ByteArray(if (declared in 1..cap) declared.toInt() else minOf(cap, 1L shl 16).toInt())
+        var len = 0
+        while (true) {
+            if (len == buf.size) {
+                // Full: is there more?  An honest entry ends here, in its one array.
+                val next = input.read()
+                if (next < 0) return Capped(buf, len.toLong())
+                if (buf.size.toLong() >= cap) return Capped(null, len + 1L)
+                buf = buf.copyOf(minOf(buf.size.toLong() * 2, cap).toInt())
+                buf[len++] = next.toByte()
+                continue
             }
-            held.toByteArray()
+            val n = input.read(buf, len, buf.size - len)
+            if (n < 0) break
+            len += n
         }
+        return Capped(if (len == buf.size) buf else buf.copyOf(len), len.toLong())
     }
 
     /** `length` bytes of the file from `start` -- and, for deflated data, one
@@ -462,14 +480,13 @@ object ZipImport {
                     // app down before the cap was ever compared (#55).
                     val cap = if (name!!.endsWith("Info.plist") || name.endsWith("version.plist"))
                         PLIST_CAP else ENGINE_CAP
-                    val held = java.io.ByteArrayOutputStream()
-                    val buffer = ByteArray(1 shl 16)
-                    while (true) {
-                        val n = zip.read(buffer); if (n < 0) break
-                        size += n
-                        if (size <= cap) held.write(buffer, 0, n)
+                    val got = readCapped(zip, e.size, cap)
+                    size = got.read
+                    if (got.bytes != null) kept[name] = got.bytes
+                    else {                                 // too big to keep: count the rest
+                        val buffer = ByteArray(1 shl 16)
+                        while (true) { val n = zip.read(buffer); if (n < 0) break; size += n }
                     }
-                    if (size <= cap) kept[name] = held.toByteArray()
                 } else {
                     val buffer = ByteArray(1 shl 16)
                     while (true) { val n = zip.read(buffer); if (n < 0) break; size += n }
