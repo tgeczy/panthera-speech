@@ -151,8 +151,10 @@ end;
 { One elevated-already run of the settings tool, with its exit code heard.
   A [Run] entry cannot see one, so a registration that failed used to finish
   Setup with no voices and nothing said (Tomi, 2026-11-21: "a pretty good one
-  to say out loud so the person knows").  Silent installs log it instead. }
-procedure RunSettingsStep(const Switches, Status, Failed: String);
+  to say out loud so the person knows").  Setup still finishes: the files are
+  in place, and the message says how to try again.  /SUPPRESSMSGBOXES skips
+  the message, and /LOG records the failure either way. }
+procedure RunSettingsStep(const Switches, Status, Failed, Retry: String);
 var
   Code: Integer;
 begin
@@ -164,9 +166,7 @@ begin
     Log(Format('Panthera SAPI: the settings tool failed with %d', [Code]))
   else
     exit;
-  SuppressibleMsgBox(Failed + #13#10#13#10 +
-    'Open "Panthera SAPI settings" from the Start menu and press Register to try again.',
-    mbError, MB_OK, IDOK);
+  SuppressibleMsgBox(Failed + #13#10#13#10 + Retry, mbError, MB_OK, IDOK);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -180,11 +180,17 @@ begin
     no-op.  On an upgrade, even zero registered voices is a choice to
     preserve: do not rebuild tokens from available data or infer a choice
     from elevated HKCU. }
+  { The retry advice differs: an upgrade keeps the voices that were chosen,
+    so the way back is the installer, which repeats only the component
+    update; the settings tool's Register would add voices that were left out
+    on purpose. }
   if IsUpgrade then
     RunSettingsStep('-RegisterServer', 'Updating SAPI components...',
-      'Panthera SAPI was updated, but its SAPI components could not be registered, so its voices may not speak.')
+      'Panthera SAPI was updated, but its SAPI components could not be registered, so its voices may not speak.',
+      'Run this installer again to try once more.')
   else
     RunSettingsStep('-RegisterVoices -GenerationList Tiger,Leopard,Snowleopard,Lion',
       'Registering voices from your speech data...',
-      'Panthera SAPI was installed, but its voices could not be registered, so no program can use them yet.');
+      'Panthera SAPI was installed, but its voices could not be registered, so no program can use them yet.',
+      'Run this installer again, or open "Panthera SAPI settings" from the Start menu and press Register.');
 end;
