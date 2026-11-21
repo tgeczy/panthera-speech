@@ -157,7 +157,9 @@ class SettingsActivity : Activity() {
         // start only, so a rebuild never runs it twice.  In a debug build
         // typing the command is the consent; in a release build, where any
         // installed app could have sent it, the confirm dialog comes first.
-        importJob?.let { attachImport(it) } ?: importCheck?.let { attachCheck(it) }
+        // A check in flight is shown by onResume, the screen in front's; only
+        // the intent's import is held back for it here.
+        importJob?.let { attachImport(it) } ?: importCheck?.let { Unit }
             ?: intent?.getStringExtra("import")?.takeIf { TestHooks.route(fresh) }?.let { arg ->
             val source = if (arg.startsWith("content:") || arg.startsWith("file:"))
                 ZipImport.source(this, Uri.parse(arg)) else ZipImport.source(File(arg))
@@ -262,9 +264,11 @@ class SettingsActivity : Activity() {
     private val checkListener: (ImportCheck) -> Unit = { c -> runOnUiThread { checkDone(c) } }
 
     private fun detachCheck() {
+        // This screen's dialog goes whatever became of the check: in split
+        // screen another instance may have taken it, or it may be done.
+        checkingDialog?.dismiss(); checkingDialog = null
         val check = importCheck ?: return
         if (check.listener === checkListener) check.listener = null
-        checkingDialog?.dismiss(); checkingDialog = null
     }
 
     private fun cancelCheck(check: ImportCheck) {
