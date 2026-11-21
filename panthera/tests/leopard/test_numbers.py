@@ -35,9 +35,11 @@ def test_a_digit_run_too_long_to_convert_is_left_as_it_is(style):
     """panthera-speech#28: Python refuses `int()` on more than 4,300 digits,
     and a minified JSON number array is one token (commas are absorbed), so
     the rewrite raised and took the reader with it.  A run that long is no
-    number anyone can say; it stays as written, as the native host leaves it."""
+    number anyone can say: it is never converted, and goes to the engine as
+    plain digits, its commas gone, to be spelled -- grouped, Leopard's engine
+    would say nothing at all (LONGEST_GROUPED)."""
     run = ",".join(["123"] * 1500)
-    assert numbers.expand(run, style) == run
+    assert numbers.expand(run, style) == run.replace(",", "")
     version = ".".join(["1" * 4400, "2", "3"])
     assert numbers.expand(version, style) == version
 
@@ -186,4 +188,23 @@ def test_a_number_written_with_leading_zeros_is_said_digit_by_digit(text, style,
     written with leading zeros is a code, not an amount, so it is said digit
     by digit with its zeros (Tomi's rule for ssi263-speech#65, the same
     class).  Fix style still leaves a short number to the engine."""
+    assert numbers.expand(text, style) == said
+
+
+@pytest.mark.parametrize("text, style, said", [
+    ("1" * 36, "fix", ",".join(["111"] * 12)),                    # grouped, as before
+    ("1" * 37, "fix", "1" * 37),                                    # too long to group
+    ("call 0612345678 now", "fix", "call 0612345678 now"),          # a code: left to be spelled
+    ("1," + ",".join(["234"] * 13), "fix", "1" + "234" * 13),       # written grouped, 40 digits
+    ("-" + "9" * 40, "fix", "-" + "9" * 40),
+    ("1," + ",".join(["234"] * 13), "words", "1" + "234" * 13),
+])
+def test_a_number_too_long_for_the_engine_is_left_to_be_spelled(text, style, said):
+    """Leopard's engine goes silent on a grouped number past 36 digits --
+    measured on Fred and Alex: up to 36 speaks, from 38 nothing at all, while
+    the same digits ungrouped are spelled at any length.  3.3.3 already lost a
+    40-digit number this way; #44, matching the host to the Python, would have
+    lost every longer one.  So past 36 digits, and for a code with a leading
+    zero (said digit by digit, #31's rule), the digits go to the engine plain,
+    commas gone, and it spells them."""
     assert numbers.expand(text, style) == said

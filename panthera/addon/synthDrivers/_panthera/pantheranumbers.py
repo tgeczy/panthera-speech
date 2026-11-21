@@ -55,6 +55,15 @@ _SCALES = ((1000000000000, "trillion"), (1000000000, "billion"),
 #: Above this the engine spells the digits out one at a time.
 LONG_DIGITS = 7
 
+#: **And past this it cannot read a grouped number at all.**  Measured on
+#: Leopard's Fred and Alex: "1,111,...,111" speaks up to 36 digits and from 38
+#: is silence -- the whole utterance, not just the number -- while the same
+#: digits ungrouped are spelled at any length (300 of them, a minute of
+#: speech).  About where the scale names run out.  3.3.3 already lost a
+#: 40-digit number this way.  So a run longer than this goes to the engine as
+#: plain digits, its commas gone, to be spelled.
+LONGEST_GROUPED = 36
+
 
 def to_words(n):
     """-> an integer in English words, or None if it is too large to say."""
@@ -144,6 +153,8 @@ def _rewrite(token, style):
         value = _int(whole)
         said = None if value is None else to_words(value)
         if said is None:
+            if frac is None and len(whole) > LONGEST_GROUPED:
+                return sign + whole          # too long to group: spelled
             return token
         return minus + said + ("" if frac is None else " point " + _digits(frac))
 
@@ -157,6 +168,12 @@ def _rewrite(token, style):
             return minus + "zero point " + _digits(frac)
         return token
     if len(whole) >= LONG_DIGITS:
+        #: A code -- written with a leading zero, a phone or an order number
+        #: -- is said digit by digit (#31's rule), and a run past
+        #: LONGEST_GROUPED cannot be read grouped: both go plain, commas gone,
+        #: and the engine spells them, zeros and all.
+        if _code(whole) or len(whole) > LONGEST_GROUPED:
+            return sign + whole
         #: Grouped, not spelled: the engine reads "1,234,567" correctly, so it
         #: keeps its own phrasing and we change as little as possible.
         return sign + _group(whole)

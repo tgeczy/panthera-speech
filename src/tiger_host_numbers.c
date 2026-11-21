@@ -41,6 +41,10 @@
 
 /* Above this many digits the engine spells them out one at a time. */
 #define NUM_LONG_DIGITS 7
+/* Past this Leopard's engine cannot read a grouped number at all -- silence
+ * from 38 digits, measured -- so a longer run goes plain, to be spelled.
+ * pantheranumbers.LONGEST_GROUPED, the same. */
+#define NUM_LONGEST_GROUPED 36
 
 static const char *const NUM_ONES[20] = {
     "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
@@ -214,9 +218,13 @@ static int num_rewrite(numbuf *b, const char *tok, size_t n, int style)
     num_part *part;
 
     if (blen && body[0] == '-') { negative = 1; body++; blen--; }
+    /* A token past 16 MB is left as digits: nobody reads that as a number,
+     * and on a 32-bit build the parts array's size below would wrap at a
+     * gigabyte -- a tiny allocation and a heap overflow. */
+    if (blen > ((size_t)1 << 24)) return 0;
     clean = (char *)malloc(blen + 1);
-    /* A token has at most one part more than it has dots, and no more parts
-     * than half its characters, rounded up, plus one. */
+    /* p parts need at least 2p - 1 characters, so p <= (blen + 1) / 2, which
+     * blen / 2 + 2 covers with room to spare. */
     part = (num_part *)malloc(sizeof(num_part) * (blen / 2 + 2));
     if (!clean || !part) goto done;
 
@@ -286,6 +294,12 @@ static int num_rewrite_parts(numbuf *b, const num_part *part, int nparts,
             } else if (!num_parse(whole, wn, &v) || !num_to_words(b, v)) {
                 b->len = mark;
                 if (b->buf) b->buf[mark] = 0;
+                if (!frac && wn > NUM_LONGEST_GROUPED) {
+                    /* too long to group: plain digits, spelled */
+                    if (negative) nb_str(b, "-");
+                    nb_add(b, whole, wn);
+                    return 1;
+                }
                 return 0;
             }
             if (frac) { nb_str(b, " point "); num_digits_aloud(b, frac, fn); }
@@ -307,6 +321,13 @@ static int num_rewrite_parts(numbuf *b, const num_part *part, int nparts,
             return 1;
         }
         if (wn >= NUM_LONG_DIGITS) {
+            /* A code (#31) and a run too long to group go plain, commas gone,
+             * and the engine spells them: see NUM_LONGEST_GROUPED. */
+            if (num_is_code(whole, wn) || wn > NUM_LONGEST_GROUPED) {
+                if (negative) nb_str(b, "-");
+                nb_add(b, whole, wn);
+                return 1;
+            }
             /* Grouped, not spelled: the engine reads "1,234,567" correctly, so
              * it keeps its own phrasing and we change as little as possible. */
             if (negative) nb_str(b, "-");
