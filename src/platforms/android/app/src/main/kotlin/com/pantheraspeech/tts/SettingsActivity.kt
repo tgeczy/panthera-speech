@@ -39,6 +39,7 @@ class SettingsActivity : Activity() {
     @Volatile private var removing = false
     private var engineHolder: LinearLayout? = null
     private var importDialog: android.app.AlertDialog? = null
+    private var checkingDialog: android.app.AlertDialog? = null
     private var importBar: android.widget.ProgressBar? = null
     private var importMessage: TextView? = null
     private var importAnnounced = -1
@@ -133,10 +134,17 @@ class SettingsActivity : Activity() {
         PantheraEngine.prefs(this).registerOnSharedPreferenceChangeListener(preferenceListener)
         refresh()
 
+        // What this exported screen takes from the intent that started it:
+        // see TestHooks (panthera-speech#40).  A rebuild has saved state, and
+        // a screen reopened from Recents gets its old intent again.
+        val debuggable = applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0
+        val fresh = TestHooks.fresh(rebuilt = savedInstanceState != null,
+            fromHistory = (intent?.flags ?: 0) and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0)
+
         // Test hook: `am start ... --ez autospeak true` checks the engine and
         // speaks a sample, so a render can be triggered without navigating to
-        // the button. Harmless in normal use (the extra is never set).
-        if (intent?.getBooleanExtra("autospeak", false) == true) {
+        // the button.  A debug build's, on a fresh start only.
+        if (TestHooks.on(debuggable, fresh) && intent?.getBooleanExtra("autospeak", false) == true) {
             Thread {
                 PantheraEngine.checkEngine(this)
                 runOnUiThread { refresh(); testSpeak() }
@@ -145,12 +153,15 @@ class SettingsActivity : Activity() {
 
         // An import already running -- this screen was rebuilt underneath it
         // -- shows its progress again. Otherwise, the adb route: `am start
-        // ... --es import /path/to/lion.zip` (or a content: URI) imports
-        // without the confirm dialog; typing the command is the consent.
-        importJob?.let { attachImport(it) } ?: intent?.getStringExtra("import")?.let { arg ->
+        // ... --es import /path/to/lion.zip` (or a content: URI), on a fresh
+        // start only, so a rebuild never runs it twice.  In a debug build
+        // typing the command is the consent; in a release build, where any
+        // installed app could have sent it, the confirm dialog comes first.
+        importJob?.let { attachImport(it) } ?: importCheck?.let { attachCheck(it) }
+            ?: intent?.getStringExtra("import")?.takeIf { TestHooks.route(fresh) }?.let { arg ->
             val source = if (arg.startsWith("content:") || arg.startsWith("file:"))
                 ZipImport.source(this, Uri.parse(arg)) else ZipImport.source(File(arg))
-            importZip(source, confirm = false)
+            importZip(source, confirm = TestHooks.confirm(debuggable))
         }
     }
 
@@ -159,6 +170,9 @@ class SettingsActivity : Activity() {
         PantheraEngine.prefs(this).unregisterOnSharedPreferenceChangeListener(preferenceListener)
         importJob?.listener = null
         importDialog?.dismiss(); importDialog = null
+        // The check goes on without this screen; a rebuilt one attaches (#38).
+        importCheck?.listener = null
+        checkingDialog?.dismiss(); checkingDialog = null
         super.onDestroy()
     }
 
@@ -205,52 +219,74 @@ class SettingsActivity : Activity() {
     /** Read what the zip holds, say what will happen, and -- with `confirm`,
      * once OK is pressed -- do it. */
     private fun importZip(source: ZipImport.Source, confirm: Boolean) {
-        if (importJob != null) { toast("An import is already running."); return }
+        if (importJob != null || importCheck != null) { toast("An import is already running."); return }
         if (removing) { toast("Engine data is being removed; wait for it to finish."); return }
-        importStatus.text = "Checking ${source.name}…"
-        val checking = android.app.AlertDialog.Builder(this)
+        val check = ImportCheck(source, confirm)
+        importCheck = check
+        attachCheck(check)
+        check.start()
+    }
+
+    /** Show a zip being checked on this screen, whichever screen instance
+     * this is; its outcome comes here.  Held outside the screen, as a running
+     * import is (panthera-speech#38): the check reads the whole zip -- seconds,
+     * or minutes for Alex from a cloud source -- and the screen turned, dark
+     * mode, font size or a keyboard rebuilt it meanwhile.  The worker then
+     * dismissed the destroyed screen's dialog, whose window was gone: an
+     * IllegalArgumentException on the main thread, the process down, the TTS
+     * service with it, and the plan lost.  ssi263-speech's design for the
+     * same class (e3d43be, #49). */
+    private fun attachCheck(check: ImportCheck) {
+        importStatus.text = "Checking ${check.source.name}…"
+        checkingDialog?.dismiss()
+        checkingDialog = android.app.AlertDialog.Builder(this)
             .setTitle("Checking zip")
-            .setMessage("Reading what is inside ${source.name}…")
+            .setMessage("Reading what is inside ${check.source.name}…")
             .setCancelable(false).create().also { it.show() }
-        Thread {
-            val plan = try { ZipImport.inspect(source) }
-                catch (e: Exception) { ZipImport.Plan(emptyList(), "The zip could not be read: ${e.message}") }
-            runOnUiThread {
-                checking.dismiss()
-                if (isFinishing || isDestroyed) return@runOnUiThread
-                val root = PantheraEngine.dataRoot(this)
-                val refusal = plan.refusal ?: run {
-                    root.mkdirs()
-                    val free = try { StatFs(root.absolutePath).availableBytes } catch (e: Exception) { -1L }
-                    if (free in 0 until plan.bytes + (64L shl 20))
-                        "Not enough room: the engine data unpacks to ${ZipImport.sizeText(plan.bytes)} " +
-                        "and this device has ${ZipImport.sizeText(free)} free."
-                    else null
-                }
-                if (refusal != null) {
-                    importStatus.text = "Not imported."
-                    android.app.AlertDialog.Builder(this)
-                        .setTitle("Cannot import ${source.name}").setMessage(refusal)
-                        .setPositiveButton("Close", null).show()
-                    return@runOnUiThread
-                }
-                val lines = plan.found.map { f ->
-                    val label = PantheraEngine.genLabel(f.gen!!)
-                    "Will import into $label: MacinTalk ${f.version}, ${f.voices} voices, " +
-                    "${ZipImport.sizeText(f.bytes)}." +
-                    if (File(root, f.gen).exists()) " The $label folder already here will be replaced." else ""
-                }
-                val message = lines.joinToString("\n\n") +
-                    "\n\nInto this app's protected storage, where the voices can speak " +
-                    "before the phone is unlocked."
-                if (!confirm) { startImport(source, plan, root); return@runOnUiThread }
-                android.app.AlertDialog.Builder(this)
-                    .setTitle("Import engine data?").setMessage(message)
-                    .setPositiveButton("OK") { _, _ -> startImport(source, plan, root) }
-                    .setNegativeButton("Cancel") { _, _ -> importStatus.text = "Not imported." }
-                    .show()
-            }
-        }.start()
+        check.listener = { c -> runOnUiThread { checkDone(c) } }
+        if (check.plan != null) checkDone(check)        // done while no screen was attached
+    }
+
+    private fun checkDone(check: ImportCheck) {
+        if (isFinishing || isDestroyed || importCheck !== check) return
+        val plan = check.plan ?: return
+        importCheck = null
+        check.listener = null
+        checkingDialog?.dismiss(); checkingDialog = null
+        val source = check.source
+        val confirm = check.confirm
+        Log.i("PantheraImport", "plan for ${source.name}: ${plan.found.size} found, refusal ${plan.refusal != null}")
+        val root = PantheraEngine.dataRoot(this)
+        val refusal = plan.refusal ?: run {
+            root.mkdirs()
+            val free = try { StatFs(root.absolutePath).availableBytes } catch (e: Exception) { -1L }
+            if (free in 0 until plan.bytes + (64L shl 20))
+                "Not enough room: the engine data unpacks to ${ZipImport.sizeText(plan.bytes)} " +
+                "and this device has ${ZipImport.sizeText(free)} free."
+            else null
+        }
+        if (refusal != null) {
+            importStatus.text = "Not imported."
+            android.app.AlertDialog.Builder(this)
+                .setTitle("Cannot import ${source.name}").setMessage(refusal)
+                .setPositiveButton("Close", null).show()
+            return
+        }
+        val lines = plan.found.map { f ->
+            val label = PantheraEngine.genLabel(f.gen!!)
+            "Will import into $label: MacinTalk ${f.version}, ${f.voices} voices, " +
+            "${ZipImport.sizeText(f.bytes)}." +
+            if (File(root, f.gen).exists()) " The $label folder already here will be replaced." else ""
+        }
+        val message = lines.joinToString("\n\n") +
+            "\n\nInto this app's protected storage, where the voices can speak " +
+            "before the phone is unlocked."
+        if (!confirm) { startImport(source, plan, root); return }
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Import engine data?").setMessage(message)
+            .setPositiveButton("OK") { _, _ -> startImport(source, plan, root) }
+            .setNegativeButton("Cancel") { _, _ -> importStatus.text = "Not imported." }
+            .show()
     }
 
     private fun startImport(source: ZipImport.Source, plan: ZipImport.Plan, root: File) {
@@ -337,6 +373,18 @@ class SettingsActivity : Activity() {
     /** An import in flight, held outside the activity so a screen rebuilt
      * underneath it -- a rotation, a watch going dark and back -- finds it
      * again and shows its progress. One at a time. */
+    /** A zip being checked before an import: one per process, held outside
+     * the screen as [ImportJob] is, so a rebuilt screen finds it (#38). */
+    private class ImportCheck(val source: ZipImport.Source, val confirm: Boolean) {
+        @Volatile var plan: ZipImport.Plan? = null
+        @Volatile var listener: ((ImportCheck) -> Unit)? = null
+        fun start() = Thread({
+            plan = try { ZipImport.inspect(source) }
+                catch (e: Exception) { ZipImport.Plan(emptyList(), "The zip could not be read: ${e.message}") }
+            listener?.invoke(this)
+        }, "panthera-zip-check").start()
+    }
+
     private class ImportJob(val source: ZipImport.Source, val plan: ZipImport.Plan, val root: File) {
         @Volatile var done = 0L
         @Volatile var total = -1L
@@ -1397,5 +1445,7 @@ class SettingsActivity : Activity() {
         /** The import in flight, if any: one per process, whichever screen
          * instance is showing it. */
         @Volatile private var importJob: ImportJob? = null
+        /** The zip being checked, if any, the same way. */
+        @Volatile private var importCheck: ImportCheck? = null
     }
 }
