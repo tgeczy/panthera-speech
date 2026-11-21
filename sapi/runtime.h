@@ -5,9 +5,9 @@
 
 namespace panthera_sapi {
 // Internal DLL runtime: one resident child, serialized across SAPI engines.
-// All child state below is accessed with g_hostLock held (except DLL lifetime).
+// All child state below is accessed with g_hostTurn held (except DLL lifetime).
 extern HMODULE g_module;
-extern CRITICAL_SECTION g_hostLock;
+extern HANDLE g_hostTurn;
 extern bool g_lockReady;
 extern HANDLE g_proc, g_in, g_out;
 extern std::wstring g_hostTree, g_hostParams, g_hostAbbrev;
@@ -22,21 +22,27 @@ bool host_alive();
 bool host_ensure(const std::wstring &tree, const std::wstring &engine,
                  const std::wstring &dictionary, const std::wstring &voices,
                  const std::wstring &params, const std::wstring &abbreviations);
-struct CsLock {
-    explicit CsLock(CRITICAL_SECTION *value): cs(value) { EnterCriticalSection(cs); }
-    ~CsLock() { LeaveCriticalSection(cs); }
-    CsLock(const CsLock &) = delete;
-    CsLock &operator=(const CsLock &) = delete;
+/* **The host, one voice at a time, each in its turn** (#57, by design).
+ * A kernel mutex, not a critical section: released, it passes straight to the
+ * voice already waiting, so a voice speaking back to back cannot keep taking
+ * the next turn ahead of it -- and a waiter can still wake to see whether it
+ * was cancelled.  TurnLock waits for the turn; TurnHeld releases a turn
+ * already taken.  An abandoned mutex -- a thread that died holding it -- is
+ * still a turn taken. */
+struct TurnLock {
+    explicit TurnLock(HANDLE value): h(value) { WaitForSingleObject(h, INFINITE); }
+    ~TurnLock() { ReleaseMutex(h); }
+    TurnLock(const TurnLock &) = delete;
+    TurnLock &operator=(const TurnLock &) = delete;
 private:
-    CRITICAL_SECTION *cs;
+    HANDLE h;
 };
-/* The same, for a lock already entered -- by TryEnterCriticalSection, say. */
-struct CsAdopt {
-    explicit CsAdopt(CRITICAL_SECTION *value): cs(value) {}
-    ~CsAdopt() { LeaveCriticalSection(cs); }
-    CsAdopt(const CsAdopt &) = delete;
-    CsAdopt &operator=(const CsAdopt &) = delete;
+struct TurnHeld {
+    explicit TurnHeld(HANDLE value): h(value) {}
+    ~TurnHeld() { ReleaseMutex(h); }
+    TurnHeld(const TurnHeld &) = delete;
+    TurnHeld &operator=(const TurnHeld &) = delete;
 private:
-    CRITICAL_SECTION *cs;
+    HANDLE h;
 };
 }

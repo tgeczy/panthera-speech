@@ -111,7 +111,7 @@ public:
             return speakInner(frags,site);
         } catch(...) {
             if(g_lockReady){
-                CsLock lock(&g_hostLock);
+                TurnLock lock(g_hostTurn);
                 host_drop();       /* mid-protocol unwind = desynced pipe */
             }
             return E_FAIL;
@@ -249,13 +249,17 @@ public:
          * the next waits -- but the one waiting may give up its place: an
          * application that cancels it while it waits is answered then, not
          * when the voice ahead of it finishes (Tomi, 2026-11-21: "if
-         * canceled yes").  The site is asked between tries, every 5 ms and
-         * only while another voice holds the host. */
-        while(!TryEnterCriticalSection(&g_hostLock)){
+         * canceled yes").  It waits in the mutex's own queue, so it is
+         * handed the host the moment the voice ahead lets go, and wakes
+         * between waits -- a timer tick, about 16 ms -- only while another
+         * voice holds the host, to ask its site whether it was cancelled. */
+        for(;;){
+            DWORD got=WaitForSingleObject(g_hostTurn,5);
+            if(got==WAIT_OBJECT_0||got==WAIT_ABANDONED)break;
+            if(got!=WAIT_TIMEOUT)return E_FAIL;
             if(site->GetActions()&SPVES_ABORT)return S_OK;   /* gave up its turn */
-            Sleep(5);
         }
-        CsAdopt lock(&g_hostLock);
+        TurnHeld lock(g_hostTurn);
         bool ok=true, aborted=false; int status=0;
         unsigned long long total=0;
         std::wstring pmod;
@@ -706,7 +710,7 @@ static HRESULT reg(bool add){
 STDAPI DllRegisterServer(){return reg(true);} STDAPI DllUnregisterServer(){return reg(false);}
 BOOL WINAPI DllMain(HINSTANCE h,DWORD why,LPVOID){
     if(why==DLL_PROCESS_ATTACH){g_module=h;DisableThreadLibraryCalls(h);
-        if(!g_lockReady){InitializeCriticalSection(&g_hostLock);g_lockReady=true;}}
+        if(!g_lockReady){g_hostTurn=CreateMutexW(0,FALSE,0);g_lockReady=g_hostTurn!=0;}}
     /* The host would exit on its own when the client's write handle closed
      * -- its stdin read fails and serve mode returns.  This is the case
      * where the client did not get that far. */

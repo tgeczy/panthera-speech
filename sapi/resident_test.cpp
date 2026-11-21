@@ -631,7 +631,7 @@ static void contract_checks(Engine *e, const wchar_t *LINE, const std::vector<BY
 int wmain(int argc, wchar_t **argv) {
     TestSettings settings;
     if(!settings.ready){fprintf(stderr,"cannot isolate test settings\n");return 1;}
-    InitializeCriticalSection(&g_hostLock); g_lockReady=true;
+    g_hostTurn=CreateMutexW(0,FALSE,0); g_lockReady=g_hostTurn!=0;
     rogue_checks();
     wchar_t appdata[MAX_PATH];
     if(!GetEnvironmentVariableW(L"APPDATA",appdata,MAX_PATH))return 0;
@@ -725,6 +725,27 @@ int wmain(int argc, wchar_t **argv) {
         check(SUCCEEDED(hd)&&d.audio.empty(),"a voice cancelled while waiting its turn says nothing");
         check(dReturned<c.lastWrite,"it gives up its place at once, not after the voice ahead finishes");
         check(SUCCEEDED(hc)&&c.audio==alone,"the voice that was speaking is untouched");
+
+        /* Each takes its own turn: a voice speaking back to back -- a screen
+         * reader moving line by line -- does not keep the host from the one
+         * waiting.  The waiter asks during the first utterance and must
+         * speak before the second; a waiter that only polled for a free
+         * host lost that race to the next Speak, over and over. */
+        FakeSite f1(0), f2(0), g(0);
+        std::atomic<bool> fDone(false);
+        HRESULT hf1=E_FAIL, hf2=E_FAIL, hg=E_FAIL;
+        std::thread tf([&]{
+            hf1=say_script(e,LONGLINE,f1);
+            hf2=say_script(e,LONGLINE,f2);              /* straight back for more */
+            fDone=true;
+        });
+        while(!f1.firstWrite&&!fDone)Sleep(1);
+        std::thread tg([&]{ hg=say_script(other,LONGLINE,g); });
+        tf.join(); tg.join();
+        check(SUCCEEDED(hf1)&&SUCCEEDED(hf2)&&SUCCEEDED(hg),"three utterances, two voices, all spoken");
+        check(g.firstWrite>f1.lastWrite&&g.lastWrite<f2.firstWrite,
+              "the waiting voice takes its turn between the other's two utterances");
+        check(f1.audio==alone&&f2.audio==alone&&g.audio==alone,"and all three are whole");
         other->Release();
     }
 

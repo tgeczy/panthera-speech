@@ -18,7 +18,7 @@ std::wstring module_dir() {
     wchar_t p[MAX_PATH]; GetModuleFileNameW(g_module,p,MAX_PATH);
     wchar_t *s=wcsrchr(p,L'\\'); if(s)*s=0; return p;
 }
-CRITICAL_SECTION g_hostLock;
+HANDLE g_hostTurn;
 bool g_lockReady;
 HANDLE g_proc, g_in, g_out;
 /* What the live host was started with.
