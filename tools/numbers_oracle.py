@@ -47,6 +47,18 @@ def corpus():
     out += ["0.7.3", "1.2.3", "1.2.3.4", "10.20.30", "0.7.3.9.11",
             "1.999999999999999999.2", "v0.7.3", "version 0.7.3"]
 
+    # Past every buffer the host ever had (panthera-speech#44): it gave up at
+    # 64 characters and at 9 parts and left the digits, where the Python
+    # groups or reads them.  Long runs, long codes with a leading zero
+    # (#31), many-part versions, a long part, and commas all through.
+    for n in (26, 30, 63, 64, 65, 100, 200):
+        out += ["1" * n, "0" + "1" * (n - 1), "-" + "9" * n]
+    for parts in (5, 8, 9, 10, 12, 30):
+        out += [".".join(str(k % 10) for k in range(1, parts + 1)),
+                ".".join(["0" + str(k % 10) for k in range(parts)])]
+    out += ["1.0" + "3" * 59 + ".2", "1." + "2" * 70 + ".3",
+            ",".join(str(k) for k in range(41)), "1," + ",".join(["234"] * 30)]
+
     # Signs, including the ones that are not signs.
     out += ["-1234567", "-0.5", "-1", "--1234567", "a-1234567", "1-2",
             "1234567-", "- 1234567"]

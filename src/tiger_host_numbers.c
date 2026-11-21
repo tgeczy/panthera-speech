@@ -194,22 +194,35 @@ static int num_token_valid(const char *s, size_t len)
 /* One matched token, rewritten into `b`.  `tok`/`n` is the token exactly as it
  * appeared, sign included.  Returns 0 to mean "leave it alone", in which case
  * nothing has been appended. */
+typedef struct { const char *p; size_t n; } num_part;
+
+static int num_rewrite_parts(numbuf *b, const num_part *part, int nparts,
+                             int negative, int style);
+
+/* **As long as the token is, and as many parts as it has** (panthera-speech
+ * #44).  The commas-stripped copy and the parts lived in fixed buffers of 64
+ * characters and 8 parts, and a token past either was left as digits -- where
+ * pantheranumbers.py, the reference, grouped a long run or read a version of
+ * nine parts.  The two halves disagreed on text a person could type.  Both
+ * are sized to the token now; the work itself is num_rewrite_parts. */
 static int num_rewrite(numbuf *b, const char *tok, size_t n, int style)
 {
     const char *body = tok;
-    size_t blen = n, i, start;
-    int negative = 0, nparts = 0;
-    struct { const char *p; size_t n; } part[8];
-    char clean[64];
-    size_t cn = 0;
+    size_t blen = n, i, start, cn = 0;
+    int negative = 0, nparts = 0, said = 0;
+    char *clean;
+    num_part *part;
 
     if (blen && body[0] == '-') { negative = 1; body++; blen--; }
+    clean = (char *)malloc(blen + 1);
+    /* A token has at most one part more than it has dots, and no more parts
+     * than half its characters, rounded up, plus one. */
+    part = (num_part *)malloc(sizeof(num_part) * (blen / 2 + 2));
+    if (!clean || !part) goto done;
 
-    /* Commas are the caller's; strip them, then split on the dots.  Anything
-     * longer than this buffer is not a quantity worth rewriting. */
+    /* Commas are the caller's; strip them, then split on the dots. */
     for (i = 0; i < blen; i++) {
         if (body[i] == ',') continue;
-        if (cn + 1 >= sizeof clean) return 0;
         clean[cn++] = body[i];
     }
     clean[cn] = 0;
@@ -217,16 +230,25 @@ static int num_rewrite(numbuf *b, const char *tok, size_t n, int style)
     start = 0;
     for (i = 0; i <= cn; i++) {
         if (i != cn && clean[i] != '.') continue;
-        if (nparts >= 8) return 0;
         /* An empty part means a trailing or doubled dot: leave it alone,
          * exactly as `if not all(parts)` does. */
-        if (i == start) return 0;
+        if (i == start) goto done;
         part[nparts].p = clean + start;
         part[nparts].n = i - start;
         nparts++;
         start = i + 1;
     }
-    if (nparts == 0) return 0;
+    if (nparts) said = num_rewrite_parts(b, part, nparts, negative, style);
+done:
+    free(part);
+    free(clean);
+    return said;
+}
+
+static int num_rewrite_parts(numbuf *b, const num_part *part, int nparts,
+                             int negative, int style)
+{
+    size_t i;
 
     /* Three or more parts is a version, never a quantity: 0.7.3.  Each part is
      * its own number and the separators have to be spoken, which is the one
