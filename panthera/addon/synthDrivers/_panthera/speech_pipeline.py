@@ -123,133 +123,23 @@ class SpeechPipelineMixin(MarkerPipelineMixin):
             if item is None:
                 break
             epoch = self._epoch
-            #: Read before `_join`, which strips the indexes it reports early:
-            #: an index is the continuous-reading signal, and this item being
-            #: part of a continuous read is what earns it the restored
-            #: sentence pause below.
-            #:
-            #: The second half is the joiner's own lesson, re-learned here by
-            #: ear: **an index alone does not mean a document.**  A list item
-            #: reached by first letter can carry one too, and giving it a
-            #: trailing sentence pause read as first-letter navigation
-            #: growing a 0.4 s gap.  A say-all chunk ends at a full stop and
-            #: has a sentence's length -- `speakWithoutPauses` flushes at the
-            #: last full stop it can find -- so a short or unpunctuated thing
-            #: carrying an index is an announcement, and announcements end
-            #: the way they always have.
-            _chunkText = _joinFragments(
-                [v for k, v in item if k == "text"])
-            continuous = (any(k == "index" for k, _ in item)
-                          and _sentenceEnds(_chunkText) >= 1
-                          and len(_chunkText) >= JOIN_MIN_CHARS)
-            item = self._join(item, epoch)
-            marked = (not self._joinSentences and self._streaming
-                      and getattr(self, "_markerStreaming", False)
-                      and not self._acceptCommands and self._inputMode is None)
-            wpm, voice = self._wpm(), self._voiceId
-            #: What NVDA has asked us to add to the user's pitch for the
-            #: text that follows -- how "capital pitch change percentage"
-            #: is expressed.  0 means the user's own setting.
-            adj = 0
-            #: The same again, on the volume slider.
-            vol = 0
-            run = []
-            #: Indexes seen since the last flush.
-            #:
-            #: **An index must not force a split.**  NVDA puts one at the
-            #: *start* of every line during say-all -- the `lineReached`
-            #: callback -- and it has already decided those lines belong
-            #: together: sayAll speaks through `speakWithoutPauses`, which
-            #: buffers lines until one of them contains a natural pause.
-            #: Splitting at the index undid that decision and handed the engine
-            #: a fragment ending in nothing, which it reads as a sentence
-            #: ending.
-            #:
-            #: With word wrap on that is heard as a full stop in the middle of
-            #: a sentence -- "narrowing. budgets", "hits. and kills" -- at
-            #: exactly the wrapped line boundaries.
-            #:
-            #: Two lists rather than one, because an index that arrives
-            #: *after* text is a different thing from one that arrives before
-            #: it.  Before any text, it is where say-all puts its line
-            #: marker.  After text, it is a callback somebody placed at a
-            #: point in the speech -- NVDA's own spelling-error sound and
-            #: indentation tones, or an add-on's earcon -- and if a break or
-            #: the end of the sequence follows, its place in the audio is
-            #: known exactly: the end of the words before it.  `_flush`
-            #: decides what the distinction is worth; with breathing on it
-            #: is worth nothing, and both lists go ahead of the audio as they
-            #: always have.  Text arriving after a trailing index makes it an
-            #: interior one, whose position nothing here can know, so it
-            #: rejoins the head.
             pending = []
             trailing = []
-            for kind, value in item:
-                if self._stopped or self._epoch != epoch:
-                    break
-                if marked:
-                    if kind in ("text", "index", "break"):
-                        run.append((kind, value))
-                        continue
-                    self._flushMarked(run, wpm, voice, adj, epoch, vol)
-                if kind == "text":
-                    if trailing:
-                        pending.extend(trailing)
-                        del trailing[:]
-                    run.append(value)
-                    continue
-                if kind == "index":
-                    (trailing if run else pending).append(value)
-                    continue
-                self._flush(run, wpm, voice, adj, epoch, pending, vol,
-                            trailing)
-                if self._stopped or self._epoch != epoch:
-                    break
-                if kind == "break":
-                    self._audioQueue.put(("audio", _silence(value), epoch))
-                elif kind == "pitch":
-                    adj = value
-                elif kind == "volume":
-                    vol = value
-                elif kind == "rate":
-                    # After the flush above, never before it: the text already
-                    # collected was asked for at the old rate, and applying a
-                    # change backwards over it is how "the first word comes out
-                    # at the wrong speed" happens.
-                    wpm = self._wpm(value)
-            if not self._stopped and self._epoch == epoch:
-                if marked:
-                    self._flushMarked(run, wpm, voice, adj, epoch, vol)
-                else:
-                    self._flush(run, wpm, voice, adj, epoch, pending, vol,
-                                trailing)
-                if (continuous and self._inputMode is None
-                        and not self._stopped and self._epoch == epoch):
-                    #: **The engine's own sentence pause, restored between
-                    #: chunks.**  Inside one utterance the engine composes
-                    #: about half a second between sentences at 180 wpm; a
-                    #: chunk ends with zero trailing frames, so during
-                    #: continuous reading every chunk boundary slammed shut
-                    #: (panthera-speech#10).  The length is the engine's own,
-                    #: measured -- `SENTENCE_PAUSE_FACTOR / wpm`, one law for
-                    #: every voice and generation -- scaled by the same gap
-                    #: setting that governs announcement parts, so "Short"
-                    #: is audibly short and "Long" is the engine exactly.
-                    #:
-                    #: Never while an input mode is being carried:
-                    #: `_inputMode` here is the mode in force *after* this
-                    #: utterance rendered, so mid-song a chunk boundary is a
-                    #: bar line, not a paragraph -- a tune's prosodic "." and
-                    #: "!" phonemes count as sentence ends, and the reported
-                    #: song gained a half-second rest per verse the day the
-                    #: pause shipped.  The chunk that closes the song with
-                    #: `[[inpt TEXT]]` leaves the mode None and pauses like
-                    #: the prose it returns to.
-                    pause = _silence(
-                        SENTENCE_PAUSE_FACTOR / max(1, wpm)
-                        * self.PAUSE_SCALE.get(self._pauseMode, 1.0))
-                    if pause:
-                        self._audioQueue.put(("audio", pause, epoch))
+            #: What has not been taken in yet, so that a failure can still tell
+            #: NVDA about every index in it; `_runOne` moves it along.
+            self._left = item
+            try:
+                self._runOne(item, epoch, pending, trailing)
+            except Exception:
+                #: **One utterance may fail; the reader may not**
+                #: (panthera-speech#28).  Anything raised here used to end
+                #: this thread, and nothing restarted it: every later
+                #: utterance queued into nothing, no index or done was
+                #: reported, and NVDA was silent until the synthesizer was
+                #: reloaded.  A 4,500-digit token was enough.
+                log.error("Panthera: an utterance could not be spoken; "
+                          "the next one will be", exc_info=True)
+                pending.extend(v for k, v in self._left if k == "index")
             for index in pending + trailing:    # nothing left to speak
                 self._audioQueue.put(("index", index, None))
             del pending[:]
@@ -259,6 +149,140 @@ class SpeechPipelineMixin(MarkerPipelineMixin):
             # even though cancel() had just cleared that boolean.
             self._lastSpeechEpoch = epoch
             self._audioQueue.put(("done", None, None))
+
+    def _runOne(self, item, epoch, pending, trailing):
+        """One utterance of `_run`: everything between taking it from the
+        queue and reporting what is left of it.  `self._left` follows what
+        has not been taken in yet, for `_run`'s failure path."""
+        #: Read before `_join`, which strips the indexes it reports early:
+        #: an index is the continuous-reading signal, and this item being
+        #: part of a continuous read is what earns it the restored
+        #: sentence pause below.
+        #:
+        #: The second half is the joiner's own lesson, re-learned here by
+        #: ear: **an index alone does not mean a document.**  A list item
+        #: reached by first letter can carry one too, and giving it a
+        #: trailing sentence pause read as first-letter navigation
+        #: growing a 0.4 s gap.  A say-all chunk ends at a full stop and
+        #: has a sentence's length -- `speakWithoutPauses` flushes at the
+        #: last full stop it can find -- so a short or unpunctuated thing
+        #: carrying an index is an announcement, and announcements end
+        #: the way they always have.
+        _chunkText = _joinFragments(
+            [v for k, v in item if k == "text"])
+        continuous = (any(k == "index" for k, _ in item)
+                      and _sentenceEnds(_chunkText) >= 1
+                      and len(_chunkText) >= JOIN_MIN_CHARS)
+        item = self._join(item, epoch)
+        self._left = item
+        marked = (not self._joinSentences and self._streaming
+                  and getattr(self, "_markerStreaming", False)
+                  and not self._acceptCommands and self._inputMode is None)
+        wpm, voice = self._wpm(), self._voiceId
+        #: What NVDA has asked us to add to the user's pitch for the
+        #: text that follows -- how "capital pitch change percentage"
+        #: is expressed.  0 means the user's own setting.
+        adj = 0
+        #: The same again, on the volume slider.
+        vol = 0
+        run = []
+        #: `pending` and `trailing`, owned by `_run`: indexes seen since the
+        #: last flush.
+        #:
+        #: **An index must not force a split.**  NVDA puts one at the
+        #: *start* of every line during say-all -- the `lineReached`
+        #: callback -- and it has already decided those lines belong
+        #: together: sayAll speaks through `speakWithoutPauses`, which
+        #: buffers lines until one of them contains a natural pause.
+        #: Splitting at the index undid that decision and handed the engine
+        #: a fragment ending in nothing, which it reads as a sentence
+        #: ending.
+        #:
+        #: With word wrap on that is heard as a full stop in the middle of
+        #: a sentence -- "narrowing. budgets", "hits. and kills" -- at
+        #: exactly the wrapped line boundaries.
+        #:
+        #: Two lists rather than one, because an index that arrives
+        #: *after* text is a different thing from one that arrives before
+        #: it.  Before any text, it is where say-all puts its line
+        #: marker.  After text, it is a callback somebody placed at a
+        #: point in the speech -- NVDA's own spelling-error sound and
+        #: indentation tones, or an add-on's earcon -- and if a break or
+        #: the end of the sequence follows, its place in the audio is
+        #: known exactly: the end of the words before it.  `_flush`
+        #: decides what the distinction is worth; with breathing on it
+        #: is worth nothing, and both lists go ahead of the audio as they
+        #: always have.  Text arriving after a trailing index makes it an
+        #: interior one, whose position nothing here can know, so it
+        #: rejoins the head.
+        for at, (kind, value) in enumerate(item):
+            self._left = item[at:]
+            if self._stopped or self._epoch != epoch:
+                break
+            if marked:
+                if kind in ("text", "index", "break"):
+                    run.append((kind, value))
+                    continue
+                self._flushMarked(run, wpm, voice, adj, epoch, vol)
+            if kind == "text":
+                if trailing:
+                    pending.extend(trailing)
+                    del trailing[:]
+                run.append(value)
+                continue
+            if kind == "index":
+                (trailing if run else pending).append(value)
+                continue
+            self._flush(run, wpm, voice, adj, epoch, pending, vol,
+                        trailing)
+            if self._stopped or self._epoch != epoch:
+                break
+            if kind == "break":
+                self._audioQueue.put(("audio", _silence(value), epoch))
+            elif kind == "pitch":
+                adj = value
+            elif kind == "volume":
+                vol = value
+            elif kind == "rate":
+                # After the flush above, never before it: the text already
+                # collected was asked for at the old rate, and applying a
+                # change backwards over it is how "the first word comes out
+                # at the wrong speed" happens.
+                wpm = self._wpm(value)
+        self._left = []
+        if not self._stopped and self._epoch == epoch:
+            if marked:
+                self._flushMarked(run, wpm, voice, adj, epoch, vol)
+            else:
+                self._flush(run, wpm, voice, adj, epoch, pending, vol,
+                            trailing)
+            if (continuous and self._inputMode is None
+                    and not self._stopped and self._epoch == epoch):
+                #: **The engine's own sentence pause, restored between
+                #: chunks.**  Inside one utterance the engine composes
+                #: about half a second between sentences at 180 wpm; a
+                #: chunk ends with zero trailing frames, so during
+                #: continuous reading every chunk boundary slammed shut
+                #: (panthera-speech#10).  The length is the engine's own,
+                #: measured -- `SENTENCE_PAUSE_FACTOR / wpm`, one law for
+                #: every voice and generation -- scaled by the same gap
+                #: setting that governs announcement parts, so "Short"
+                #: is audibly short and "Long" is the engine exactly.
+                #:
+                #: Never while an input mode is being carried:
+                #: `_inputMode` here is the mode in force *after* this
+                #: utterance rendered, so mid-song a chunk boundary is a
+                #: bar line, not a paragraph -- a tune's prosodic "." and
+                #: "!" phonemes count as sentence ends, and the reported
+                #: song gained a half-second rest per verse the day the
+                #: pause shipped.  The chunk that closes the song with
+                #: `[[inpt TEXT]]` leaves the mode None and pauses like
+                #: the prose it returns to.
+                pause = _silence(
+                    SENTENCE_PAUSE_FACTOR / max(1, wpm)
+                    * self.PAUSE_SCALE.get(self._pauseMode, 1.0))
+                if pause:
+                    self._audioQueue.put(("audio", pause, epoch))
 
     def _reportIndexes(self, items):
         """Report the indexes in `items` now, and hand back everything else.
@@ -405,6 +429,45 @@ class SpeechPipelineMixin(MarkerPipelineMixin):
             carried = self._modeAfter(text) is not None
         return items
 
+    def _renderPieces(self, pieces, wpm, voice, adj, epoch, sink, fed, vol):
+        """`_flush`'s render, piece by piece. -> the last PCM, or None."""
+        pcm = None
+        for piece in pieces:
+            if self._stopped or self._epoch != epoch:
+                break
+            # Per piece, not per utterance: a failure in the middle of a
+            # long post must not cost the rest of it.
+            heard = len(fed)
+            pcm = self._render(piece, wpm, voice, self._pitchOffset(adj),
+                               sink=sink, volume=vol)
+            if (pcm is None and len(fed) == heard and not self._stopped
+                    and self._epoch == epoch):
+                # Nothing was said and nothing was heard, and this utterance is
+                # still the one the user is waiting for.  Two failures arrive
+                # here.
+                #
+                # The host refused to stream, and streaming has just been
+                # turned off -- so say it the old way rather than lose it,
+                # because it could be the one telling the user what happened.
+                #
+                # Or a cancel retired the host a moment after this utterance
+                # had started on it.  That cancel was for the utterance
+                # *before* this one -- the queue was drained before this item
+                # was taken off it -- so this text is still wanted, and the
+                # retirement has left a fresh host to say it on.  Rule 3 at the
+                # top of this file is the whole reason the case is handled
+                # rather than reasoned about: an utterance dropped in silence
+                # is the failure that matters.
+                #
+                # The epoch guard is what keeps it from costing anything.  Text
+                # that really was cancelled is not rendered a second time only
+                # to be thrown away, which would put back the wait the
+                # retirement exists to remove.
+                pcm = self._render(piece, wpm, voice,
+                                   self._pitchOffset(adj), sink=sink,
+                                   volume=vol)
+        return pcm
+
     def _flush(self, run, wpm, voice, adj, epoch, pending=None, vol=0,
                trailing=None):
         """Render the text collected so far as ONE utterance.
@@ -515,40 +578,15 @@ class SpeechPipelineMixin(MarkerPipelineMixin):
         # and a third of silence before anything is said at all.
         pieces = _splitUtterance(text) if not self._streaming else [text]
         pcm = None
-        for piece in pieces:
-            if self._stopped or self._epoch != epoch:
-                break
-            # Per piece, not per utterance: a failure in the middle of a
-            # long post must not cost the rest of it.
-            heard = len(fed)
-            pcm = self._render(piece, wpm, voice, self._pitchOffset(adj),
-                               sink=sink, volume=vol)
-            if (pcm is None and len(fed) == heard and not self._stopped
-                    and self._epoch == epoch):
-                # Nothing was said and nothing was heard, and this utterance is
-                # still the one the user is waiting for.  Two failures arrive
-                # here.
-                #
-                # The host refused to stream, and streaming has just been
-                # turned off -- so say it the old way rather than lose it,
-                # because it could be the one telling the user what happened.
-                #
-                # Or a cancel retired the host a moment after this utterance
-                # had started on it.  That cancel was for the utterance
-                # *before* this one -- the queue was drained before this item
-                # was taken off it -- so this text is still wanted, and the
-                # retirement has left a fresh host to say it on.  Rule 3 at the
-                # top of this file is the whole reason the case is handled
-                # rather than reasoned about: an utterance dropped in silence
-                # is the failure that matters.
-                #
-                # The epoch guard is what keeps it from costing anything.  Text
-                # that really was cancelled is not rendered a second time only
-                # to be thrown away, which would put back the wait the
-                # retirement exists to remove.
-                pcm = self._render(piece, wpm, voice,
-                                   self._pitchOffset(adj), sink=sink,
-                                   volume=vol)
+        try:
+            pcm = self._renderPieces(pieces, wpm, voice, adj, epoch, sink, fed, vol)
+        except Exception:
+            # The indexes after these words are owed even when the words fail:
+            # `_run` reports what is left and the utterance's done notice, and
+            # these are the ones only this function was holding.
+            for index in tails:
+                self._audioQueue.put((kind, index, None))
+            raise
         # Timing, at DEBUG, because "it lags on long text" is the report this
         # add-on gets most and it was never possible to check from a log.  Both
         # numbers, per utterance: a first sound that arrives late is a

@@ -946,30 +946,44 @@ class SynthDriver(SynthDriver):
             #: exactly the wrapped line boundaries, which is why it sounded so
             #: arbitrary.
             pending = []
-            for kind, value in item:
-                if self._stopped or self._cancels != mark:
-                    break
-                if kind == "text":
-                    run.append(value)
-                    continue
-                if kind == "index":
-                    pending.append(value)
-                    continue
-                self._flush(run, wpm, voice, adj, pending, vol, mark=mark)
-                if self._stopped or self._cancels != mark:
-                    break
-                if kind == "break":
-                    self._audioQueue.put(("audio", _silence(value), mark))
-                elif kind == "pitch":
-                    adj = value
-                elif kind == "volume":
-                    vol = value
-                elif kind == "rate":
-                    # After the flush, never before it: the text already
-                    # collected was asked for at the old rate.
-                    wpm = self._wpm(value)
-            if not self._stopped and self._cancels == mark:
-                self._flush(run, wpm, voice, adj, pending, vol, mark=mark)
+            #: What has not been taken in yet, so a failure can still tell
+            #: NVDA about every index in it.
+            left = item
+            try:
+                for at, (kind, value) in enumerate(item):
+                    left = item[at:]
+                    if self._stopped or self._cancels != mark:
+                        break
+                    if kind == "text":
+                        run.append(value)
+                        continue
+                    if kind == "index":
+                        pending.append(value)
+                        continue
+                    self._flush(run, wpm, voice, adj, pending, vol, mark=mark)
+                    if self._stopped or self._cancels != mark:
+                        break
+                    if kind == "break":
+                        self._audioQueue.put(("audio", _silence(value), mark))
+                    elif kind == "pitch":
+                        adj = value
+                    elif kind == "volume":
+                        vol = value
+                    elif kind == "rate":
+                        # After the flush, never before it: the text already
+                        # collected was asked for at the old rate.
+                        wpm = self._wpm(value)
+                left = []
+                if not self._stopped and self._cancels == mark:
+                    self._flush(run, wpm, voice, adj, pending, vol, mark=mark)
+            except Exception:
+                #: One utterance may fail; the reader may not
+                #: (panthera-speech#28): anything raised here ended this
+                #: thread, and NVDA was silent until the synthesizer was
+                #: reloaded.  See speech_pipeline.SpeechPipelineMixin._run.
+                log.error("tigerspeech: an utterance could not be spoken; "
+                          "the next one will be", exc_info=True)
+                pending.extend(v for k, v in left if k == "index")
             for index in pending:               # nothing left to speak
                 self._audioQueue.put(("index", index, None))
             del pending[:]

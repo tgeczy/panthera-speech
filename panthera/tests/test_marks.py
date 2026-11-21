@@ -247,6 +247,42 @@ def test_with_breathing_off_an_index_is_never_lost_when_the_run_is_cancelled():
     assert not [item for item in raw if item[0] == "audio"]
 
 
+@pytest.mark.parametrize("join", [False, True], ids=["breathing-off", "breathing-on"])
+def test_a_render_that_fails_does_not_end_the_reader(join):
+    """panthera-speech#28: anything raised while an utterance was prepared or
+    rendered -- a 4,500-digit token made `int()` refuse -- ended the worker
+    thread, and nothing ever restarted it: every later utterance queued into
+    nothing, no index or done was reported, and NVDA was silent until the
+    synthesizer was reloaded.  One utterance may fail; the reader may not."""
+    d = _bare(join)
+    render = d._render
+    calls = []
+
+    def failsOnce(text, wpm, voice, pitch=0, sink=None, volume=0):
+        calls.append(text)
+        if len(calls) == 1:
+            raise ValueError("Exceeds the limit (4300 digits)")
+        return render(text, wpm, voice, pitch, sink=sink, volume=volume)
+    d._render = failsOnce
+    d._queue.put([("text", "one"), ("index", 1)])
+    d._queue.put([("text", "two"), ("index", 2)])
+    d._queue.put(None)
+    d._run()                                        # used to raise here
+    raw = _drain(d._audioQueue)
+    kinds = [k for k, _v, _t in raw]
+    # With breathing on the joiner may have made the two one utterance.
+    assert kinds.count("done") >= 1 and kinds[-1] == "done", "an utterance never completed"
+    reported = [v for k, v, _t in raw if k in ("mark", "index")]
+    assert reported == [1, 2], "an index was lost: %r" % (reported,)
+    # And the reader is still a reader.
+    d._queue.put([("text", "three"), ("index", 3)])
+    d._queue.put(None)
+    d._run()
+    after = _drain(d._audioQueue)
+    assert ("audio", len(_silence(50))) in _shape(after), "the next utterance was not spoken"
+    assert [v for k, v, _t in after if k in ("mark", "index")] == [3]
+
+
 # -- the feeder: when a mark is reported --------------------------------------
 
 class _Reports(object):

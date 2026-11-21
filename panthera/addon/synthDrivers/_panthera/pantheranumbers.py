@@ -80,6 +80,16 @@ def to_words(n):
     return None
 
 
+def _int(s):
+    """-> the value of a run of digits, or None when no number that long can
+    be said.  `to_words` stops below a thousand of its largest scale, and
+    Python refuses `int()` past 4,300 digits -- a minified JSON array is one
+    token here -- which raised and took the reader with it
+    (panthera-speech#28).  The native host leaves such a run as digits too."""
+    significant = s.lstrip("0")
+    return int(significant or "0") if len(significant) <= 21 else None
+
+
 def _digits(s):
     """-> "seven five" for "75" -- how the part after a point is read."""
     return " ".join(_ONES[int(d)] for d in s)
@@ -108,7 +118,10 @@ def _rewrite(token, style):
     #: its own number and the separators have to be spoken, which is the one
     #: case the engine loses entirely.
     if len(parts) > 2:
-        said = [to_words(int(p)) for p in parts]
+        values = [_int(p) for p in parts]
+        if any(v is None for v in values):
+            return token
+        said = [to_words(v) for v in values]
         if any(w is None for w in said):
             return token
         return minus + " point ".join(said)
@@ -116,7 +129,8 @@ def _rewrite(token, style):
     whole, frac = parts[0], (parts[1] if len(parts) == 2 else None)
 
     if style == "words":
-        said = to_words(int(whole))
+        value = _int(whole)
+        said = None if value is None else to_words(value)
         if said is None:
             return token
         return minus + said + ("" if frac is None else " point " + _digits(frac))

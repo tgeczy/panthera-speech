@@ -30,6 +30,18 @@ def test_a_number_too_large_to_say_is_refused():
     assert numbers.to_words(10 ** 18) is None
 
 
+@pytest.mark.parametrize("style", ["words", "fix"])
+def test_a_digit_run_too_long_to_convert_is_left_as_it_is(style):
+    """panthera-speech#28: Python refuses `int()` on more than 4,300 digits,
+    and a minified JSON number array is one token (commas are absorbed), so
+    the rewrite raised and took the reader with it.  A run that long is no
+    number anyone can say; it stays as written, as the native host leaves it."""
+    run = ",".join(["123"] * 1500)
+    assert numbers.expand(run, style) == run
+    version = ".".join(["1" * 4400, "2", "3"])
+    assert numbers.expand(version, style) == version
+
+
 # -- the reported faults --------------------------------------------------
 
 def test_seven_digits_get_grouped():
