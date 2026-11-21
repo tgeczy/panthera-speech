@@ -165,14 +165,17 @@ class SettingsActivity : Activity() {
         }
     }
 
-    override fun onResume() { super.onResume(); refresh(); refreshSettings(true); moveDataIn() }
+    override fun onResume() {
+        super.onResume(); refresh(); refreshSettings(true); moveDataIn()
+        importCheck?.let { attachCheck(it) }    // the screen in front shows the check
+    }
+    override fun onPause() { detachCheck(); super.onPause() }
     override fun onDestroy() {
         PantheraEngine.prefs(this).unregisterOnSharedPreferenceChangeListener(preferenceListener)
         importJob?.listener = null
         importDialog?.dismiss(); importDialog = null
         // The check goes on without this screen; a rebuilt one attaches (#38).
-        importCheck?.listener = null
-        checkingDialog?.dismiss(); checkingDialog = null
+        detachCheck()
         super.onDestroy()
     }
 
@@ -237,14 +240,39 @@ class SettingsActivity : Activity() {
      * service with it, and the plan lost.  ssi263-speech's design for the
      * same class (e3d43be, #49). */
     private fun attachCheck(check: ImportCheck) {
+        if (check.listener === checkListener && checkingDialog?.isShowing == true) return
         importStatus.text = "Checking ${check.source.name}…"
         checkingDialog?.dismiss()
+        // Cancel, because the check now outlives the screen: a source that
+        // never ends -- a stalled cloud read -- would otherwise hold every
+        // screen of the app behind this dialog until a force stop.
         checkingDialog = android.app.AlertDialog.Builder(this)
             .setTitle("Checking zip")
             .setMessage("Reading what is inside ${check.source.name}…")
+            .setNegativeButton("Cancel") { _, _ -> cancelCheck(check) }
             .setCancelable(false).create().also { it.show() }
-        check.listener = { c -> runOnUiThread { checkDone(c) } }
+        check.listener = checkListener
         if (check.plan != null) checkDone(check)        // done while no screen was attached
+    }
+
+    /** This screen's own listener, so that it lets go of the check only if
+     * it is still the one holding it: two settings screens can be alive at
+     * once -- Android's TTS settings opens one of its own -- and only the
+     * one in front shows the check and takes its outcome. */
+    private val checkListener: (ImportCheck) -> Unit = { c -> runOnUiThread { checkDone(c) } }
+
+    private fun detachCheck() {
+        val check = importCheck ?: return
+        if (check.listener === checkListener) check.listener = null
+        checkingDialog?.dismiss(); checkingDialog = null
+    }
+
+    private fun cancelCheck(check: ImportCheck) {
+        check.cancelled = true
+        check.listener = null
+        if (importCheck === check) importCheck = null
+        checkingDialog?.dismiss(); checkingDialog = null
+        importStatus.text = "Not imported."
     }
 
     private fun checkDone(check: ImportCheck) {
@@ -378,10 +406,14 @@ class SettingsActivity : Activity() {
     private class ImportCheck(val source: ZipImport.Source, val confirm: Boolean) {
         @Volatile var plan: ZipImport.Plan? = null
         @Volatile var listener: ((ImportCheck) -> Unit)? = null
+        @Volatile var cancelled = false
         fun start() = Thread({
+            // Throwable, not Exception: an OutOfMemoryError here, uncaught,
+            // took the process down and the TTS service with it (#55).  The
+            // import thread already catches everything; so does this.
             plan = try { ZipImport.inspect(source) }
-                catch (e: Exception) { ZipImport.Plan(emptyList(), "The zip could not be read: ${e.message}") }
-            listener?.invoke(this)
+                catch (e: Throwable) { ZipImport.Plan(emptyList(), "The zip could not be read: ${e.message ?: e.javaClass.simpleName}") }
+            if (!cancelled) listener?.invoke(this)
         }, "panthera-zip-check").start()
     }
 

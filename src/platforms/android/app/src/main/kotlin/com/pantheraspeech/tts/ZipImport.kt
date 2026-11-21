@@ -75,6 +75,13 @@ object ZipImport {
      * thread is not caught, and took the app and its TTS service down. */
     private const val PLIST_CAP = 1L shl 20
     private const val ENGINE_CAP = 64L shl 20
+    /** All that a streamed check keeps at once, every engine and plist in
+     * the zip together: one entry's cap.  Real engine binaries are a few MB,
+     * so a zip of all four generations is far inside it. */
+    private const val KEPT_BUDGET = ENGINE_CAP
+
+    private fun capFor(name: String) =
+        if (name.endsWith("Info.plist") || name.endsWith("version.plist")) PLIST_CAP else ENGINE_CAP
 
     /** The bytes, twice over: a fresh stream from the start for the import,
      * and the same file as a channel when it can be seeked, for the check. */
@@ -163,8 +170,40 @@ object ZipImport {
      * Lion's engines carry `SpeechSynthesis-3.6.59` and the like. Tiger's
      * does not, and needs its plist. */
     fun binaryVersion(bytes: ByteArray): String? {
-        val text = String(bytes, Charsets.ISO_8859_1)
-        return Regex("SpeechSynthesis-(\\d+(?:\\.\\d+)+)").find(text)?.groupValues?.get(1)
+        // Searched in the bytes, not in a String made of them: up to 64 MB of
+        // binary as a String is up to 128 MB more on the check thread (#55).
+        // The same as the pattern SpeechSynthesis-(\d+(?:\.\d+)+).
+        var at = 0
+        while (true) {
+            at = indexOf(bytes, VERSION_MARK, at)
+            if (at < 0) return null
+            var i = at + VERSION_MARK.size
+            val start = i
+            var parts = 0
+            while (true) {
+                val digits = i
+                while (i < bytes.size && bytes[i] in '0'.code.toByte()..'9'.code.toByte()) i++
+                if (i == digits) break                 // no digit: no number here
+                parts++
+                if (i < bytes.size && bytes[i] == '.'.code.toByte() &&
+                    i + 1 < bytes.size && bytes[i + 1] in '0'.code.toByte()..'9'.code.toByte()) i++
+                else break
+            }
+            if (parts >= 2) return String(bytes, start, i - start, Charsets.ISO_8859_1)
+            at += 1
+        }
+    }
+
+    private val VERSION_MARK = "SpeechSynthesis-".toByteArray(Charsets.ISO_8859_1)
+
+    private fun indexOf(bytes: ByteArray, mark: ByteArray, from: Int): Int {
+        var i = from
+        val last = bytes.size - mark.size
+        outer@ while (i <= last) {
+            for (k in mark.indices) if (bytes[i + k] != mark[k]) { i++; continue@outer }
+            return i
+        }
+        return -1
     }
 
     /** Which generation a MacinTalk version belongs to, or null. */
@@ -384,7 +423,7 @@ object ZipImport {
     }
 
     /** One entry's bytes, read in place: stored or deflated, nothing else. */
-    fun readEntry(channel: FileChannel, entry: Entry): ByteArray? {
+    fun readEntry(channel: FileChannel, entry: Entry, cap: Long = ENGINE_CAP): ByteArray? {
         val header = channel.readFully(entry.offset, 30)
         if (header.u32(0) != 0x04034b50L) return null
         val dataAt = entry.offset + 30 + header.u16(26) + header.u16(28)
@@ -396,7 +435,7 @@ object ZipImport {
         }
         // At most the largest cap, whatever the entry declares: a damaged or
         // lying size would otherwise inflate into the heap (#55).
-        return stream.use { readCapped(it, entry.size, ENGINE_CAP).bytes }
+        return stream.use { readCapped(it, entry.size, cap).bytes }
     }
 
     /** What [readCapped] read: the bytes, or null when there were more than
@@ -456,7 +495,7 @@ object ZipImport {
 
     private fun inspectSeekable(channel: FileChannel): Plan = try {
         val entries = centralDirectory(channel)
-        plan(entries) { readEntry(channel, it) }
+        plan(entries) { readEntry(channel, it, capFor(it.name)) }
     } catch (e: IOException) {
         Plan(emptyList(), "This is not a zip file this app can read (${e.message}).")
     }
@@ -466,6 +505,7 @@ object ZipImport {
     private fun inspectStreamed(source: Source): Plan = try {
         val entries = ArrayList<Entry>()
         val kept = HashMap<String, ByteArray>()
+        var keptBytes = 0L
         ZipInputStream(BufferedInputStream(source.open(), 1 shl 16), NAMES).use { zip ->
             while (true) {
                 val e = zip.nextEntry ?: break
@@ -480,9 +520,12 @@ object ZipImport {
                     // app down before the cap was ever compared (#55).
                     val cap = if (name!!.endsWith("Info.plist") || name.endsWith("version.plist"))
                         PLIST_CAP else ENGINE_CAP
-                    val got = readCapped(zip, e.size, cap)
+                    // And a budget for all of them together: each entry under
+                    // its cap, three engines' worth was still enough to run
+                    // the heap out (#55).  Real binaries are a few MB.
+                    val got = readCapped(zip, e.size, minOf(cap, KEPT_BUDGET - keptBytes))
                     size = got.read
-                    if (got.bytes != null) kept[name] = got.bytes
+                    if (got.bytes != null) { kept[name] = got.bytes; keptBytes += got.bytes.size }
                     else {                                 // too big to keep: count the rest
                         val buffer = ByteArray(1 shl 16)
                         while (true) { val n = zip.read(buffer); if (n < 0) break; size += n }

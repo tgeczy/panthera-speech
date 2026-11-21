@@ -97,6 +97,38 @@ class ZipImportTest {
         assertTrue(plan.refusal!!, plan.refusal!!.contains("cannot tell which generation"))
     }
 
+    /** Each entry under its cap is not enough (#55, found in review): any
+     * folder's MacinTalk is read before the folder is judged, so a zip of
+     * many 60 MB "engines" -- a few hundred KB compressed -- filled the heap
+     * entry by entry.  What the check keeps is now one budget, all of them
+     * together.  Eight of them, from a stream. */
+    @Test fun manyLargeEnginesTogetherAreRefusedWithoutFillingTheHeap() {
+        val file = temp.newFile().also { f ->
+            ZipOutputStream(f.outputStream()).use { zip ->
+                val zeros = ByteArray(1 shl 20)
+                for (k in 0 until 8) {
+                    zip.putNextEntry(ZipEntry("folder$k/" + ZipImport.MACINTALK))
+                    repeat(60) { zip.write(zeros) }
+                    zip.closeEntry()
+                }
+            }
+        }
+        val plan = ZipImport.inspect(ZipImport.Source(file.name, file.length(), { file.inputStream() }))
+        assertNotNull(plan.refusal)
+    }
+
+    /** The version is found in the bytes now, not in a String made of up to
+     * 64 MB of them (#55): the same answers as the pattern it replaces. */
+    @Test fun theBinaryVersionSearchMatchesThePattern() {
+        val pattern = Regex("SpeechSynthesis-(\\d+(?:\\.\\d+)+)")
+        for (text in listOf("..SpeechSynthesis-4.0.74..", "SpeechSynthesis-3.6.59.1x", "SpeechSynthesis-3.",
+                "SpeechSynthesis-12 later SpeechSynthesis-3.10.35", "SpeechSynthesis-", "nothing here",
+                "SpeechSynthesis-.5 SpeechSynthesis-3.3", "SpeechSynthesis-3..4", "SpeechSynthesis-10.7.9.")) {
+            val want = pattern.find(text)?.groupValues?.get(1)
+            assertEquals(text, want, ZipImport.binaryVersion(text.toByteArray(Charsets.ISO_8859_1)))
+        }
+    }
+
     /** The bounded read behind the check (#55): an honest entry whole, in
      * one array of its own size; a size that lies or is unknown grows only up
      * to the cap; one byte past the cap is refused, and the count of what was

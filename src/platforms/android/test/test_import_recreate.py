@@ -9,7 +9,8 @@ window was gone: IllegalArgumentException, and the app's process died, the TTS
 service with it.  And the rebuilt screen read its intent's import again, so the
 same zip was checked -- and, had it held an engine, imported -- twice.
 
-The case: a zip of many small entries and no engine (so nothing is ever
+The case: a zip of four engine binaries, 60 MB each, with no version in
+them (so the check must read them, and refuses: nothing is ever
 imported) pushed to the app's own external files folder, the check started
 through the adb route (`am start ... --es import <path>`), dark mode switched
 0.1 s in.  Then the app's process must be the one it was, the log must show no
