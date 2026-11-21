@@ -17,6 +17,8 @@
 #include "panthera_sapi.cpp"
 #include <cstdio>
 #include <algorithm>
+#include <atomic>
+#include <thread>
 
 static int g_fail;
 
@@ -164,7 +166,13 @@ public:
         if(abortAfter&&audio.size()>=abortAfter)return SPVES_ABORT;
         return (skipAfter&&!skipAsked&&audio.size()>=skipAfter)?SPVES_SKIP:0;
     }
+    /* When the first and the last audio arrived, on QueryPerformanceCounter's
+     * clock: two voices taking turns never overlap. */
+    LONGLONG firstWrite=0, lastWrite=0;
     STDMETHODIMP Write(const void *p,ULONG n,ULONG *w){
+        LARGE_INTEGER now; QueryPerformanceCounter(&now);
+        if(!firstWrite)firstWrite=now.QuadPart;
+        lastWrite=now.QuadPart;
         writes++;
         if(refuseEvery&&writes%refuseEvery==0){if(w)*w=0;return S_OK;}
         ULONG take=maxTake&&n>maxTake?maxTake:n;
@@ -661,6 +669,36 @@ int wmain(int argc, wchar_t **argv) {
     check(SUCCEEDED(say(e,LINE,&second,0)),"a warm utterance speaks");
     check(first==second,"the warm utterance is byte-identical to the cold one");
     contract_checks(e,LINE,first);
+
+    /* Two voices in one process take turns; they never talk over each other.
+     * This is the design, not a fault (Tomi, 2026-11-21, closing #57): one
+     * engine at a time holds the host for its whole utterance.  The second
+     * voice is set speaking while the first is mid-utterance, and the first
+     * byte it gets must come after the last byte the first one got, with
+     * both utterances whole and exactly as they sound alone. */
+    {
+        const wchar_t *LONGLINE=L"The quick brown fox jumps over the lazy dog. "
+                                L"The quick brown fox jumps over the lazy dog. "
+                                L"The quick brown fox jumps over the lazy dog.";
+        std::vector<BYTE> alone;
+        say(e,LONGLINE,&alone,0);
+        Engine *other=new Engine; other->SetObjectToken(&tok);
+        FakeSite a(0), b(0);
+        std::atomic<LONGLONG> bAsked(0);
+        HRESULT ha=E_FAIL, hb=E_FAIL;
+        std::thread ta([&]{ ha=say_script(e,LONGLINE,a); });
+        while(!a.firstWrite&&ha==E_FAIL)Sleep(1);      /* the first is speaking */
+        std::thread tb([&]{
+            LARGE_INTEGER now; QueryPerformanceCounter(&now); bAsked=now.QuadPart;
+            hb=say_script(other,LONGLINE,b);
+        });
+        ta.join(); tb.join();
+        check(SUCCEEDED(ha)&&SUCCEEDED(hb),"two voices on two threads both speak");
+        check(bAsked<a.lastWrite,"the second voice asked to speak while the first was speaking");
+        check(b.firstWrite>a.lastWrite,"the second voice waits its turn: no byte of it before the first is done");
+        check(a.audio==alone&&b.audio==alone,"both utterances are whole, as they sound alone");
+        other->Release();
+    }
 
     /* Application volume changes PCM gain, never text or paragraph timing. */
     std::vector<BYTE> quiet, silent, full, changed;
