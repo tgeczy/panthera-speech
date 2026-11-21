@@ -8,6 +8,7 @@ left is what is genuinely Lion's: which voices it offers, when it appears at
 all, and that the engine behind it really speaks.
 """
 import os
+import shutil
 
 import pytest
 
@@ -77,29 +78,43 @@ def test_a_generation_with_no_data_is_not_in_the_list(tmp_path, monkeypatch):
 
 # -- the engine ----------------------------------------------------------
 
-def test_the_vocalizer_voices_are_not_offered(engine_tree):
+def test_the_vocalizer_voices_are_not_offered(engine_tree, tmp_path):
     """The twenty-eight `*Compact` voices are Nuance Vocalizer, and out.
 
-    Out on a decision about what this project is, not on capability.  Nothing
-    filters them by name: they carry no `VoiceDescription`, so `read_voices`
-    has no creator to route them by and passes them over.
+    Out on a decision about what this project is, not on capability: they
+    are not MacinTalk, and their languages live under Vocalizer's own model,
+    which this project does not emulate (Tomi, 2026-11-21).  Nothing filters
+    them by name: they carry no `VoiceDescription`, so `read_voices` has no
+    creator to route them by and passes them over.
 
     **The "fix" this warned about has since been made**, which is why the test
     matters more than it did: voices *are* named after their folders now, and
     a folder name is the one thing a Compact bundle does have.  What keeps
     them out is that the descriptor still has to be there.  See
     `tests/test_voice_names.py`.
+
+    A tree extracted the usual way has no Compact voices at all, so one is
+    made here, shaped as Vocalizer ships it -- a bundle with resources and no
+    descriptor -- next to a real voice that must still be offered.  Any real
+    Compact voices in the tree are checked as well.
     """
     from synthDrivers import lionspeech
     _, _, voicesdir = lionspeech.engine_paths(engine_tree)
+
+    made = tmp_path / "Voices"
+    fake = made / "SamanthaCompact.SpeechVoice" / "Contents" / "Resources"
+    fake.mkdir(parents=True)
+    (fake.parent / "Info.plist").write_text("<plist version=\"1.0\"><dict/></plist>")
+    (fake / "VoiceData.dat").write_bytes(b"\0" * 64)
+    shutil.copytree(os.path.join(voicesdir, "Fred.SpeechVoice"), str(made / "Fred.SpeechVoice"))
+    offered = {v[0] for v in lionspeech.read_voices(str(made))}
+    assert offered == {"Fred"}, sorted(offered)
+
     on_disk = [d[:-len(".SpeechVoice")] for d in os.listdir(voicesdir)
                if d.endswith(".SpeechVoice")]
-    compact = [n for n in on_disk if n.endswith("Compact")]
-    assert compact, ("no Compact voices in this tree, so this proves nothing "
-                     "-- extract without --compact and try again")
-
+    compact = set(n for n in on_disk if n.endswith("Compact"))
     offered = {v[0] for v in lionspeech.read_voices(voicesdir)}
-    assert not (offered & set(compact)), sorted(offered & set(compact))
+    assert not (offered & compact), sorted(offered & compact)
 
 
 def test_the_voice_list_is_the_twenty_four_that_speak(engine_tree):
