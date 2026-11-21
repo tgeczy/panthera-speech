@@ -419,14 +419,51 @@ public:
                     syncs.push_back(s);
                 }
             }
-            std::wstring marked; size_t prev=from;
-            for(size_t k=0;k<syncs.size();k++){
-                marked.append(body,prev,syncs[k].pos-prev);
-                wchar_t cmd[32];
-                swprintf_s(cmd,32,L"[[sync 0x%x]]",SYNC_BASE+(unsigned)k+1);
-                marked+=cmd; prev=syncs[k].pos;
+            auto build=[&](const std::vector<bool> &use){
+                std::wstring m; size_t prev=from;
+                for(size_t k=0;k<syncs.size();k++){
+                    if(!use[k])continue;
+                    m.append(body,prev,syncs[k].pos-prev);
+                    wchar_t cmd[32];
+                    swprintf_s(cmd,32,L"[[sync 0x%x]]",SYNC_BASE+(unsigned)k+1);
+                    m+=cmd; prev=syncs[k].pos;
+                }
+                m.append(body,prev,std::wstring::npos);
+                return m;
+            };
+            auto unsynced=[](std::wstring s){
+                for(size_t at;(at=s.find(L"[[sync 0x7a"))!=std::wstring::npos;){
+                    size_t end=s.find(L"]]",at);
+                    if(end==std::wstring::npos)break;
+                    s.erase(at,end+2-at);
+                }
+                return s;
+            };
+            /* **A sync is a fence to the text rules, and must not become
+             * one.**  The abbreviation rewrites read across the space after
+             * a word -- "Dr." before a name is Doctor -- and a sync placed
+             * there (a sentence start after "Dr.", or JAWS's mark between
+             * every word) splits the prose they run on, so "Phycologist Dr.
+             * Kirk" was read as a street.  So the text is prepared with the
+             * syncs and without, as the NVDA driver does (host.py, "Commands
+             * are lexical fences"), and a sync that changes what the rules
+             * make of the words is left out: its marks wait for the next
+             * sync that is kept, or for the estimate after the run. */
+            std::vector<bool> use(syncs.size(),true);
+            if(!r.spell&&!syncs.empty()){
+                std::wstring control=prepare_text(body.substr(from),true,expand,gen);
+                if(unsynced(prepare_text(build(use),true,expand,gen))!=control){
+                    for(size_t k=0;k<syncs.size();k++){
+                        std::vector<bool> one(syncs.size(),false); one[k]=true;
+                        if(unsynced(prepare_text(build(one),true,expand,gen))!=control)use[k]=false;
+                    }
+                    if(unsynced(prepare_text(build(use),true,expand,gen))!=control)
+                        use.assign(syncs.size(),false);
+                }
             }
-            marked.append(body,prev,std::wstring::npos);
+            std::wstring marked=build(use);
+            bool anySync=false;
+            for(bool u:use)if(u)anySync=true;
             unsigned long long runStart=total, last=total;   /* the latest mark sent */
             std::vector<bool> fired(r.marks.size(),false);
             for(size_t i=0;i<r.marks.size();i++)
@@ -457,7 +494,7 @@ public:
             /* A spelled run uses the engine's own literal mode, which names
              * each character -- and its numbers are digits, not amounts. */
             unsigned flags=r.spell?0u:numberFlags;
-            bool markers=!syncs.empty();
+            bool markers=anySync;
             for(int attempt=0;attempt<2&&ok&&!aborted;attempt++){
                 std::wstring text=markers?marked:body.substr(from);
                 if(r.spell)text=L"[[char LTRL]]"+text+L"[[char NORM]]";

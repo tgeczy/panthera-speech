@@ -510,6 +510,18 @@ static void contract_checks(Engine *e, const wchar_t *LINE, const std::vector<BY
               h.events[1].offset==h.audio.size()-PAD,
               "a mark before the words is at the start, one after them at their end");
     }
+    /* A sync must not change what the text rules make of the words: "Dr."
+     * before a name is Doctor, whether a sentence-start sync or a JAWS mark
+     * falls after it -- 8a73b6a let both split the rule, and the name was
+     * read as a street. */
+    {
+        FakeSite doctor(0); say_script(e,L"Phycologist Doctor Kirk spoke.",doctor);
+        FakeSite plain(0); say_script(e,L"Phycologist Dr. Kirk spoke.",plain);
+        check(!plain.audio.empty()&&plain.audio==doctor.audio,"\"Dr.\" before a name is still Doctor");
+        FakeSite jaws(0); say_script(e,L"Phycologist|#1|Dr.|#2|Kirk|#3|spoke.",jaws);
+        check(jaws.audio==doctor.audio,"and still Doctor with a bookmark after it");
+        check(names_in_order(jaws,{L"1",L"2",L"3"}),"whose marks all arrive, in order");
+    }
     /* A text that makes no sound still answers its marks. */
     {
         const wchar_t *quiet[]={L"\x2014",L"...",L" ",L"\x00a0",L"\x200b",L"-----",L"."};
