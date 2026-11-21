@@ -101,11 +101,17 @@ def test_the_vocalizer_voices_are_not_offered(engine_tree, tmp_path):
     from synthDrivers import lionspeech
     _, _, voicesdir = lionspeech.engine_paths(engine_tree)
 
+    # The layout of a real one (Mountain Lion's AgataCompact): Info.plist,
+    # version.plist, MacOS/voice, Resources/PCMWave, a code signature -- and
+    # no Resources/VoiceDescription.
     made = tmp_path / "Voices"
-    fake = made / "SamanthaCompact.SpeechVoice" / "Contents" / "Resources"
-    fake.mkdir(parents=True)
-    (fake.parent / "Info.plist").write_text("<plist version=\"1.0\"><dict/></plist>")
-    (fake / "VoiceData.dat").write_bytes(b"\0" * 64)
+    contents = made / "SamanthaCompact.SpeechVoice" / "Contents"
+    for sub in ("MacOS", "Resources", "_CodeSignature"):
+        (contents / sub).mkdir(parents=True)
+    (contents / "Info.plist").write_text("<plist version=\"1.0\"><dict/></plist>")
+    (contents / "version.plist").write_text("<plist version=\"1.0\"><dict/></plist>")
+    (contents / "MacOS" / "voice").write_bytes(b"\0" * 64)
+    (contents / "Resources" / "PCMWave").write_bytes(b"\0" * 64)
     shutil.copytree(os.path.join(voicesdir, "Fred.SpeechVoice"), str(made / "Fred.SpeechVoice"))
     offered = {v[0] for v in lionspeech.read_voices(str(made))}
     assert offered == {"Fred"}, sorted(offered)
@@ -114,6 +120,26 @@ def test_the_vocalizer_voices_are_not_offered(engine_tree, tmp_path):
                if d.endswith(".SpeechVoice")]
     compact = set(n for n in on_disk if n.endswith("Compact"))
     offered = {v[0] for v in lionspeech.read_voices(voicesdir)}
+    assert not (offered & compact), sorted(offered & compact)
+
+
+#: Real Compact bundles, where a machine has them: Mountain Lion's voices
+#: folder on Tomi's, which holds thirty-three.
+COMPACT_VOICES = os.environ.get("COMPACT_VOICES", "D:/speech-mountainlion/Voices")
+
+
+def test_real_vocalizer_bundles_are_not_offered():
+    """The same, against the real thing: every `*Compact` bundle there is
+    passed over, whatever else the folder offers."""
+    try:
+        compact = {d[:-len(".SpeechVoice")] for d in os.listdir(COMPACT_VOICES)
+                   if d.endswith("Compact.SpeechVoice")}
+    except OSError:
+        compact = set()
+    if not compact:
+        pytest.skip("no Compact voice bundles here; set COMPACT_VOICES")
+    from synthDrivers import lionspeech
+    offered = {v[0] for v in lionspeech.read_voices(COMPACT_VOICES)}
     assert not (offered & compact), sorted(offered & compact)
 
 
