@@ -247,40 +247,103 @@ def test_with_breathing_off_an_index_is_never_lost_when_the_run_is_cancelled():
     assert not [item for item in raw if item[0] == "audio"]
 
 
-@pytest.mark.parametrize("join", [False, True], ids=["breathing-off", "breathing-on"])
-def test_a_render_that_fails_does_not_end_the_reader(join):
+#: The three ways an utterance reaches the engine: breathing off on a host that
+#: takes `[[sync]]` (the marked path, what users with "join" unchecked get),
+#: breathing off without it, and breathing on.
+_PATHS = [(False, True), (False, False), (True, False)]
+_PATH_IDS = ["marked", "breathing-off-unmarked", "breathing-on"]
+
+
+def _failing(d, when):
+    """Make `d`'s render raise on the calls numbered in `when` (from 1)."""
+    render = d._render
+    calls = []
+
+    def fails(text, wpm, voice, pitch=0, sink=None, volume=0, **marked):
+        calls.append(text)
+        if len(calls) in when:
+            raise ValueError("Exceeds the limit (4300 digits)")
+        return render(text, wpm, voice, pitch, sink=sink, volume=volume)
+    d._render = fails
+    return calls
+
+
+def _reported(raw):
+    return [v for k, v, _t in raw if k in ("mark", "index")]
+
+
+@pytest.mark.parametrize("join,marked", _PATHS, ids=_PATH_IDS)
+def test_a_render_that_fails_does_not_end_the_reader(join, marked):
     """panthera-speech#28: anything raised while an utterance was prepared or
     rendered -- a 4,500-digit token made `int()` refuse -- ended the worker
     thread, and nothing ever restarted it: every later utterance queued into
     nothing, no index or done was reported, and NVDA was silent until the
-    synthesizer was reloaded.  One utterance may fail; the reader may not."""
-    d = _bare(join)
-    render = d._render
-    calls = []
+    synthesizer was reloaded.  One utterance may fail; the reader may not.
 
-    def failsOnce(text, wpm, voice, pitch=0, sink=None, volume=0):
-        calls.append(text)
-        if len(calls) == 1:
-            raise ValueError("Exceeds the limit (4300 digits)")
-        return render(text, wpm, voice, pitch, sink=sink, volume=volume)
-    d._render = failsOnce
-    d._queue.put([("text", "one"), ("index", 1)])
-    d._queue.put([("text", "two"), ("index", 2)])
+    **Every index exactly once, in order**, on every path: NVDA's speech
+    manager waits for an index it was promised, so one lost is a stall, and
+    the first fix still lost them on the marked path, where the flush had
+    already taken them out of the utterance when the render raised."""
+    d = _bare(join)
+    d._markerStreaming = marked
+    _failing(d, {1})
+    d._queue.put([("index", 1), ("text", "one "), ("index", 2), ("text", "two "),
+                  ("index", 3), ("pitch", 10), ("text", "three."), ("index", 4)])
+    d._queue.put([("text", "four."), ("index", 5)])
     d._queue.put(None)
     d._run()                                        # used to raise here
     raw = _drain(d._audioQueue)
     kinds = [k for k, _v, _t in raw]
     # With breathing on the joiner may have made the two one utterance.
     assert kinds.count("done") >= 1 and kinds[-1] == "done", "an utterance never completed"
-    reported = [v for k, v, _t in raw if k in ("mark", "index")]
-    assert reported == [1, 2], "an index was lost: %r" % (reported,)
+    assert _reported(raw) == [1, 2, 3, 4, 5], "indexes lost, repeated or reordered"
     # And the reader is still a reader.
-    d._queue.put([("text", "three"), ("index", 3)])
+    d._queue.put([("text", "three"), ("index", 6)])
     d._queue.put(None)
     d._run()
     after = _drain(d._audioQueue)
     assert ("audio", len(_silence(50))) in _shape(after), "the next utterance was not spoken"
-    assert [v for k, v, _t in after if k in ("mark", "index")] == [3]
+    assert _reported(after) == [6]
+
+
+@pytest.mark.parametrize("join,marked", _PATHS, ids=_PATH_IDS)
+def test_a_failure_after_some_speech_reports_only_what_is_left(join, marked):
+    """The render fails on its second call, after the first part was spoken
+    and its indexes reported: the rest are reported once, never the first
+    ones again."""
+    d = _bare(join)
+    d._markerStreaming = marked
+    _failing(d, {2})
+    d._queue.put([("text", "one."), ("index", 1), ("pitch", 10),
+                  ("text", "two."), ("index", 2), ("volume", -10),
+                  ("text", "three."), ("index", 3)])
+    d._queue.put(None)
+    d._run()
+    raw = _drain(d._audioQueue)
+    assert _reported(raw) == [1, 2, 3]
+    assert [k for k, _v, _t in raw][-1] == "done"
+
+
+def test_a_failure_while_sentences_are_joined_reports_each_index_once(monkeypatch):
+    """The joiner reports the indexes it holds back before the text is
+    spoken; a failure after that must not report them a second time."""
+    d = _bare(True)
+    modeAfter = d._modeAfter
+    seen = []
+
+    def fails(text):
+        seen.append(text)
+        if len(seen) == 1:
+            raise ValueError("refused")
+        return modeAfter(text)
+    monkeypatch.setattr(d, "_modeAfter", fails)
+    d._queue.put([("text", S1), ("index", 1)])
+    d._queue.put([("text", S1), ("index", 2)])
+    d._queue.put(None)
+    d._run()
+    raw = _drain(d._audioQueue)
+    assert _reported(raw) == [1, 2]
+    assert [k for k, _v, _t in raw][-1] == "done"
 
 
 # -- the feeder: when a mark is reported --------------------------------------

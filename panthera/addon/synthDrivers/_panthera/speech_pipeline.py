@@ -125,9 +125,11 @@ class SpeechPipelineMixin(MarkerPipelineMixin):
             epoch = self._epoch
             pending = []
             trailing = []
-            #: What has not been taken in yet, so that a failure can still tell
-            #: NVDA about every index in it; `_runOne` moves it along.
-            self._left = item
+            #: Every index this utterance owes NVDA, in order, and the ones
+            #: already reported -- see `_putIndex`.
+            self._owed = []
+            self._reported = set()
+            self._owe(item)
             try:
                 self._runOne(item, epoch, pending, trailing)
             except Exception:
@@ -137,11 +139,20 @@ class SpeechPipelineMixin(MarkerPipelineMixin):
                 #: utterance queued into nothing, no index or done was
                 #: reported, and NVDA was silent until the synthesizer was
                 #: reloaded.  A 4,500-digit token was enough.
+                #:
+                #: Then every index still owed, once and in order.  Which
+                #: function held it when the failure came -- the joiner, a
+                #: flush, the marked render -- does not matter, and each of
+                #: them had its own way to lose one.  As marks, so none can
+                #: overtake an earlier mark still waiting for its audio.
                 log.error("Panthera: an utterance could not be spoken; "
                           "the next one will be", exc_info=True)
-                pending.extend(v for k, v in self._left if k == "index")
+                for index in self._owed:
+                    if index not in self._reported:
+                        self._putIndex("mark", index)
             for index in pending + trailing:    # nothing left to speak
-                self._audioQueue.put(("index", index, None))
+                if index not in self._reported:
+                    self._putIndex("index", index)
             del pending[:]
             del trailing[:]
             # A render may return after cancel(). Keep its identity: setting
@@ -152,8 +163,7 @@ class SpeechPipelineMixin(MarkerPipelineMixin):
 
     def _runOne(self, item, epoch, pending, trailing):
         """One utterance of `_run`: everything between taking it from the
-        queue and reporting what is left of it.  `self._left` follows what
-        has not been taken in yet, for `_run`'s failure path."""
+        queue and reporting what is left of it."""
         #: Read before `_join`, which strips the indexes it reports early:
         #: an index is the continuous-reading signal, and this item being
         #: part of a continuous read is what earns it the restored
@@ -174,7 +184,7 @@ class SpeechPipelineMixin(MarkerPipelineMixin):
                       and _sentenceEnds(_chunkText) >= 1
                       and len(_chunkText) >= JOIN_MIN_CHARS)
         item = self._join(item, epoch)
-        self._left = item
+        self._owe(item)                 # the joiner may have taken in more
         marked = (not self._joinSentences and self._streaming
                   and getattr(self, "_markerStreaming", False)
                   and not self._acceptCommands and self._inputMode is None)
@@ -215,8 +225,7 @@ class SpeechPipelineMixin(MarkerPipelineMixin):
         #: always have.  Text arriving after a trailing index makes it an
         #: interior one, whose position nothing here can know, so it
         #: rejoins the head.
-        for at, (kind, value) in enumerate(item):
-            self._left = item[at:]
+        for kind, value in item:
             if self._stopped or self._epoch != epoch:
                 break
             if marked:
@@ -249,7 +258,6 @@ class SpeechPipelineMixin(MarkerPipelineMixin):
                 # change backwards over it is how "the first word comes out
                 # at the wrong speed" happens.
                 wpm = self._wpm(value)
-        self._left = []
         if not self._stopped and self._epoch == epoch:
             if marked:
                 self._flushMarked(run, wpm, voice, adj, epoch, vol)
@@ -284,6 +292,27 @@ class SpeechPipelineMixin(MarkerPipelineMixin):
                 if pause:
                     self._audioQueue.put(("audio", pause, epoch))
 
+    #: Set per utterance by `_run`; None outside one (a test calling `_flush`
+    #: by itself), when nothing needs keeping.
+    _owed = None
+    _reported = None
+
+    def _owe(self, items):
+        """Note the indexes in `items` as owed by this utterance."""
+        if self._owed is not None:
+            for kind, value in items:
+                if kind == "index" and value not in self._owed:
+                    self._owed.append(value)
+
+    def _putIndex(self, kind, index):
+        """Report one index, as an immediate "index" or a "mark" held until
+        its audio has played.  **Every index goes through here**, so `_run`
+        knows which were reported when an utterance fails, and reports the
+        rest exactly once (panthera-speech#28)."""
+        self._audioQueue.put((kind, index, None))
+        if self._reported is not None:
+            self._reported.add(index)
+
     def _reportIndexes(self, items):
         """Report the indexes in `items` now, and hand back everything else.
 
@@ -300,7 +329,7 @@ class SpeechPipelineMixin(MarkerPipelineMixin):
         rest = []
         for kind, value in items:
             if kind == "index":
-                self._audioQueue.put(("index", value, None))
+                self._putIndex("index", value)
             else:
                 rest.append((kind, value))
         return rest
@@ -520,7 +549,7 @@ class SpeechPipelineMixin(MarkerPipelineMixin):
         kind = "index" if immediate else "mark"
         if not run:
             for index in heads + tails:
-                self._audioQueue.put((kind, index, None))
+                self._putIndex(kind, index)
             return
         text = _joinFragments(run)
         del run[:]
@@ -535,7 +564,7 @@ class SpeechPipelineMixin(MarkerPipelineMixin):
         # above -- and now that the audio arrives in pieces there is no later
         # moment that would still be the head.
         for index in heads:
-            self._audioQueue.put((kind, index, None))
+            self._putIndex(kind, index)
         fed = []
         # What the user actually waits, measured where they wait it.  The two
         # numbers are different questions: how long until the first sound, and
@@ -577,16 +606,8 @@ class SpeechPipelineMixin(MarkerPipelineMixin):
         # the breath is worth giving up, because the alternative is a second
         # and a third of silence before anything is said at all.
         pieces = _splitUtterance(text) if not self._streaming else [text]
-        pcm = None
-        try:
-            pcm = self._renderPieces(pieces, wpm, voice, adj, epoch, sink, fed, vol)
-        except Exception:
-            # The indexes after these words are owed even when the words fail:
-            # `_run` reports what is left and the utterance's done notice, and
-            # these are the ones only this function was holding.
-            for index in tails:
-                self._audioQueue.put((kind, index, None))
-            raise
+        # A failure here leaves `tails` unreported; `_run` reports them.
+        pcm = self._renderPieces(pieces, wpm, voice, adj, epoch, sink, fed, vol)
         # Timing, at DEBUG, because "it lags on long text" is the report this
         # add-on gets most and it was never possible to check from a log.  Both
         # numbers, per utterance: a first sound that arrives late is a
@@ -609,7 +630,7 @@ class SpeechPipelineMixin(MarkerPipelineMixin):
         # index is never lost, and one that rode behind a cancelled utterance
         # is NVDA's to ignore.
         for index in tails:
-            self._audioQueue.put((kind, index, None))
+            self._putIndex(kind, index)
         if pcm is not None and fed and self._epoch == epoch:
             gap = self.PAUSE_MS.get(self._pauseMode, 0)
             if gap:

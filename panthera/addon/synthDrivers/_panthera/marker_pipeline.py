@@ -72,7 +72,7 @@ class MarkerPipelineMixin(object):
                 if not alive():
                     return
                 if kind == "index":
-                    self._audioQueue.put(("mark", value, None))
+                    self._putIndex("mark", value)
                 elif kind == "break":
                     self._audioQueue.put(("audio", _silence(value), epoch))
 
