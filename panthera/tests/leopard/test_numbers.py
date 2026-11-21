@@ -165,3 +165,25 @@ def test_the_setting_reaches_the_engine(driver):
     fixed = driver._render("3222233", driver._wpm(), driver._get_voice())
     assert off and fixed
     assert off != fixed, "the number setting changed nothing"
+
+
+@pytest.mark.parametrize("text, style, said", [
+    ("2026.01.05", "fix", "two thousand twenty six point zero one point zero five"),
+    ("1.05.3", "fix", "one point zero five point three"),
+    ("007", "words", "zero zero seven"),
+    ("zip 02134", "words", "zip zero two one three four"),
+    ("code 047291", "words", "code zero four seven two nine one"),
+    # As they were: zero alone, a leading-zero decimal, every other number.
+    ("0", "words", "zero"),
+    ("0.5", "words", "zero point five"),
+    ("10", "words", "ten"),
+    ("007", "fix", "007"),
+])
+def test_a_number_written_with_leading_zeros_is_said_digit_by_digit(text, style, said):
+    """panthera-speech#31: a part was converted as an integer, so its leading
+    zeros were gone before the engine saw it -- "2026.01.05" was "point one
+    point five", and with every number as words "007" was "seven".  A number
+    written with leading zeros is a code, not an amount, so it is said digit
+    by digit with its zeros (Tomi's rule for ssi263-speech#65, the same
+    class).  Fix style still leaves a short number to the engine."""
+    assert numbers.expand(text, style) == said

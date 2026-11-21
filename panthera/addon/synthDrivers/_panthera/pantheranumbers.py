@@ -95,6 +95,16 @@ def _digits(s):
     return " ".join(_ONES[int(d)] for d in s)
 
 
+def _code(s):
+    """True for digits written with a leading zero: "007", "01", "02134".
+
+    **A number written with leading zeros is a code, not an amount**, and is
+    said digit by digit with its zeros (panthera-speech#31; Tomi's rule for
+    the same class in ssi263-speech#65).  Converted as an integer, "2026.01.05"
+    was "point one point five" and "007" was "seven".  "0" alone is not one."""
+    return len(s) > 1 and s[0] == "0"
+
+
 def _group(digits):
     """-> "3,222,233" for "3222233", which the engine reads correctly."""
     out = []
@@ -118,10 +128,10 @@ def _rewrite(token, style):
     #: its own number and the separators have to be spoken, which is the one
     #: case the engine loses entirely.
     if len(parts) > 2:
-        values = [_int(p) for p in parts]
-        if any(v is None for v in values):
+        values = [None if _code(p) else _int(p) for p in parts]
+        if any(v is None and not _code(p) for p, v in zip(parts, values)):
             return token
-        said = [to_words(v) for v in values]
+        said = [_digits(p) if _code(p) else to_words(v) for p, v in zip(parts, values)]
         if any(w is None for w in said):
             return token
         return minus + " point ".join(said)
@@ -129,6 +139,8 @@ def _rewrite(token, style):
     whole, frac = parts[0], (parts[1] if len(parts) == 2 else None)
 
     if style == "words":
+        if _code(whole):
+            return minus + _digits(whole) + ("" if frac is None else " point " + _digits(frac))
         value = _int(whole)
         said = None if value is None else to_words(value)
         if said is None:

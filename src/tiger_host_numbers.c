@@ -138,6 +138,18 @@ static void num_digits_aloud(numbuf *b, const char *s, size_t n)
     }
 }
 
+/* 1 for digits written with a leading zero: "007", "01", "02134".
+ *
+ * **A number written with leading zeros is a code, not an amount**, and is
+ * said digit by digit with its zeros (panthera-speech#31; Tomi's rule for
+ * the same class in ssi263-speech#65).  Parsed as an integer, "2026.01.05"
+ * was "point one point five" and "007" was "seven".  "0" alone is not one.
+ * pantheranumbers._code is the same rule. */
+static int num_is_code(const char *s, size_t n)
+{
+    return n > 1 && s[0] == '0';
+}
+
 /* "3,222,233" for "3222233", which the engine reads correctly. */
 static void num_group(numbuf *b, const char *s, size_t n)
 {
@@ -225,6 +237,10 @@ static int num_rewrite(numbuf *b, const char *tok, size_t n, int style)
         for (i = 0; i < (size_t)nparts; i++) {
             unsigned long long v;
             if (i) nb_str(b, " point ");
+            if (num_is_code(part[i].p, part[i].n)) {
+                num_digits_aloud(b, part[i].p, part[i].n);
+                continue;
+            }
             if (!num_parse(part[i].p, part[i].n, &v) || !num_to_words(b, v)) {
                 b->len = mark;              /* unsay it and keep the digits */
                 if (b->buf) b->buf[mark] = 0;
@@ -243,7 +259,9 @@ static int num_rewrite(numbuf *b, const char *tok, size_t n, int style)
             unsigned long long v;
             size_t mark = b->len;
             if (negative) nb_str(b, "minus ");
-            if (!num_parse(whole, wn, &v) || !num_to_words(b, v)) {
+            if (num_is_code(whole, wn)) {
+                num_digits_aloud(b, whole, wn);
+            } else if (!num_parse(whole, wn, &v) || !num_to_words(b, v)) {
                 b->len = mark;
                 if (b->buf) b->buf[mark] = 0;
                 return 0;
@@ -501,6 +519,18 @@ static int num_check(void)
     /* "v0.7.3" was heard as "v point seven point three". */
     num_one("0.7.3", NUM_STYLE_FIX, "zero point seven point three", &fails);
     num_one("v0.7.3", NUM_STYLE_FIX, "v0.7.3", &fails);
+    /* #31: a number written with leading zeros keeps them, said digit by
+     * digit -- the same cases as tests/leopard/test_numbers.py. */
+    num_one("2026.01.05", NUM_STYLE_FIX,
+            "two thousand twenty six point zero one point zero five", &fails);
+    num_one("1.05.3", NUM_STYLE_FIX, "one point zero five point three", &fails);
+    num_one("007", NUM_STYLE_WORDS, "zero zero seven", &fails);
+    num_one("zip 02134", NUM_STYLE_WORDS, "zip zero two one three four", &fails);
+    num_one("code 047291", NUM_STYLE_WORDS, "code zero four seven two nine one", &fails);
+    num_one("0", NUM_STYLE_WORDS, "zero", &fails);
+    num_one("0.5", NUM_STYLE_WORDS, "zero point five", &fails);
+    num_one("10", NUM_STYLE_WORDS, "ten", &fails);
+    num_one("007", NUM_STYLE_FIX, "007", &fails);
     num_one("version 0.7.3", NUM_STYLE_FIX,
             "version zero point seven point three", &fails);
     num_one("0.5", NUM_STYLE_FIX, "zero point five", &fails);

@@ -10,6 +10,8 @@ from synthDrivers._panthera import pantheraabbrev
     "There are 1234567 people.",
     "Version 0.7.3 has 0012 entries.",
     "Dr. Kirk carried 1234567mm and 1234567KB.",
+    # panthera-speech#31: leading zeros, the same on both paths.
+    "Released 2026.01.05: agent 007, zip 02134.",
 ])
 def test_native_number_style_matches_python_reference(driver, monkeypatch, style, text):
     reference = pantheranumbers.expand(text, style)
