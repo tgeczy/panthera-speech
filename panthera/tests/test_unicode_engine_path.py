@@ -118,6 +118,21 @@ def test_params_beside_a_host_outside_the_code_page_are_read():
         assert "reading engine parameters" in err,             "params.txt beside the host under %r was not read" % NAME
 
 
+def test_the_stat_check_runs_from_outside_the_code_page():
+    """`--stat-check` stats the host itself and its folder, by a path it
+    asks Windows for -- in the code page, until this was fixed, which the
+    strict UTF-8 helpers then refused."""
+    module, _tree_ = _tree("leopard")
+    if not os.path.isfile(module.HOST_EXE):
+        pytest.skip("panthera_host.exe not built; run sh build.sh")
+    with unicode_tree.folder() as holder:
+        exe = os.path.join(holder, "panthera_host.exe")
+        shutil.copy2(module.HOST_EXE, exe)
+        out = subprocess.run([exe, "--stat-check"], capture_output=True, timeout=60)
+        text = out.stdout.decode("utf-8", "replace")
+        assert out.returncode == 0 and "FAIL" not in text, text
+
+
 def test_the_library_speaks_from_outside_the_code_page():
     """The DLL, as 32-bit NVDA loads it.  Runs only under a 32-bit Python:
     `C:/Python313-32/python.exe -m pytest test_unicode_engine_path.py`."""

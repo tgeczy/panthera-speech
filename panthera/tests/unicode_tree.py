@@ -16,6 +16,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 
 import pytest
 
@@ -31,19 +32,33 @@ def _rmdir(path):
         return False
 
 
+#: A leftover is swept only once it is this old: several test runs can share
+#: this machine, and a younger folder may be one of them, still in use.
+STALE_SECONDS = 3600
+
+
 def sweep():
     """Remove junctions and empty folders left by an earlier, killed run."""
     root = tempfile.gettempdir()
+    now = time.time()
     for base in os.listdir(root):
         if not base.startswith(PREFIX):
             continue
         base = os.path.join(root, base)
+        try:
+            if now - os.path.getmtime(base) < STALE_SECONDS:
+                continue
+        except OSError:
+            continue
         holder = os.path.join(base, NAME)
         if os.path.isdir(holder):
             for entry in os.listdir(holder):
                 path = os.path.join(holder, entry)
                 if os.path.isfile(path):
-                    os.remove(path)         # a copied host, a params.txt
+                    try:
+                        os.remove(path)     # a copied host, a params.txt
+                    except OSError:
+                        pass                # still running somewhere
                 else:
                     _rmdir(path)            # a junction, or an empty folder
             _rmdir(holder)

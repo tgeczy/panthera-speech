@@ -309,16 +309,16 @@ static int stat_check(void)
 {
     /* Two files that certainly exist and certainly differ: this program, and
      * the directory holding it. */
-    char me[MAX_PATH], dir[MAX_PATH];
+    char me[CFPATH], dir[CFPATH];
     char *cut;
     int fails = 0;
 
-    if (!GetModuleFileNameA(NULL, me, MAX_PATH)) {
+    if (!u8_module_path(me, sizeof(me))) {      /* UTF-8: see tiger_host.c */
         fprintf(stdout, "FAIL  cannot find my own path\n");
         return 1;
     }
-    strncpy(dir, me, MAX_PATH - 1);
-    dir[MAX_PATH - 1] = 0;
+    strncpy(dir, me, sizeof(dir) - 1);
+    dir[sizeof(dir) - 1] = 0;
     cut = strrchr(dir, '\\');
     if (!cut) cut = strrchr(dir, '/');
     if (cut) *cut = 0;
