@@ -114,6 +114,16 @@ static FILE *g_in, *g_out;
  * nothing then, because more audio is on its way.  This releases it at exactly
  * the moment it stops being free. */
 #define STREAM_SETTLE 3u
+/* Ticks of 10 ms with no new slice before the wait gives up on the engine's
+ * own end signal: three seconds, as the in-process path waits.  See the wait
+ * loop for why it is a fallback and no more. */
+#define QUIET_TICKS 300u
+/* And the most one utterance may take while slices keep coming: 100 s, as
+ * the in-process path allows.  It was 9 s of wall clock, which cut off a few
+ * paragraphs on the slower emulated Linux builds and answered `--render`
+ * with a short WAV and exit code 0 (panthera-speech#30).  The quiet period
+ * above, not this, is what ends a wedged engine. */
+#define WAIT_TICKS 10000u
 
 /* Abandoning an utterance the listener has interrupted.
  *
@@ -664,9 +674,22 @@ static int serve(image *mt, void *chan, const char *voicesdir)
          * as rendering, so a cancel from the next keystroke retires the whole
          * host.  Reported by Timothy Wynn as hearing "the executable runs
          * again" when arrowing quickly by letter. */
+        /* **The quiet period is a fallback, and it waits for three seconds of
+         * nothing** (panthera-speech#26).
+         * Every generation ends an utterance on a signal of its own -- the
+         * graph stop on Tiger, Leopard and Snow Leopard, the deferred stop
+         * Lion arms (below) -- and over every case measured for this, silent
+         * texts included, one of the two ended it within milliseconds.  The
+         * fallback used to count 300 ms from before the first slice, so an
+         * engine slower than that between two slices came back as a fragment
+         * and spilled the rest into the next utterance: with the pacer held
+         * at 350 ms a slice, "Hello there." answered one frame of 17,360.
+         * That is the shape of the "cold direct response of one sample" in
+         * Snow Leopard's say-all receipts.  The in-process path learned the
+         * same thing in ced100f (tiger_host_jni.c) and these two now agree. */
         if (!err) {
             unsigned last = 0, quiet = 0, ticks = 0;
-            while (!g_stopped && quiet < 30 && ticks < 900) {
+            while (!g_stopped && quiet < QUIET_TICKS && ticks < WAIT_TICKS) {
                 Sleep(10); ticks++;
                 /* **10.7 does signal the end of an utterance, and this is
                  * it.**  It never calls `AUGraphStop` -- 0 times in 96 -- so
