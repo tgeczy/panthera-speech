@@ -93,14 +93,9 @@ Name: "{autoprograms}\Panthera SAPI settings"; Filename: "{app}\panthera_setting
 Root: HKCU; Subkey: "Software\Panthera SAPI"; Flags: uninsdeletekey dontcreatekey
 
 [Run]
-; On a fresh install the settings tool does everything in order: regsvr32 for
-; both registry views, then one token per voice whose folder exists at the
-; resolved data root (chosen folder, then NVDA's shared macintalk, then the
-; standalone default).  Registering with no data present is a clean no-op.
-; On an upgrade, even zero registered voices is a choice to preserve. Do not
-; rebuild tokens from available data or infer a choice from elevated HKCU.
-Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -STA -File ""{app}\settings.ps1"" -RegisterServer"; StatusMsg: "Updating SAPI components..."; Flags: runhidden; Check: IsUpgrade
-Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -STA -File ""{app}\settings.ps1"" -RegisterVoices -GenerationList Tiger,Leopard,Snowleopard,Lion"; StatusMsg: "Registering voices from your speech data..."; Flags: runhidden; Check: not IsUpgrade
+; Registration is not here: it runs from CurStepChanged below, because a
+; [Run] entry cannot see the settings tool's exit code, and a failed
+; registration has to be said out loud -- see RunSettingsStep.
 Filename: "{app}\panthera_settings.exe"; Description: "Open Panthera SAPI settings"; Flags: postinstall nowait skipifsilent
 
 [UninstallDelete]
@@ -146,4 +141,50 @@ end;
 function IsUpgrade: Boolean;
 begin
   Result := ExistingInstall;
+end;
+
+function SettingsScript: String;
+begin
+  Result := ExpandConstant('{app}\settings.ps1');
+end;
+
+{ One elevated-already run of the settings tool, with its exit code heard.
+  A [Run] entry cannot see one, so a registration that failed used to finish
+  Setup with no voices and nothing said (Tomi, 2026-11-21: "a pretty good one
+  to say out loud so the person knows").  Silent installs log it instead. }
+procedure RunSettingsStep(const Switches, Status, Failed: String);
+var
+  Code: Integer;
+begin
+  WizardForm.StatusLabel.Caption := Status;
+  if not Exec('powershell.exe', '-NoProfile -ExecutionPolicy Bypass -STA -File "' + SettingsScript + '" ' + Switches,
+              '', SW_HIDE, ewWaitUntilTerminated, Code) then
+    Log(Format('Panthera SAPI: the settings tool could not start (%d)', [Code]))
+  else if Code <> 0 then
+    Log(Format('Panthera SAPI: the settings tool failed with %d', [Code]))
+  else
+    exit;
+  SuppressibleMsgBox(Failed + #13#10#13#10 +
+    'Open "Panthera SAPI settings" from the Start menu and press Register to try again.',
+    mbError, MB_OK, IDOK);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep <> ssPostInstall then
+    exit;
+  { On a fresh install the settings tool does everything in order: regsvr32
+    for each DLL installed, then one token per voice whose folder exists at
+    the resolved data root (chosen folder, then NVDA's shared macintalk, then
+    the standalone default).  Registering with no data present is a clean
+    no-op.  On an upgrade, even zero registered voices is a choice to
+    preserve: do not rebuild tokens from available data or infer a choice
+    from elevated HKCU. }
+  if IsUpgrade then
+    RunSettingsStep('-RegisterServer', 'Updating SAPI components...',
+      'Panthera SAPI was updated, but its SAPI components could not be registered, so its voices may not speak.')
+  else
+    RunSettingsStep('-RegisterVoices -GenerationList Tiger,Leopard,Snowleopard,Lion',
+      'Registering voices from your speech data...',
+      'Panthera SAPI was installed, but its voices could not be registered, so no program can use them yet.');
 end;

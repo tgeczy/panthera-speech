@@ -23,6 +23,8 @@ $ErrorActionPreference = 'Stop'
 $Generations = @($GenerationList -split ',' | Where-Object { $_ })
 $statePath = Join-Path $PSScriptRoot 'state.json'
 $script:state = Get-Content -Raw $statePath | ConvertFrom-Json
+# A settings tool that fails, for the test that Setup says so.
+if ($script:state.fail) { exit [int]$script:state.fail }
 $script:classes = 0; $script:added = 0
 function Grant-SettingsFolder { }
 function Set-MachineSettings($unused) { }
@@ -62,57 +64,49 @@ $text = $text.Replace('exit 0', 'return')
 """
 
 
-@pytest.mark.parametrize("previous, voices", [
-    (None, []),
-    ("View32", ["Lion"]),
-    ("View64", ["Lion"]),
-    ("View64", []),
-    ("View64", ["Tiger", "Snowleopard"]),
-])
-def test_installer_preserves_registration(tmp_path, previous, voices):
-    if not ISCC.exists():
-        pytest.skip("Inno Setup compiler not installed")
-    import winreg
-
+def _code(key):
+    """The installer's real [Code], reading isolated keys and running the probe."""
     installer = (ROOT / "sapi/installer.iss").read_text(encoding="utf8")
     code = installer.split("[Code]", 1)[1]
-    key = "Software\\PantheraTests\\Installer-" + uuid.uuid4().hex
     # The real decision, including its InitializeSetup snapshot, reads two
     # isolated view keys. The harness writes View32 during installation, so
     # checking too late would break the fresh-install case.
     code = re.sub(r"UninstallKey = '[^']+';", lambda _: "UninstallKey = '" + key + "';", code)
     code = code.replace("RegKeyExists(HKLM32, UninstallKey)", "RegKeyExists(HKCU, UninstallKey + '\\View32')")
     code = code.replace("RegKeyExists(HKLM64, UninstallKey)", "RegKeyExists(HKCU, UninstallKey + '\\View64')")
-    run = installer.split("[Run]", 1)[1].split("[UninstallDelete]", 1)[0]
-    run = "\n".join(line for line in run.splitlines()
-                    if line.startswith("Filename:") and "-Register" in line)
-    assert len(run.splitlines()) == 2
-    run = run.replace(r"{app}\settings.ps1", str(tmp_path / "probe.ps1"))
+    return code
+
+
+def _install(tmp_path, previous, state):
+    """Build and run a probe installer around the real [Code]; -> (state, log).
+
+    Registration runs from [Code] with its exit code heard, so the probe takes
+    the place of {app}\\settings.ps1 there."""
+    import winreg
+    key = "Software\\PantheraTests\\Installer-" + uuid.uuid4().hex
+    code = _code(key)
+    real = r"ExpandConstant('{app}\settings.ps1')"
+    assert code.count(real) == 1, "SettingsScript is where the probe goes"
+    code = code.replace(real, "'" + str(tmp_path / "probe.ps1") + "'")
     (tmp_path / "probe.ps1").write_text(PROBE.replace("__SETTINGS__", str(ROOT / "sapi/settings.ps1")), encoding="utf-8-sig")
-    # Use distinct objects, not just a count: a repair must leave identities
-    # and custom token data unchanged, including all-unregistered state.
-    tokens = [{"generation": g, "voice": "Alex", "dataPath": "D:/chosen data/" + g}
-              for g in voices]
-    (tmp_path / "state.json").write_text(json.dumps({"voices": tokens}), encoding="utf8")
-    script = f"""[Setup]
-AppName=Panthera isolated installer check
-AppVersion=1
-DefaultDirName={{tmp}}\\PantheraInstallerCheck
-CreateAppDir=no
-Uninstallable=no
-PrivilegesRequired=lowest
-DisableWelcomePage=yes
-DisableReadyPage=yes
-DisableFinishedPage=yes
-OutputDir={tmp_path}
-OutputBaseFilename=probe-setup
-[Registry]
-Root: HKCU; Subkey: "{key}\\View32"
-[Run]
-{run}
-[Code]
-{code}
-"""
+    (tmp_path / "state.json").write_text(json.dumps(state), encoding="utf8")
+    script = "\n".join([
+        "[Setup]",
+        "AppName=Panthera isolated installer check",
+        "AppVersion=1",
+        r"DefaultDirName={tmp}\PantheraInstallerCheck",
+        "CreateAppDir=no",
+        "Uninstallable=no",
+        "PrivilegesRequired=lowest",
+        "DisableWelcomePage=yes",
+        "DisableReadyPage=yes",
+        "DisableFinishedPage=yes",
+        "OutputDir=%s" % tmp_path,
+        "OutputBaseFilename=probe-setup",
+        "[Registry]",
+        'Root: HKCU; Subkey: "%s\\View32"' % key,
+        "[Code]",
+        code])
     iss = tmp_path / "probe.iss"
     iss.write_text(script, encoding="utf-8-sig")
     try:
@@ -125,15 +119,9 @@ Root: HKCU; Subkey: "{key}\\View32"
         installed = subprocess.run([str(tmp_path / "probe-setup.exe"), "/VERYSILENT",
                                    "/SUPPRESSMSGBOXES", "/SP-", "/NORESTART", "/LOG=" + str(log)],
                                   capture_output=True, timeout=90, creationflags=subprocess.CREATE_NO_WINDOW)
-        assert installed.returncode == 0, log.read_text(errors="replace")
-        result = json.loads((tmp_path / "state.json").read_text(encoding="utf-8-sig"))
-        assert result["classes"] == 2, result
-        if previous:
-            assert result["voices"] == tokens, result
-            assert result["added"] == 0, result
-        else:
-            assert result["voices"] == ["Tiger", "Leopard", "Snowleopard", "Lion"], result
-            assert result["added"] == 1, result
+        text = log.read_text(errors="replace")
+        assert installed.returncode == 0, text
+        return json.loads((tmp_path / "state.json").read_text(encoding="utf-8-sig")), text
     finally:
         # These exact, uniquely named test keys are the only registry writes.
         for leaf in ("View32", "View64"):
@@ -145,6 +133,43 @@ Root: HKCU; Subkey: "{key}\\View32"
             winreg.DeleteKey(winreg.HKEY_CURRENT_USER, key)
         except FileNotFoundError:
             pass
+
+
+@pytest.mark.parametrize("previous, voices", [
+    (None, []),
+    ("View32", ["Lion"]),
+    ("View64", ["Lion"]),
+    ("View64", []),
+    ("View64", ["Tiger", "Snowleopard"]),
+])
+def test_installer_preserves_registration(tmp_path, previous, voices):
+    if not ISCC.exists():
+        pytest.skip("Inno Setup compiler not installed")
+    # Use distinct objects, not just a count: a repair must leave identities
+    # and custom token data unchanged, including all-unregistered state.
+    tokens = [{"generation": g, "voice": "Alex", "dataPath": "D:/chosen data/" + g}
+              for g in voices]
+    result, log = _install(tmp_path, previous, {"voices": tokens})
+    assert result["classes"] == 2, result
+    if previous:
+        assert result["voices"] == tokens, result
+        assert result["added"] == 0, result
+    else:
+        assert result["voices"] == ["Tiger", "Leopard", "Snowleopard", "Lion"], result
+        assert result["added"] == 1, result
+    assert "settings tool failed" not in log
+
+
+@pytest.mark.parametrize("previous", [None, "View64"], ids=["fresh", "upgrade"])
+def test_installer_says_when_registration_fails(tmp_path, previous):
+    """A registration that fails is said out loud (Tomi, 2026-11-21).  It ran
+    as a [Run] entry, which cannot see an exit code, so Setup finished with no
+    voices and nothing said.  In a silent install the message is suppressed
+    and the log carries it."""
+    if not ISCC.exists():
+        pytest.skip("Inno Setup compiler not installed")
+    _result, log = _install(tmp_path, previous, {"voices": [], "fail": 3})
+    assert "the settings tool failed with 3" in log, log
 
 
 def test_installer_refuses_without_powershell_3(tmp_path):
