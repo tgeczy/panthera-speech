@@ -304,6 +304,49 @@ function Test-AnyVoicesUnder([string]$root) {
 # So: anything with voices in it, in order of preference; then anything that
 # exists at all, so an empty chosen folder is still what the messages name;
 # then the default for a machine with nothing yet.
+# --- the elevated trip ---------------------------------------------------
+# One argument for a Windows command line, quoted by the rules the program at
+# the other end parses it with (panthera-speech#35).  A backslash is literal
+# except in front of a quote, so "E:\" -- the drive root a folder picker
+# returns -- escaped its own closing quote: the elevated script was handed
+# `DataRoot = E:" -MirrorSettings ...`, found no voices there, removed every
+# token, registered none and said it had worked.  Backslashes in front of a
+# quote, and at the very end, are doubled; a quote inside is escaped.
+function ConvertTo-Argument([string]$Value) {
+    $Value = [regex]::Replace($Value, '(\\*)"', '$1$1\"')
+    $Value = [regex]::Replace($Value, '(\\+)$', '$1$1')
+    '"' + $Value + '"'
+}
+
+# -> the command line for an elevated run of this script.  `Rest` is what
+# follows `-File <script>`; values in it go through ConvertTo-Argument.
+function Format-ElevatedArguments([string]$Script, [string[]]$Rest) {
+    '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -STA -File ' +
+        (ConvertTo-Argument $Script) + ' ' + ($Rest -join ' ')
+}
+
+# -> the elevated run's exit code, or $null when it never ran
+# (panthera-speech#36).  **Saying No at the UAC prompt is not a success.**
+# `-Verb RunAs` reports it as a non-terminating error and no process, and
+# `$null.ExitCode` is falsy -- so Unregister said the voices were gone and
+# marked them declined for good, and Data location said they were registered
+# from a folder the tokens did not name.  Every caller decides what "it did
+# not run" means for it; none may read it as 0.
+function Invoke-Elevated([string]$Arguments) {
+    try {
+        $process = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList $Arguments -ErrorAction Stop
+    } catch {
+        return $null
+    }
+    if (!$process) { return $null }
+    $process.ExitCode
+}
+
+# A message box, behind a name the settings test can replace.
+function Show-Message([string]$Text, [string]$Icon = 'Information') {
+    [Windows.Forms.MessageBox]::Show($form, $Text, 'Panthera SAPI', 'OK', $Icon) | Out-Null
+}
+
 function Resolve-DataRoot {
     if ($DataRoot) { return $DataRoot }
     $candidates = @()
@@ -630,6 +673,12 @@ if ($MigrateData) {
     exit 0
 }
 
+if ($RegisterVoices -and $DataRoot -and !(Test-Path -LiteralPath $DataRoot -PathType Container)) {
+    # Registering from a folder that is not there removes every selected
+    # voice and adds none.  Never on a path that arrived broken (#35).
+    Write-Error ('Not registering: the data folder {0} does not exist.' -f $DataRoot)
+    exit 3
+}
 if ($RegisterVoices -or $RegisterServer) {
     & "$env:SystemRoot\SysWOW64\regsvr32.exe" /s (Join-Path $stage 'x86\panthera_sapi.dll')
     if ($LASTEXITCODE) { exit $LASTEXITCODE }
@@ -739,7 +788,7 @@ foreach ($item in 'Fixed','Engine','Words') { [void]$numberStyle.Items.Add($item
 # Level 2 adds the spoken text and stays a deliberate registry edit, because a
 # transcript of everything the machine says should take more than one click.
 $diagnostics = New-Object Windows.Forms.CheckBox
-$diagnostics.Text = 'Write a &diagnostic log'
+$diagnostics.Text = 'Write a dia&gnostic log'
 $diagnostics.AccessibleName = 'Write a diagnostic log'
 $diagnostics.AccessibleDescription = 'Off by default. Records what the engine did, not what was spoken, to a file in the temp folder of whoever is speaking, on every account of this machine and at the sign-in screen. Turn it on only if a bug report asks for it, and off again afterwards.'
 $diagnostics.Location = New-Object Drawing.Point(340,362); $diagnostics.AutoSize = $true
@@ -958,10 +1007,13 @@ function Offer-NewData {
         ("Voice data for {0} is installed but not registered with SAPI.`n`nRegister it now? (Choosing No will not ask again for these engines; the Register button always works.)" -f $labels),
         'Panthera SAPI','YesNo','Question')
     if ($answer -eq 'Yes') {
-        $arguments='-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -STA -File "{0}" -RegisterVoices -GenerationList {1} -DataRoot "{2}" -MirrorSettings "{3}"' -f $settingsScript,($pending -join ','),$data,(Get-SettingsArgument)
-        $process=Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList $arguments
-        if ($process.ExitCode) {
-            [Windows.Forms.MessageBox]::Show($form,'Registration failed. Use Register to try again.','Panthera SAPI','OK','Error') | Out-Null
+        $code = Invoke-Elevated (Format-ElevatedArguments $settingsScript @('-RegisterVoices','-GenerationList',($pending -join ','),
+                                 '-DataRoot',(ConvertTo-Argument $data),'-MirrorSettings',(ConvertTo-Argument (Get-SettingsArgument))))
+        if ($null -eq $code) {
+            # They backed out of the prompt; that is not "no", so the offer
+            # comes round again.
+        } elseif ($code) {
+            Show-Message 'Registration failed. Use Register to try again.' 'Error'
         } else {
             Set-DeclinedGenerations @(Get-DeclinedGenerations | Where-Object { $_ -notin $pending })
             Refresh-Voices
@@ -1011,7 +1063,8 @@ function Invoke-Migration {
         ($message + "`n`nMove it now? (This needs administrator permission.)"),
         'Panthera SAPI','YesNo','Question')
     if ($answer -ne 'Yes') { return }
-    $arguments = '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -STA -File "{0}" -MigrateData -MigrateFrom "{1}" -DataRoot "{2}" -MirrorSettings "{3}"' -f $settingsScript,$plan.From,$plan.To,(Get-SettingsArgument)
+    $arguments = Format-ElevatedArguments $settingsScript @('-MigrateData','-MigrateFrom',(ConvertTo-Argument $plan.From),
+                     '-DataRoot',(ConvertTo-Argument $plan.To),'-MirrorSettings',(ConvertTo-Argument (Get-SettingsArgument)))
     # **A cancelled elevation prompt is not a failure and not a success.**
     # `-Verb RunAs` writes a *non-terminating* error when somebody says no, so
     # without -ErrorAction Stop $process stays $null, `$null.ExitCode` is
@@ -1129,11 +1182,10 @@ function Offer-Unregister([string[]]$generations, [string]$labels) {
         ("Remove these voices for now?`n`n{0}`n`nThey will keep appearing in every program's voice list and saying nothing until their speech data is back. Removing them takes them out of those lists, and you can register them again from this window the moment the data is there.`n`nThis needs administrator permission." -f $labels),
         'Panthera SAPI','YesNo','Question')
     if ($answer -ne 'Yes') { return }
-    $arguments = '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -STA -File "{0}" -UnregisterVoices -GenerationList {1} -DataRoot "{2}"' -f $settingsScript,($generations -join ','),$data
-    try {
-        $process = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList $arguments -ErrorAction Stop
-    } catch { return }
-    if (!$process -or $process.ExitCode) {
+    $code = Invoke-Elevated (Format-ElevatedArguments $settingsScript @('-UnregisterVoices','-GenerationList',($generations -join ','),
+                             '-DataRoot',(ConvertTo-Argument $data)))
+    if ($null -eq $code) { return }
+    if ($code) {
         [Windows.Forms.MessageBox]::Show($form,'Those voices could not be removed. Use Unregister to try again.','Panthera SAPI','OK','Error') | Out-Null
         return
     }
@@ -1180,13 +1232,10 @@ function Offer-Rebind {
         'Panthera SAPI','YesNo','Warning')
     if ($answer -ne 'Yes') { Offer-Unregister $stale $labels; return }
     $all = @($GenerationTable.Folder) -join ','
-    $arguments = '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -STA -File "{0}" -RegisterVoices -GenerationList {1} -DataRoot "{2}" -MirrorSettings "{3}"' -f $settingsScript,$all,$data,(Get-SettingsArgument)
-    try {
-        $process = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList $arguments -ErrorAction Stop
-    } catch {
-        return
-    }
-    if (!$process -or $process.ExitCode) {
+    $code = Invoke-Elevated (Format-ElevatedArguments $settingsScript @('-RegisterVoices','-GenerationList',$all,
+                             '-DataRoot',(ConvertTo-Argument $data),'-MirrorSettings',(ConvertTo-Argument (Get-SettingsArgument))))
+    if ($null -eq $code) { return }
+    if ($code) {
         [Windows.Forms.MessageBox]::Show($form,'The voices could not be registered from that folder. Use Register to try again.','Panthera SAPI','OK','Error') | Out-Null
         return
     }
@@ -1302,7 +1351,7 @@ $migrate.Add_Click({ Invoke-Migration })
 # and its UAC prompt -- are still the things that ask.  Pressing the button
 # is the consent to look; nothing here runs on its own.
 $updates = New-Object Windows.Forms.Button
-$updates.Text = 'Check for SAPI &updates...'
+$updates.Text = 'Chec&k for SAPI updates...'
 $updates.AccessibleName = 'Check for SAPI updates'
 $updates.Location = New-Object Drawing.Point(200,440); $updates.AutoSize = $true
 
@@ -1481,17 +1530,18 @@ function Invoke-ChooseRoot([bool]$explain = $true) {
             # Guarded on tokens existing at all, so browsing folders never
             # costs anyone an elevation prompt they did not earn.
             $all = @($GenerationTable.Folder) -join ','
-            $arguments='-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -STA -File "{0}" -RegisterVoices -GenerationList {1} -DataRoot "{2}" -MirrorSettings "{3}"' -f $settingsScript,$all,$script:data,(Get-SettingsArgument)
-            $process=Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList $arguments
-            if ($process.ExitCode) { [Windows.Forms.MessageBox]::Show($form,'The folder was remembered, but re-registering the voices from it failed. Use Register to try again.','Panthera SAPI','OK','Error') }
-            else { [Windows.Forms.MessageBox]::Show($form,'Voices are now registered from the new folder.','Panthera SAPI') }
+            $code = Invoke-Elevated (Format-ElevatedArguments $settingsScript @('-RegisterVoices','-GenerationList',$all,
+                                     '-DataRoot',(ConvertTo-Argument $script:data),'-MirrorSettings',(ConvertTo-Argument (Get-SettingsArgument))))
+            if ($null -eq $code) { Show-Message 'The folder was remembered, but the voices were not re-registered from it, because administrator permission was not given. Use Register to do it.' 'Warning' }
+            elseif ($code) { Show-Message 'The folder was remembered, but re-registering the voices from it failed. Use Register to try again.' 'Error' }
+            else { Show-Message 'Voices are now registered from the new folder.' }
             Refresh-Voices
         }
     }
 }
 $chooseRoot.Add_Click({ Invoke-ChooseRoot $true })
 
-$open.Add_Click({ New-Item -ItemType Directory -Force $data | Out-Null; Start-Process explorer.exe -ArgumentList ('"{0}"' -f $data) })
+$open.Add_Click({ New-Item -ItemType Directory -Force $data | Out-Null; Start-Process explorer.exe -ArgumentList (ConvertTo-Argument $data) })
 $extract.Add_Click({
     $picker = New-Object Windows.Forms.OpenFileDialog; $picker.Title='Choose a Mac OS X install disc image'; $picker.Filter='Disc images|*.iso;*.dmg;*.cdr|All files|*.*'
     if ($picker.ShowDialog($form) -eq 'OK') {
@@ -1522,9 +1572,10 @@ $register.Add_Click({
     # Everything checked still goes across: Add-VoiceTokens clears each
     # selected generation's old tokens before adding what it finds, so a
     # lineage with no data here comes off the list rather than lingering mute.
-    $arguments='-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -STA -File "{0}" -RegisterVoices -GenerationList {1} -DataRoot "{2}" -MirrorSettings "{3}"' -f $settingsScript,($selected -join ','),$data,(Get-SettingsArgument)
-    $process=Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList $arguments
-    if (!$process -or $process.ExitCode) { [Windows.Forms.MessageBox]::Show($form,'Registration failed.','Panthera SAPI','OK','Error') } else {
+    $code = Invoke-Elevated (Format-ElevatedArguments $settingsScript @('-RegisterVoices','-GenerationList',($selected -join ','),
+                             '-DataRoot',(ConvertTo-Argument $data),'-MirrorSettings',(ConvertTo-Argument (Get-SettingsArgument))))
+    if ($null -eq $code) { Show-Message 'Nothing was registered: administrator permission was not given.' 'Warning' }
+    elseif ($code) { Show-Message 'Registration failed.' 'Error' } else {
         # A deliberate registration lifts the never-ask-again mark.
         Set-DeclinedGenerations @(Get-DeclinedGenerations | Where-Object { $_ -notin $selected })
         $count = @(Get-Voices | Where-Object { $_.Generation -in $withData }).Count
@@ -1540,13 +1591,14 @@ $register.Add_Click({
 $unregister.Add_Click({
     $selected=@(); for($i=0;$i -lt $GenerationTable.Count;$i++){if($list.GetItemChecked($i)){$selected+=$GenerationTable[$i].Folder}}
     if(!$selected.Count){[Windows.Forms.MessageBox]::Show($form,'Check at least one engine.','Panthera SAPI');return}
-    $arguments='-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -STA -File "{0}" -UnregisterVoices -GenerationList {1} -DataRoot "{2}"' -f $settingsScript,($selected -join ','),$data
-    $process=Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList $arguments
-    if ($process.ExitCode) { [Windows.Forms.MessageBox]::Show($form,'Unregistration failed.','Panthera SAPI','OK','Error') } else {
+    $code = Invoke-Elevated (Format-ElevatedArguments $settingsScript @('-UnregisterVoices','-GenerationList',($selected -join ','),
+                             '-DataRoot',(ConvertTo-Argument $data)))
+    if ($null -eq $code) { Show-Message 'Nothing was unregistered: administrator permission was not given.' 'Warning' }
+    elseif ($code) { Show-Message 'Unregistration failed.' 'Error' } else {
         # Unregistering is the person saying no: mark it, so the startup
         # offer never asks to re-register what was just removed.
         Set-DeclinedGenerations (@(Get-DeclinedGenerations) + $selected)
-        [Windows.Forms.MessageBox]::Show($form,'Panthera voices were unregistered.','Panthera SAPI')
+        Show-Message 'Panthera voices were unregistered.'
     }
 })
 $close.Add_Click({$form.Close()})

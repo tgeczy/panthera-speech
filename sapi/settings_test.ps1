@@ -10,13 +10,14 @@ $ast = [Management.Automation.Language.Parser]::ParseInput($source,[ref]$tokens,
 if ($errors.Count) { throw $errors[0] }
 foreach ($assignment in ($ast.EndBlock.Statements | Where-Object {
     $_ -is [Management.Automation.Language.AssignmentStatementAst] -and
-    $_.Left.Extent.Text -in '$SettingKinds','$SettingNames'
+    $_.Left.Extent.Text -in '$SettingKinds','$SettingNames','$GenerationTable'
 })) { . ([scriptblock]::Create($assignment.Extent.Text)) }
 if (!$SettingNames) { throw 'Setting names missing' }
 # The file reader and writer and the elevated mirror stand above the form so
 # the elevated trips can call them; pulled in by name.
 $helpers = 'Read-SettingsFile','Write-SettingsFile','Set-TableValue','Set-SettingsFileValue',
-           'Get-SettingsFileValue','Set-MachineSettings'
+           'Get-SettingsFileValue','Set-MachineSettings',
+           'ConvertTo-Argument','Format-ElevatedArguments','Invoke-Elevated'
 foreach ($fn in $ast.FindAll({ $args[0] -is [Management.Automation.Language.FunctionDefinitionAst] },$false)) {
     if ($fn.Name -in $helpers) { . ([scriptblock]::Create($fn.Extent.Text)) }
 }
@@ -70,6 +71,26 @@ try {
     $back = Read-SettingsFile $again
     Check (@($back).Count -eq 6 -and $back[0].Value -eq $table[0].Value -and $back[5].Value -eq $table[5].Value) 'a written file reads back as it was'
 
+    # The elevated command line (panthera-speech#35).  A drive root is what a
+    # folder picker returns for E:, and "E:\" escaped its own closing quote:
+    # the elevated script got DataRoot = 'E:" -MirrorSettings ...' and no
+    # settings.  Run the real template against a stub with the same names.
+    $stub = Join-Path $testDir 'stub.ps1'
+    $heard = Join-Path $testDir 'heard.txt'
+    Set-Content -LiteralPath $stub -Encoding UTF8 -Value @(
+        'param([switch]$RegisterVoices,[string]$GenerationList,[string]$DataRoot,[string]$MirrorSettings)',
+        ('Set-Content -LiteralPath ''{0}'' -Encoding UTF8 -Value @($GenerationList,$DataRoot,$MirrorSettings)' -f $heard))
+    foreach ($root in 'C:\', 'C:\Panthera data\with a trailing slash\', 'D:\plain') {
+        $mirror = 'Phrasing=most;Inflection=40'
+        $line = Format-ElevatedArguments $stub @('-RegisterVoices','-GenerationList','Tiger,Lion',
+                    '-DataRoot',(ConvertTo-Argument $root),'-MirrorSettings',(ConvertTo-Argument $mirror))
+        Remove-Item -LiteralPath $heard -ErrorAction SilentlyContinue
+        $run = Microsoft.PowerShell.Management\Start-Process powershell.exe -ArgumentList $line -Wait -PassThru -WindowStyle Hidden
+        $got = Lines $heard
+        Check ($run.ExitCode -eq 0 -and $got[0] -eq 'Tiger,Lion' -and $got[1] -eq $root -and $got[2] -eq $mirror) ("the elevated script is handed '" + $root + "' and the settings intact")
+    }
+    Check ((ConvertTo-Argument 'say "hi"\') -eq '"say \"hi\"\\"') 'a quote inside is escaped and a trailing backslash doubled'
+
     # What a machine upgraded from the registry build looks like: HKLM
     # mirrored months ago, HKCU holding one choice, tool state and a value of
     # the wrong type, and no file anywhere.
@@ -104,6 +125,49 @@ try {
     foreach ($control in $expandAbbrev,$acceptCommands,$rateBoost,$inflection,$numberStyle,$pauses) {
         Check ($control.Parent -eq $form -and $control.AccessibleName.Length -gt 0) 'native setting control has a parent and an accessible name'
     }
+    # Every access key on the form belongs to one control (panthera-speech#34).
+    # A shared letter runs whichever control comes first after the focus:
+    # Alt+U from Register ran Unregister, and Alt+D from Data location ticked
+    # the log that reaches every account.
+    $keys = @{}; $shared = @()
+    foreach ($control in $form.Controls) {
+        $m = [regex]::Match([string]$control.Text, '(?<!&)&([^&])')
+        if (!$m.Success) { continue }
+        $key = $m.Groups[1].Value.ToUpperInvariant()
+        if ($keys.ContainsKey($key)) { $shared += ("Alt+$key = '" + $keys[$key] + "' and '" + $control.Text + "'") }
+        else { $keys[$key] = $control.Text }
+    }
+    Check ($shared.Count -eq 0) ('every access key belongs to one control' + $(if ($shared) { ': ' + ($shared -join '; ') } else { '' }))
+    Check ($keys.Count -ge 15) 'the access keys were found at all'
+
+    # Saying No at the UAC prompt (panthera-speech#36).  -Verb RunAs gives no
+    # process, `$null.ExitCode` is falsy, and Unregister said the voices were
+    # gone and marked them declined for good.  Both ways a refusal arrives:
+    # no process, and the error -ErrorAction Stop turns it into.
+    $script:messages = @()
+    function Show-Message([string]$Text, [string]$Icon = 'Information') { $script:messages += $Text }
+    $list.Items.Clear()
+    foreach ($generation in $GenerationTable) { [void]$list.Items.Add($generation.Item, $false) }
+    $list.SetItemChecked(1, $true)
+    $onClick = [Windows.Forms.Control].GetMethod('OnClick', [Reflection.BindingFlags]'NonPublic,Instance')
+    foreach ($refusal in 'none', 'throws') {
+        if ($refusal -eq 'none') {
+            function Start-Process { param([Parameter(ValueFromRemainingArguments=$true)]$Rest) $null }
+        } else {
+            function Start-Process { param([Parameter(ValueFromRemainingArguments=$true)]$Rest) throw 'The operation was canceled by the user.' }
+        }
+        Check ($null -eq (Invoke-Elevated '-NoProfile')) ("a refused prompt ($refusal) is not an exit code")
+        Set-DeclinedGenerations @('Tiger')
+        $script:messages = @()
+        [void]$onClick.Invoke($unregister, @([EventArgs]::Empty))
+        Check ((@(Get-DeclinedGenerations) -join ',') -eq 'Tiger') ("Unregister refused ($refusal) marks nothing declined")
+        Check ($messages.Count -eq 1 -and $messages[0] -like '*administrator permission was not given*') ("Unregister refused ($refusal) says so")
+    }
+    function Start-Process { param([Parameter(ValueFromRemainingArguments=$true)]$Rest) [pscustomobject]@{ ExitCode = 0 } }
+    $script:messages = @()
+    [void]$onClick.Invoke($unregister, @([EventArgs]::Empty))
+    Check ((@(Get-DeclinedGenerations) -join ',') -eq 'Leopard,Tiger' -and $messages[0] -like '*were unregistered*') 'Unregister that ran marks the engine declined'
+    Remove-Item Function:\Start-Process, Function:\Show-Message
     $form.Dispose(); $extractTimer.Dispose()
     . $ui
     Check ($expandAbbrev.Checked -and !$diagnostics.Checked -and $pauses.SelectedIndex -eq 3) 'recreated UI restores user choices over machine defaults'
