@@ -45,8 +45,13 @@ $text = $dispatch[0].Extent.Text
 # call and exit-status checks. Return to the probe on exit 0.
 if ($text -notmatch 'Invoke-Regsvr32') { throw 'expected the COM registration calls' }
 $stage = $PSScriptRoot
+# Get-ComServers lists only installed DLLs: stand-ins for the two a 64-bit
+# install puts down.
+foreach ($arch in 'x86','x64') {
+    New-Item -ItemType File -Force -Path (Join-Path $stage "$arch\panthera_sapi.dll") | Out-Null
+}
 foreach ($fn in $ast.FindAll({ $args[0] -is [Management.Automation.Language.FunctionDefinitionAst] -and
-                               $args[0].Name -eq 'Get-ComServers' }, $false)) {
+                               $args[0].Name -in 'Get-ComServers','Test-Arm64' }, $false)) {
     . ([scriptblock]::Create($fn.Extent.Text))
 }
 function Invoke-Regsvr32($Exe, $Dll, [switch]$Unregister) { $script:classes++; 0 }

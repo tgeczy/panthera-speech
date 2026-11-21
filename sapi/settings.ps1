@@ -329,23 +329,43 @@ function Invoke-Elevated([string]$Arguments) {
     $process.ExitCode
 }
 
-# -> one @{ Exe; Dll } per engine DLL this machine registers, in order
-# (panthera-speech#37).  On 64-bit Windows: the x86 DLL through SysWOW64's
-# regsvr32 and the x64 one through the native one -- Sysnative from a 32-bit
-# PowerShell, where System32 is redirected to SysWOW64.  On 32-bit Windows
-# there is no SysWOW64 and no x64 DLL, so the x86 DLL goes through System32.
-# Calling SysWOW64 there threw, the script carried on, and every voice was
-# listed in every program and failed to create.
+# -> $true on ARM64 Windows, whatever this PowerShell is emulating.  The
+# system's own PROCESSOR_ARCHITECTURE, which emulation does not rewrite.
+function Test-Arm64 {
+    try {
+        (Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' `
+                          -Name PROCESSOR_ARCHITECTURE -ErrorAction Stop).PROCESSOR_ARCHITECTURE -eq 'ARM64'
+    } catch { $false }
+}
+
+# -> one @{ Exe; Dll; Required } per engine DLL this machine registers, in
+# order (panthera-speech#37).  On 64-bit Windows: the x86 DLL through
+# SysWOW64's regsvr32 and the x64 one through the native one -- Sysnative
+# from a 32-bit PowerShell, where System32 is redirected to SysWOW64.  On
+# 32-bit Windows there is no SysWOW64 and no x64 DLL, so the x86 DLL goes
+# through System32.  Calling SysWOW64 there threw, the script carried on, and
+# every voice was listed in every program and failed to create.
+#
+# **Only the DLLs that are installed.**  The installer decides that by its
+# own rule, not by the OS's bitness: ARM64 Windows 10 installs in 32-bit mode
+# and gets no x64 DLL, and registering one that is not there failed every
+# registration on it.  And on ARM64 the x64 DLL is not Required: whether the
+# native ARM64 regsvr32 can register an x64 DLL is not known, and before #37
+# its failure was never seen at all -- so there it is tried, and a failure is
+# said, not fatal.  The x86 DLL, which every machine has, is always Required.
 function Get-ComServers([bool]$Os64 = [Environment]::Is64BitOperatingSystem,
                         [bool]$Process64 = [Environment]::Is64BitProcess,
-                        [string]$Root = $env:SystemRoot, [string]$Stage = $stage) {
+                        [string]$Root = $env:SystemRoot, [string]$Stage = $stage,
+                        [bool]$Arm64 = (Test-Arm64)) {
     $x86 = Join-Path $Stage 'x86\panthera_sapi.dll'
     if (!$Os64) {
-        return @(@{ Exe = Join-Path $Root 'System32\regsvr32.exe'; Dll = $x86 })
+        $all = @(@{ Exe = Join-Path $Root 'System32\regsvr32.exe'; Dll = $x86; Required = $true })
+    } else {
+        $native = if ($Process64) { 'System32' } else { 'Sysnative' }
+        $all = @(@{ Exe = Join-Path $Root 'SysWOW64\regsvr32.exe'; Dll = $x86; Required = $true },
+                 @{ Exe = Join-Path $Root ($native + '\regsvr32.exe'); Dll = Join-Path $Stage 'x64\panthera_sapi.dll'; Required = !$Arm64 })
     }
-    $native = if ($Process64) { 'System32' } else { 'Sysnative' }
-    @(@{ Exe = Join-Path $Root 'SysWOW64\regsvr32.exe'; Dll = $x86 },
-      @{ Exe = Join-Path $Root ($native + '\regsvr32.exe'); Dll = Join-Path $Stage 'x64\panthera_sapi.dll' })
+    @($all | Where-Object { Test-Path -LiteralPath $_.Dll -PathType Leaf })
 }
 
 # -> regsvr32's exit code, once it has finished (panthera-speech#37).
@@ -717,9 +737,15 @@ if ($RegisterVoices -or $RegisterServer) {
         [Console]::Error.WriteLine(('Not registering: the data folder {0} does not exist.' -f $DataRoot))
         exit 3
     }
-    foreach ($server in @(Get-ComServers)) {
+    $servers = @(Get-ComServers)
+    if (!$servers.Count) {
+        [Console]::Error.WriteLine('Not registering: no engine DLL beside this script.')
+        exit 4
+    }
+    foreach ($server in $servers) {
         $code = Invoke-Regsvr32 $server.Exe $server.Dll
-        if ($code) { exit $code }
+        if ($code -and $server.Required) { exit $code }
+        if ($code) { [Console]::Error.WriteLine(('{0} could not be registered (regsvr32 {1}); carrying on without it.' -f $server.Dll,$code)) }
     }
     # Registration is the elevated trip everybody makes, so it is where the
     # machine-wide folder gets its permissions and its copy of the settings.

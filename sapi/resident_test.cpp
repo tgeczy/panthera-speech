@@ -168,7 +168,7 @@ public:
     }
     /* When the first and the last audio arrived, on QueryPerformanceCounter's
      * clock: two voices taking turns never overlap. */
-    LONGLONG firstWrite=0, lastWrite=0;
+    std::atomic<LONGLONG> firstWrite{0}, lastWrite{0};   /* read across threads */
     STDMETHODIMP Write(const void *p,ULONG n,ULONG *w){
         LARGE_INTEGER now; QueryPerformanceCounter(&now);
         if(!firstWrite)firstWrite=now.QuadPart;
@@ -677,7 +677,12 @@ int wmain(int argc, wchar_t **argv) {
      * byte it gets must come after the last byte the first one got, with
      * both utterances whole and exactly as they sound alone. */
     {
+        /* Long enough that the second voice asks with most of the first
+         * still to come: a first write is one 15.6 ms tick of Sleep(1) away. */
         const wchar_t *LONGLINE=L"The quick brown fox jumps over the lazy dog. "
+                                L"The quick brown fox jumps over the lazy dog. "
+                                L"The quick brown fox jumps over the lazy dog. "
+                                L"The quick brown fox jumps over the lazy dog. "
                                 L"The quick brown fox jumps over the lazy dog. "
                                 L"The quick brown fox jumps over the lazy dog.";
         std::vector<BYTE> alone;
@@ -685,9 +690,12 @@ int wmain(int argc, wchar_t **argv) {
         Engine *other=new Engine; other->SetObjectToken(&tok);
         FakeSite a(0), b(0);
         std::atomic<LONGLONG> bAsked(0);
+        std::atomic<bool> aDone(false);
         HRESULT ha=E_FAIL, hb=E_FAIL;
-        std::thread ta([&]{ ha=say_script(e,LONGLINE,a); });
-        while(!a.firstWrite&&ha==E_FAIL)Sleep(1);      /* the first is speaking */
+        std::thread ta([&]{ ha=say_script(e,LONGLINE,a); aDone=true; });
+        /* Until the first is speaking -- or has finished, failed included, so
+         * a voice that never writes fails the checks below, not the build. */
+        while(!a.firstWrite&&!aDone)Sleep(1);
         std::thread tb([&]{
             LARGE_INTEGER now; QueryPerformanceCounter(&now); bAsked=now.QuadPart;
             hb=say_script(other,LONGLINE,b);

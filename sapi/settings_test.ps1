@@ -17,7 +17,7 @@ if (!$SettingNames) { throw 'Setting names missing' }
 # the elevated trips can call them; pulled in by name.
 $helpers = 'Read-SettingsFile','Write-SettingsFile','Set-TableValue','Set-SettingsFileValue',
            'Get-SettingsFileValue','Set-MachineSettings',
-           'ConvertTo-Argument','Format-ElevatedArguments','Invoke-Elevated','Get-ComServers','Invoke-Regsvr32'
+           'ConvertTo-Argument','Format-ElevatedArguments','Invoke-Elevated','Get-ComServers','Invoke-Regsvr32','Test-Arm64'
 foreach ($fn in $ast.FindAll({ $args[0] -is [Management.Automation.Language.FunctionDefinitionAst] },$false)) {
     if ($fn.Name -in $helpers) { . ([scriptblock]::Create($fn.Extent.Text)) }
 }
@@ -108,8 +108,10 @@ try {
         'param([switch]$RegisterVoices,[switch]$RegisterServer,[string]$DataRoot,[string]$MirrorSettings)',
         'function Grant-SettingsFolder { }', 'function Set-MachineSettings($s) { }',
         ('function Add-VoiceTokens($g) {{ Add-Content -LiteralPath ''{0}'' tokens }}' -f $did),
-        'function Get-ComServers { @(@{ Exe = ''a''; Dll = ''x86'' }, @{ Exe = ''b''; Dll = ''x64'' }) }',
-        ('function Invoke-Regsvr32($Exe,$Dll,[switch]$Unregister) {{ Add-Content -LiteralPath ''{0}'' regsvr32; [int]$env:REGSVR_CODE }}' -f $did),
+        ('function Get-ComServers { if ($env:NO_SERVERS) { return @() }; ' +
+         '@(@{ Exe = ''a''; Dll = ''x86''; Required = $true }, @{ Exe = ''b''; Dll = ''x64''; Required = ($env:X64_REQUIRED -ne ''0'') }) }'),
+        (('function Invoke-Regsvr32($Exe,$Dll,[switch]$Unregister) {{ Add-Content -LiteralPath ''{0}'' regsvr32; ' +
+          'if ($Dll -eq ''x64'' -and $env:REGSVR_X64_CODE) {{ [int]$env:REGSVR_X64_CODE }} else {{ [int]$env:REGSVR_CODE }} }}') -f $did),
         '$Generations = @(''Tiger'')', $dispatch[0].Extent.Text)
     $env:REGSVR_CODE = '0'
     $missing = Join-Path $testDir 'no such folder\'
@@ -126,17 +128,42 @@ try {
     $run = Microsoft.PowerShell.Management\Start-Process powershell.exe -Wait -PassThru -WindowStyle Hidden -ArgumentList (
         Format-ElevatedArguments $guarded @('-RegisterVoices','-DataRoot',(ConvertTo-Argument $testDir)))
     Check ($run.ExitCode -eq 5 -and @(Lines $did).Count -eq 1) 'a failing regsvr32 stops registration with its code, before the tokens'
-    Remove-Item Env:\REGSVR_CODE
+    # A DLL that is not Required (x64 on ARM64) may fail; the rest goes on.
+    Remove-Item -LiteralPath $did
+    $env:REGSVR_CODE = '0'; $env:REGSVR_X64_CODE = '3'; $env:X64_REQUIRED = '0'
+    $run = Microsoft.PowerShell.Management\Start-Process powershell.exe -Wait -PassThru -WindowStyle Hidden -ArgumentList (
+        Format-ElevatedArguments $guarded @('-RegisterVoices','-DataRoot',(ConvertTo-Argument $testDir)))
+    Check ($run.ExitCode -eq 0 -and (Lines $did).Count -eq 3) 'a DLL that is not required may fail, and the voices are still registered'
+    Remove-Item -LiteralPath $did
+    $env:X64_REQUIRED = '1'
+    $run = Microsoft.PowerShell.Management\Start-Process powershell.exe -Wait -PassThru -WindowStyle Hidden -ArgumentList (
+        Format-ElevatedArguments $guarded @('-RegisterVoices','-DataRoot',(ConvertTo-Argument $testDir)))
+    Check ($run.ExitCode -eq 3 -and @(Lines $did).Count -eq 2) 'a required x64 DLL that fails stops registration, before the tokens'
+    Remove-Item -LiteralPath $did
+    $env:NO_SERVERS = '1'
+    $run = Microsoft.PowerShell.Management\Start-Process powershell.exe -Wait -PassThru -WindowStyle Hidden -ArgumentList (
+        Format-ElevatedArguments $guarded @('-RegisterVoices','-DataRoot',(ConvertTo-Argument $testDir)))
+    Check ($run.ExitCode -eq 4 -and !(Test-Path -LiteralPath $did)) 'with no engine DLL to register, nothing is registered and it says so'
+    Remove-Item Env:\REGSVR_CODE, Env:\REGSVR_X64_CODE, Env:\X64_REQUIRED, Env:\NO_SERVERS
 
     # Which regsvr32 registers which DLL (panthera-speech#37).  32-bit Windows
     # has no SysWOW64 and no x64 DLL; a 32-bit PowerShell on 64-bit Windows
-    # sees System32 redirected, so the x64 DLL goes through Sysnative.
-    $servers = @(Get-ComServers $false $false 'C:\TestWindows' 'C:\TestPanthera')
-    Check ($servers.Count -eq 1 -and $servers[0].Exe -eq 'C:\TestWindows\System32\regsvr32.exe' -and $servers[0].Dll -eq 'C:\TestPanthera\x86\panthera_sapi.dll') '32-bit Windows registers the x86 DLL through System32, and nothing else'
-    $servers = @(Get-ComServers $true $true 'C:\TestWindows' 'C:\TestPanthera')
-    Check ($servers.Count -eq 2 -and $servers[0].Exe -eq 'C:\TestWindows\SysWOW64\regsvr32.exe' -and $servers[1].Exe -eq 'C:\TestWindows\System32\regsvr32.exe' -and $servers[1].Dll -eq 'C:\TestPanthera\x64\panthera_sapi.dll') '64-bit Windows registers x86 through SysWOW64 and x64 through System32'
-    $servers = @(Get-ComServers $true $false 'C:\TestWindows' 'C:\TestPanthera')
+    # sees System32 redirected, so the x64 DLL goes through Sysnative.  Only
+    # installed DLLs are listed, so the stage here has stand-in files.
+    $fakeStage = Join-Path $testDir 'stage'
+    foreach ($a in 'x86','x64') { New-Item -ItemType File -Force -Path (Join-Path $fakeStage "$a\panthera_sapi.dll") | Out-Null }
+    $servers = @(Get-ComServers $false $false 'C:\TestWindows' $fakeStage $false)
+    Check ($servers.Count -eq 1 -and $servers[0].Exe -eq 'C:\TestWindows\System32\regsvr32.exe' -and $servers[0].Dll -eq (Join-Path $fakeStage 'x86\panthera_sapi.dll') -and $servers[0].Required) '32-bit Windows registers the x86 DLL through System32, and nothing else'
+    $servers = @(Get-ComServers $true $true 'C:\TestWindows' $fakeStage $false)
+    Check ($servers.Count -eq 2 -and $servers[0].Exe -eq 'C:\TestWindows\SysWOW64\regsvr32.exe' -and $servers[1].Exe -eq 'C:\TestWindows\System32\regsvr32.exe' -and $servers[1].Dll -eq (Join-Path $fakeStage 'x64\panthera_sapi.dll') -and $servers[1].Required) '64-bit Windows registers x86 through SysWOW64 and x64 through System32, both required'
+    $servers = @(Get-ComServers $true $false 'C:\TestWindows' $fakeStage $false)
     Check ($servers[1].Exe -eq 'C:\TestWindows\Sysnative\regsvr32.exe') 'a 32-bit PowerShell reaches the 64-bit regsvr32 through Sysnative'
+    $servers = @(Get-ComServers $true $true 'C:\TestWindows' $fakeStage $true)
+    Check ($servers.Count -eq 2 -and $servers[0].Required -and !$servers[1].Required) 'on ARM64 the x64 DLL is tried but not required'
+    Remove-Item -LiteralPath (Join-Path $fakeStage 'x64\panthera_sapi.dll')
+    $servers = @(Get-ComServers $true $true 'C:\TestWindows' $fakeStage $true)
+    Check ($servers.Count -eq 1 -and $servers[0].Dll -like '*\x86\*') 'an x64 DLL that was not installed (ARM64 Windows 10) is not registered'
+    Check ((Test-Arm64) -eq ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64' -or $env:PROCESSOR_ARCHITEW6432 -eq 'ARM64')) 'Test-Arm64 reads this machine right'
     # And it is waited for, and what it says is heard.
     function Start-Process { param($FilePath, $ArgumentList, [switch]$Wait, [switch]$PassThru, $WindowStyle)
         $script:regsvr = @{ File = $FilePath; Args = $ArgumentList; Wait = [bool]$Wait }; [pscustomobject]@{ ExitCode = 3 } }
