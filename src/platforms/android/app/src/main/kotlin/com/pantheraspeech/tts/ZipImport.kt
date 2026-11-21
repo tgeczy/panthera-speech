@@ -56,6 +56,17 @@ object ZipImport {
      * import of it, the way it clears ProtectedStorage.MOVING. */
     const val IMPORTING = ".importing"
 
+    /** How a name without the zip's UTF-8 flag is read: Latin-1, which takes
+     * every byte (panthera-speech#42; ssi263-speech#54, the same class).  An
+     * older tool -- or 7-Zip by default -- writes a non-ASCII name in a DOS
+     * code page without the flag, and the one-argument ZipInputStream reads it
+     * as UTF-8 and throws: the streamed check refused the whole zip, and the
+     * extraction failed after OK, possibly hundreds of MB in, though the
+     * seekable check had passed it.  A flagged name is UTF-8 as before; the
+     * seekable check already read names this way, and an engine is found by
+     * its content, never by a stray readme's name. */
+    private val NAMES = Charsets.ISO_8859_1
+
     /** The bytes, twice over: a fresh stream from the start for the import,
      * and the same file as a channel when it can be seeked, for the check. */
     class Source(val name: String, val size: Long,
@@ -415,7 +426,7 @@ object ZipImport {
     private fun inspectStreamed(source: Source): Plan = try {
         val entries = ArrayList<Entry>()
         val kept = HashMap<String, ByteArray>()
-        ZipInputStream(BufferedInputStream(source.open(), 1 shl 16)).use { zip ->
+        ZipInputStream(BufferedInputStream(source.open(), 1 shl 16), NAMES).use { zip ->
             while (true) {
                 val e = zip.nextEntry ?: break
                 val name = cleanName(e.name)
@@ -468,7 +479,7 @@ object ZipImport {
         for ((_, dir) in targets) if (dir.exists()) dir.deleteRecursively()
         val counting = CountingInputStream(source.open())
         try {
-            ZipInputStream(BufferedInputStream(counting, 1 shl 16)).use { zip ->
+            ZipInputStream(BufferedInputStream(counting, 1 shl 16), NAMES).use { zip ->
                 val buffer = ByteArray(1 shl 16)
                 while (true) {
                     val e = zip.nextEntry ?: break

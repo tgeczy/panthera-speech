@@ -49,6 +49,31 @@ class ZipImportTest {
         }
     }
 
+    /** A zip whose names an older tool wrote in a DOS code page, without the
+     * zip's UTF-8 flag (panthera-speech#42; ssi263-speech#54, the same class).
+     * The check read such a name as Latin-1 and passed the zip, but the
+     * extraction read it as UTF-8 and threw -- after OK, possibly hundreds of
+     * MB in -- and the streamed check refused the whole zip.  One stray
+     * "LÉEME.TXT" ahead of the engine is enough. */
+    @Test fun aDosCodePageNameNeitherRefusesNorBreaksTheImport() {
+        val entries = linkedMapOf("lion/LÉEME.TXT" to "léame".toByteArray(), "für.txt" to byteArrayOf(1)) +
+            engine("lion/")
+        val file = temp.newFile().also { f ->
+            ZipOutputStream(f.outputStream(), java.nio.charset.Charset.forName("IBM437")).use { zip ->
+                for ((name, bytes) in entries) { zip.putNextEntry(ZipEntry(name)); zip.write(bytes); zip.closeEntry() }
+            }
+        }
+        for (source in sources(file)) {
+            val plan = ZipImport.inspect(source)
+            assertNull(plan.refusal)
+            assertEquals(listOf("lion"), plan.gens)
+            val root = temp.newFolder()
+            assertEquals(listOf("lion"), ZipImport.extract(source, plan, root, { _, _ -> }, { false }))
+            for ((name, bytes) in engine("lion/"))
+                assertArrayEquals(bytes, File(root, "lion/" + name.removePrefix("lion/")).readBytes())
+        }
+    }
+
     @Test fun aSingleEngineAtTheRootStillImports() {
         val file = archive(engine(""))
         for (source in sources(file)) {
