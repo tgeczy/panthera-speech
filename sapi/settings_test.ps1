@@ -163,6 +163,8 @@ try {
     Remove-Item -LiteralPath (Join-Path $fakeStage 'x64\panthera_sapi.dll')
     $servers = @(Get-ComServers $true $true 'C:\TestWindows' $fakeStage $true)
     Check ($servers.Count -eq 1 -and $servers[0].Dll -like '*\x86\*') 'an x64 DLL that was not installed (ARM64 Windows 10) is not registered'
+    $servers = @(Get-ComServers $true $true 'C:\TestWindows' $fakeStage $false)
+    Check ($servers.Count -eq 2 -and $servers[1].Required) 'on x64 Windows a missing x64 DLL is still listed, so a damaged install fails loudly'
     Check ((Test-Arm64) -eq ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64' -or $env:PROCESSOR_ARCHITEW6432 -eq 'ARM64')) 'Test-Arm64 reads this machine right'
     # And it is waited for, and what it says is heard.
     function Start-Process { param($FilePath, $ArgumentList, [switch]$Wait, [switch]$PassThru, $WindowStyle)

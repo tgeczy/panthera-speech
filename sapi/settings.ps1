@@ -365,7 +365,9 @@ function Get-ComServers([bool]$Os64 = [Environment]::Is64BitOperatingSystem,
         $all = @(@{ Exe = Join-Path $Root 'SysWOW64\regsvr32.exe'; Dll = $x86; Required = $true },
                  @{ Exe = Join-Path $Root ($native + '\regsvr32.exe'); Dll = Join-Path $Stage 'x64\panthera_sapi.dll'; Required = !$Arm64 })
     }
-    @($all | Where-Object { Test-Path -LiteralPath $_.Dll -PathType Leaf })
+    # A Required DLL stays listed even when missing, so a damaged install fails
+    # loudly; only an optional one the installer did not put down is left out.
+    @($all | Where-Object { $_.Required -or (Test-Path -LiteralPath $_.Dll -PathType Leaf) })
 }
 
 # -> regsvr32's exit code, once it has finished (panthera-speech#37).
