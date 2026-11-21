@@ -123,10 +123,19 @@ def test_a_zero_width_character_does_not_split_a_word(mark):
     assert enc(u"zero" + mark + u"width") == b"zerowidth"
 
 
-def test_typeset_ligatures_and_subscripts_are_their_letters():
-    """The same class: what NFD cannot take apart became a gap -- "ﬁle" (the
-    fi ligature of a PDF) was " le", and H₂O was "H O".  Their compatibility
-    forms are letters and digits MacRoman has."""
+def test_typeset_ligatures_are_their_letters():
+    """The same class: a PDF's ligatures became gaps -- "ﬁle" was " le",
+    "oﬃce" "o ce".  Each is named as its letters."""
     assert enc(u"ﬁle") == b"file"
     assert enc(u"oﬃce") == b"office"
-    assert enc(u"H₂O") == b"H2O"
+    assert enc(u"ﬀ ﬂ ﬄ ﬅ ﬆ") == b"ff fl ffl st st"
+
+
+def test_compatibility_forms_neither_merge_digits_nor_make_commands():
+    """Not a compatibility decomposition (found in review of #43): it turned
+    "10²" into "102", a different number, and fullwidth brackets into
+    real "[[" after the command fence had run, so "［［rate 100］］"
+    changed the rate with commands off.  Those stay gaps, as they were."""
+    assert enc(u"10²") != b"102"
+    assert b"[" not in enc(u"［［rate 100］］ Hello")
+    assert b"[" not in enc(u"﹇﹇rate 100﹈﹈ Hello")

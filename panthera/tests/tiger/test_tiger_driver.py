@@ -1104,3 +1104,28 @@ def test_tiger_drops_a_zero_width_character_rather_than_splitting_a_word(mark):
     """panthera-speech#43, in Tiger's own encoder: each became a space."""
     from synthDrivers import tigerspeech
     assert tigerspeech._encode(u"zero" + mark + u"width") == b"zerowidth"
+
+
+def test_tiger_reads_a_typeset_ligature_as_its_letters():
+    """#43: MacRoman's fi byte renders as a space on Tiger's engine."""
+    from synthDrivers import tigerspeech
+    assert tigerspeech._encode(u"\ufb01le") == b"file"
+
+
+def test_tiger_says_nothing_at_once_for_text_that_is_only_zero_width():
+    """Found in review of #43: once zero-width characters are dropped, text
+    made of nothing else encodes to nothing, and an empty request held the
+    host for its quiet-period fallback -- 3 to 5 s, measured on Fred.  The
+    render returns at once without asking the host."""
+    from synthDrivers.tigerspeech import SynthDriver
+    d = SynthDriver.__new__(SynthDriver)
+    d._acceptCommands = False
+    d._inflection = 50
+    d._inflectionSent = False
+    d._volume = 100
+    d._volumeSent = False
+
+    def no_host():
+        raise AssertionError("an empty utterance was sent to the host")
+    d._host = no_host
+    assert d._render(u"\u200b\ufeff", 180, "Fred") == b""

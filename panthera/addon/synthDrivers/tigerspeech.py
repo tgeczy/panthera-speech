@@ -167,6 +167,10 @@ _FOLD = {
     #: the next, a byte-order mark pasted mid-line -- and are never read; as
     #: a space, "zero\u200bwidth" was spoken as two words.
     0x200B: None, 0x200C: None, 0x200D: None, 0x2060: None, 0xFEFF: None,
+    #: Typeset ligatures as their letters (#43): MacRoman's fi and fl bytes
+    #: render as a space on Tiger's engine, so "\ufb01le" was " le".
+    0xFB00: u"ff", 0xFB01: u"fi", 0xFB02: u"fl", 0xFB03: u"ffi", 0xFB04: u"ffl",
+    0xFB05: u"st", 0xFB06: u"st",
 }
 
 
@@ -834,10 +838,15 @@ class SynthDriver(SynthDriver):
         elif self._volumeSent:
             text = "[[volm 1.000]]%s" % text
             self._volumeSent = False
+        t = _encode(text)
+        if not t.strip():
+            # Nothing the engine can say -- zero-width characters alone are
+            # dropped now (#43) -- and an empty request held the host for its
+            # quiet-period fallback, 3 to 5 s of nothing.
+            return b""
         try:
             proc = self._host()
             v = voice.encode("utf-8")
-            t = _encode(text)
             # A cancel that arrived while nothing was rendering must not be
             # waiting here to kill the utterance that follows it.
             self._clearCancel()
