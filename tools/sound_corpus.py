@@ -179,6 +179,20 @@ def compare(a_dir, b_dir, slack, again=(), candidate_again=()):
             noisy |= {k for k in side["items"] if k in r["items"]
                       and _differs(side["items"][k], r["items"][k], slack)}
     texts = b["texts"]
+
+    #: **Silence is never "the same".**  Two builds that both say nothing
+    #: compare equal byte for byte, and that hid Leopard losing a 40-digit
+    #: number on every voice in 3.3.3 and since.  Any take with no audio is
+    #: named here, whatever the other side did.
+    def silent(item):
+        return any(not n for n in item["len"])
+    mute = sorted(k for k, y in b["items"].items() if silent(y))
+    spoke = sorted(k for k, x in a["items"].items() if silent(x) and k in b["items"]
+                   and not silent(b["items"][k]))
+    for key in mute:
+        print("SILENT in the candidate: %s  %r" % (key, texts[int(key.split("/")[2])]))
+    for key in spoke:
+        print("now speaks (silent in the baseline): %s" % key)
     same, unstable, varies, differ, missing = [], [], [], [], []
     for key in sorted(set(a["items"]) | set(b["items"])):
         x, y = a["items"].get(key), b["items"].get(key)
@@ -206,7 +220,7 @@ def compare(a_dir, b_dir, slack, again=(), candidate_again=()):
             print("   text sent:  %r\n           -> %r" % (x.get("prepared"), y.get("prepared")))
     for key in missing:
         print("only on one side: %s" % key)
-    return 1 if differ else 0
+    return 1 if differ or mute else 0
 
 
 def main():
