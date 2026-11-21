@@ -329,6 +329,41 @@ function Invoke-Elevated([string]$Arguments) {
     $process.ExitCode
 }
 
+# -> one @{ Exe; Dll } per engine DLL this machine registers, in order
+# (panthera-speech#37).  On 64-bit Windows: the x86 DLL through SysWOW64's
+# regsvr32 and the x64 one through the native one -- Sysnative from a 32-bit
+# PowerShell, where System32 is redirected to SysWOW64.  On 32-bit Windows
+# there is no SysWOW64 and no x64 DLL, so the x86 DLL goes through System32.
+# Calling SysWOW64 there threw, the script carried on, and every voice was
+# listed in every program and failed to create.
+function Get-ComServers([bool]$Os64 = [Environment]::Is64BitOperatingSystem,
+                        [bool]$Process64 = [Environment]::Is64BitProcess,
+                        [string]$Root = $env:SystemRoot, [string]$Stage = $stage) {
+    $x86 = Join-Path $Stage 'x86\panthera_sapi.dll'
+    if (!$Os64) {
+        return @(@{ Exe = Join-Path $Root 'System32\regsvr32.exe'; Dll = $x86 })
+    }
+    $native = if ($Process64) { 'System32' } else { 'Sysnative' }
+    @(@{ Exe = Join-Path $Root 'SysWOW64\regsvr32.exe'; Dll = $x86 },
+      @{ Exe = Join-Path $Root ($native + '\regsvr32.exe'); Dll = Join-Path $Stage 'x64\panthera_sapi.dll' })
+}
+
+# -> regsvr32's exit code, once it has finished (panthera-speech#37).
+# regsvr32 is a GUI program, so `& regsvr32.exe` returned at once and
+# $LASTEXITCODE stayed empty: a failure was never seen, and at uninstall Inno
+# could delete the folder before the unregistration had run.  A regsvr32
+# that will not start at all is a failure too.
+function Invoke-Regsvr32([string]$Exe, [string]$Dll, [switch]$Unregister) {
+    $arguments = '/s ' + $(if ($Unregister) { '/u ' } else { '' }) + (ConvertTo-Argument $Dll)
+    try {
+        $process = Start-Process -FilePath $Exe -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden -ErrorAction Stop
+    } catch {
+        return 2
+    }
+    if (!$process) { return 2 }
+    $process.ExitCode
+}
+
 # A message box, behind a name the settings test can replace.
 function Show-Message([string]$Text, [string]$Icon = 'None') {
     [Windows.Forms.MessageBox]::Show($form, $Text, 'Panthera SAPI', 'OK', $Icon) | Out-Null
@@ -682,10 +717,10 @@ if ($RegisterVoices -or $RegisterServer) {
         [Console]::Error.WriteLine(('Not registering: the data folder {0} does not exist.' -f $DataRoot))
         exit 3
     }
-    & "$env:SystemRoot\SysWOW64\regsvr32.exe" /s (Join-Path $stage 'x86\panthera_sapi.dll')
-    if ($LASTEXITCODE) { exit $LASTEXITCODE }
-    & "$env:SystemRoot\System32\regsvr32.exe" /s (Join-Path $stage 'x64\panthera_sapi.dll')
-    if ($LASTEXITCODE) { exit $LASTEXITCODE }
+    foreach ($server in @(Get-ComServers)) {
+        $code = Invoke-Regsvr32 $server.Exe $server.Dll
+        if ($code) { exit $code }
+    }
     # Registration is the elevated trip everybody makes, so it is where the
     # machine-wide folder gets its permissions and its copy of the settings.
     Grant-SettingsFolder
@@ -698,8 +733,9 @@ if ($RegisterVoices -or $RegisterServer) {
 if ($UnregisterVoices) {
     Remove-VoiceTokens $Generations
     if (!(Test-AnyPantheraTokens)) {
-        & "$env:SystemRoot\SysWOW64\regsvr32.exe" /s /u (Join-Path $stage 'x86\panthera_sapi.dll')
-        & "$env:SystemRoot\System32\regsvr32.exe" /s /u (Join-Path $stage 'x64\panthera_sapi.dll')
+        foreach ($server in @(Get-ComServers)) {
+            Invoke-Regsvr32 $server.Exe $server.Dll -Unregister | Out-Null
+        }
     }
     exit 0
 }

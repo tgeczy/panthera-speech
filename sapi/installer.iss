@@ -54,7 +54,11 @@ Source: "{#StageDir}\x86\panthera_sapi.dll"; DestDir: "{app}\x86"
 Source: "{#StageDir}\x86\panthera_host.exe"; DestDir: "{app}\x86"
 Source: "{#StageDir}\x64\panthera_sapi.dll"; DestDir: "{app}\x64"; Check: Is64BitInstallMode
 Source: "{#StageDir}\x64\panthera_host.exe"; DestDir: "{app}\x64"; Check: Is64BitInstallMode
-Source: "{#StageDir}\panthera_settings.exe"; DestDir: "{app}"
+; The settings launcher in the bitness of the Windows it lands on: 32-bit
+; Windows cannot run the x64 one, and on 64-bit Windows an x86 one would start
+; the 32-bit PowerShell (panthera-speech#37).
+Source: "{#StageDir}\panthera_settings.exe"; DestDir: "{app}"; Check: Is64BitInstallMode
+Source: "{#StageDir}\x86\panthera_settings.exe"; DestDir: "{app}"; Check: not Is64BitInstallMode
 Source: "{#StageDir}\settings.ps1"; DestDir: "{app}"
 Source: "{#StageDir}\settings.cmd"; DestDir: "{app}"
 Source: "{#StageDir}\extract.py"; DestDir: "{app}"
@@ -65,7 +69,8 @@ Source: "{#StageDir}\Panthera-MIT.txt"; DestDir: "{app}\licenses"
 ; The embeddable Python that runs the extractor, so extraction works on a
 ; machine with no Python of its own.  python.org-official bits, unmodified
 ; but for the ._pth naming the app folder on sys.path; still no Apple data.
-Source: "{#StageDir}\python\*"; DestDir: "{app}\python"; Flags: recursesubdirs
+Source: "{#StageDir}\python\*"; DestDir: "{app}\python"; Flags: recursesubdirs; Check: Is64BitInstallMode
+Source: "{#StageDir}\python-x86\*"; DestDir: "{app}\python"; Flags: recursesubdirs; Check: not Is64BitInstallMode
 
 [Dirs]
 ; The machine-wide settings file lives here, and every standard account
@@ -111,11 +116,25 @@ Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -STA
 [Code]
 const
   UninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{8E1B0A4C-5A0D-4F2E-9C1B-7D64A2153F90}_is1';
+  { Windows PowerShell 3, 4 and 5.x all register under "3". }
+  PowerShellKey = 'SOFTWARE\Microsoft\PowerShell\3\PowerShellEngine';
 var
   ExistingInstall: Boolean;
 
 function InitializeSetup: Boolean;
 begin
+  { The settings tool, which registers every voice, needs PowerShell 3 or
+    later.  Windows 7 comes with 2.0, and without this the install finished
+    and registered nothing, silently.  WMF 5.1 is the one update for
+    Windows 7 that Microsoft still offers. }
+  if not RegValueExists(HKLM, PowerShellKey, 'PowerShellVersion') then
+  begin
+    SuppressibleMsgBox('Panthera SAPI needs Windows PowerShell 3 or later, and this copy of Windows does not have it yet.' + #13#10#13#10 +
+      'On Windows 7, install Windows Management Framework 5.1 from https://aka.ms/wmf51download, restart, and run this installer again.',
+      mbCriticalError, MB_OK, IDOK);
+    Result := False;
+    exit;
+  end;
   { Snapshot before Setup writes its own uninstall key. Checking in [Run]
     would mistake a first install for an upgrade. Read both registry views. }
   ExistingInstall := RegKeyExists(HKLM32, UninstallKey);

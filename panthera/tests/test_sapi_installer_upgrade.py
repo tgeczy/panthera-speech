@@ -40,16 +40,16 @@ $dispatch = @($ast.EndBlock.Statements | Where-Object {
 })
 if ($dispatch.Count -ne 1) { throw 'registration dispatch missing or ambiguous' }
 $text = $dispatch[0].Extent.Text
-# Mock only external regsvr32 calls; retain the real dispatch, settings calls,
-# Add-VoiceTokens call and exit-status checks. Return to the probe on exit 0.
-$commands = $dispatch[0].FindAll({param($n)
-    $n -is [Management.Automation.Language.CommandAst] -and
-    $n.Extent.Text -match '^& .*regsvr32\.exe'
-}, $true)
-if ($commands.Count -ne 2) { throw 'expected both COM registration calls' }
-foreach ($command in $commands) {
-    $text = $text.Replace($command.Extent.Text, '$script:classes++; $global:LASTEXITCODE = 0')
+# Mock only the regsvr32 runs; retain the real dispatch, the real choice of
+# which DLLs to register (Get-ComServers), settings calls, the Add-VoiceTokens
+# call and exit-status checks. Return to the probe on exit 0.
+if ($text -notmatch 'Invoke-Regsvr32') { throw 'expected the COM registration calls' }
+$stage = $PSScriptRoot
+foreach ($fn in $ast.FindAll({ $args[0] -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                               $args[0].Name -eq 'Get-ComServers' }, $false)) {
+    . ([scriptblock]::Create($fn.Extent.Text))
 }
+function Invoke-Regsvr32($Exe, $Dll, [switch]$Unregister) { $script:classes++; 0 }
 $text = $text.Replace('exit 0', 'return')
 & ([scriptblock]::Create($text))
 @{voices=$script:state.voices; classes=$script:classes; added=$script:added} |
@@ -140,3 +140,45 @@ Root: HKCU; Subkey: "{key}\\View32"
             winreg.DeleteKey(winreg.HKEY_CURRENT_USER, key)
         except FileNotFoundError:
             pass
+
+
+def test_installer_refuses_without_powershell_3(tmp_path):
+    """No PowerShell 3, no install (panthera-speech#37): the settings tool
+    that registers every voice cannot run on Windows 7's own PowerShell 2.0,
+    and the install used to finish and register nothing, silently.  The real
+    [Code], with the PowerShell key pointed at one no machine has."""
+    if not ISCC.exists():
+        pytest.skip("Inno Setup compiler not installed")
+    installer = (ROOT / "sapi/installer.iss").read_text(encoding="utf8")
+    code = installer.split("[Code]", 1)[1]
+    assert "PowerShellKey = '" in code
+    code = re.sub(r"PowerShellKey = '[^']+';",
+                  lambda _: r"PowerShellKey = 'SOFTWARE\PantheraTests\NoPowerShell-" + uuid.uuid4().hex + "';", code)
+    code = re.sub(r"UninstallKey = '[^']+';",
+                  lambda _: r"UninstallKey = 'Software\PantheraTests\Installer-" + uuid.uuid4().hex + "';", code)
+    ran = tmp_path / "ran.txt"
+    # The one step that would show Setup went ahead: it writes a file.
+    step = 'Filename: "cmd.exe"; Parameters: "/c echo ran> ""%s"""; Flags: runhidden' % ran
+    script = "\n".join([
+        "[Setup]",
+        "AppName=Panthera isolated installer check",
+        "AppVersion=1",
+        r"DefaultDirName={tmp}\PantheraInstallerCheck",
+        "CreateAppDir=no",
+        "Uninstallable=no",
+        "PrivilegesRequired=lowest",
+        "OutputDir=%s" % tmp_path,
+        "OutputBaseFilename=probe-setup",
+        "[Run]",
+        step,
+        "[Code]",
+        code])
+    iss = tmp_path / "probe.iss"
+    iss.write_text(script, encoding="utf-8-sig")
+    built = subprocess.run([str(ISCC), str(iss)], capture_output=True, text=True, timeout=90)
+    assert built.returncode == 0, built.stdout + built.stderr
+    installed = subprocess.run([str(tmp_path / "probe-setup.exe"), "/VERYSILENT",
+                               "/SUPPRESSMSGBOXES", "/SP-", "/NORESTART"],
+                              capture_output=True, timeout=90, creationflags=subprocess.CREATE_NO_WINDOW)
+    assert installed.returncode != 0, "Setup went ahead without PowerShell 3"
+    assert not ran.exists(), "Setup ran its [Run] steps without PowerShell 3"

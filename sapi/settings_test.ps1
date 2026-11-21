@@ -17,7 +17,7 @@ if (!$SettingNames) { throw 'Setting names missing' }
 # the elevated trips can call them; pulled in by name.
 $helpers = 'Read-SettingsFile','Write-SettingsFile','Set-TableValue','Set-SettingsFileValue',
            'Get-SettingsFileValue','Set-MachineSettings',
-           'ConvertTo-Argument','Format-ElevatedArguments','Invoke-Elevated'
+           'ConvertTo-Argument','Format-ElevatedArguments','Invoke-Elevated','Get-ComServers','Invoke-Regsvr32'
 foreach ($fn in $ast.FindAll({ $args[0] -is [Management.Automation.Language.FunctionDefinitionAst] },$false)) {
     if ($fn.Name -in $helpers) { . ([scriptblock]::Create($fn.Extent.Text)) }
 }
@@ -94,24 +94,24 @@ try {
     # And the elevated registration refuses a data folder that is not there,
     # before COM registration and before a token is touched: a broken path
     # used to remove every voice and add none.  The real dispatch block, with
-    # its two regsvr32 calls swapped for a note in a file, in a child process
-    # so its `exit` ends that and not this test.
+    # its regsvr32 runs swapped for a note in a file, in a child process so
+    # its `exit` ends that and not this test.  The note's exit code comes from
+    # REGSVR_CODE, so a failing regsvr32 can be played too.
     $dispatch = @($ast.EndBlock.Statements | Where-Object {
         $_ -is [Management.Automation.Language.IfStatementAst] -and
         $_.Clauses[0].Item1.Extent.Text -match '\$RegisterVoices' })
     Check ($dispatch.Count -eq 1) 'there is one registration dispatch'
+    Check ($dispatch[0].Extent.Text -match 'Invoke-Regsvr32' -and $dispatch[0].Extent.Text -notmatch '& .*regsvr32\.exe') 'registration runs regsvr32 only through Invoke-Regsvr32'
     $did = Join-Path $testDir 'did.txt'
-    $body = $dispatch[0].Extent.Text
-    foreach ($call in $dispatch[0].FindAll({ param($n) $n -is [Management.Automation.Language.CommandAst] -and
-                                             $n.Extent.Text -match '^& .*regsvr32\.exe' }, $true)) {
-        $body = $body.Replace($call.Extent.Text, ('Add-Content -LiteralPath ''{0}'' regsvr32; $global:LASTEXITCODE = 0' -f $did))
-    }
     $guarded = Join-Path $testDir 'dispatch.ps1'
     Set-Content -LiteralPath $guarded -Encoding UTF8 -Value @(
         'param([switch]$RegisterVoices,[switch]$RegisterServer,[string]$DataRoot,[string]$MirrorSettings)',
         'function Grant-SettingsFolder { }', 'function Set-MachineSettings($s) { }',
         ('function Add-VoiceTokens($g) {{ Add-Content -LiteralPath ''{0}'' tokens }}' -f $did),
-        '$Generations = @(''Tiger'')', $body)
+        'function Get-ComServers { @(@{ Exe = ''a''; Dll = ''x86'' }, @{ Exe = ''b''; Dll = ''x64'' }) }',
+        ('function Invoke-Regsvr32($Exe,$Dll,[switch]$Unregister) {{ Add-Content -LiteralPath ''{0}'' regsvr32; [int]$env:REGSVR_CODE }}' -f $did),
+        '$Generations = @(''Tiger'')', $dispatch[0].Extent.Text)
+    $env:REGSVR_CODE = '0'
     $missing = Join-Path $testDir 'no such folder\'
     $run = Microsoft.PowerShell.Management\Start-Process powershell.exe -Wait -PassThru -WindowStyle Hidden -ArgumentList (
         Format-ElevatedArguments $guarded @('-RegisterVoices','-DataRoot',(ConvertTo-Argument $missing)))
@@ -119,6 +119,36 @@ try {
     $run = Microsoft.PowerShell.Management\Start-Process powershell.exe -Wait -PassThru -WindowStyle Hidden -ArgumentList (
         Format-ElevatedArguments $guarded @('-RegisterVoices','-DataRoot',(ConvertTo-Argument $testDir)))
     Check ($run.ExitCode -eq 0 -and (Lines $did).Count -eq 3) 'registering from a folder that is there goes ahead'
+    # A regsvr32 that fails stops the run with its code, before any token
+    # (panthera-speech#37): its failures used to go unseen.
+    Remove-Item -LiteralPath $did
+    $env:REGSVR_CODE = '5'
+    $run = Microsoft.PowerShell.Management\Start-Process powershell.exe -Wait -PassThru -WindowStyle Hidden -ArgumentList (
+        Format-ElevatedArguments $guarded @('-RegisterVoices','-DataRoot',(ConvertTo-Argument $testDir)))
+    Check ($run.ExitCode -eq 5 -and @(Lines $did).Count -eq 1) 'a failing regsvr32 stops registration with its code, before the tokens'
+    Remove-Item Env:\REGSVR_CODE
+
+    # Which regsvr32 registers which DLL (panthera-speech#37).  32-bit Windows
+    # has no SysWOW64 and no x64 DLL; a 32-bit PowerShell on 64-bit Windows
+    # sees System32 redirected, so the x64 DLL goes through Sysnative.
+    $servers = @(Get-ComServers $false $false 'C:\TestWindows' 'C:\TestPanthera')
+    Check ($servers.Count -eq 1 -and $servers[0].Exe -eq 'C:\TestWindows\System32\regsvr32.exe' -and $servers[0].Dll -eq 'C:\TestPanthera\x86\panthera_sapi.dll') '32-bit Windows registers the x86 DLL through System32, and nothing else'
+    $servers = @(Get-ComServers $true $true 'C:\TestWindows' 'C:\TestPanthera')
+    Check ($servers.Count -eq 2 -and $servers[0].Exe -eq 'C:\TestWindows\SysWOW64\regsvr32.exe' -and $servers[1].Exe -eq 'C:\TestWindows\System32\regsvr32.exe' -and $servers[1].Dll -eq 'C:\TestPanthera\x64\panthera_sapi.dll') '64-bit Windows registers x86 through SysWOW64 and x64 through System32'
+    $servers = @(Get-ComServers $true $false 'C:\TestWindows' 'C:\TestPanthera')
+    Check ($servers[1].Exe -eq 'C:\TestWindows\Sysnative\regsvr32.exe') 'a 32-bit PowerShell reaches the 64-bit regsvr32 through Sysnative'
+    # And it is waited for, and what it says is heard.
+    function Start-Process { param($FilePath, $ArgumentList, [switch]$Wait, [switch]$PassThru, $WindowStyle)
+        $script:regsvr = @{ File = $FilePath; Args = $ArgumentList; Wait = [bool]$Wait }; [pscustomobject]@{ ExitCode = 3 } }
+    Check ((Invoke-Regsvr32 'W:\r.exe' 'P:\x86\panthera_sapi.dll' -Unregister) -eq 3) 'regsvr32''s exit code is returned'
+    Check ($regsvr.Wait -and $regsvr.File -eq 'W:\r.exe' -and $regsvr.Args -eq '/s /u "P:\x86\panthera_sapi.dll"') 'regsvr32 is waited for, silent, with the DLL quoted'
+    function Start-Process { param([Parameter(ValueFromRemainingArguments=$true)]$Rest) throw 'The system cannot find the file specified.' }
+    Check ((Invoke-Regsvr32 'W:\missing.exe' 'P:\x86\panthera_sapi.dll') -ne 0) 'a regsvr32 that will not start is a failure'
+    Remove-Item Function:\Start-Process
+    # The real regsvr32, on a DLL that is not there: nothing can be
+    # registered, and "could not load" (3) only comes back if it is waited for.
+    $code = Invoke-Regsvr32 (Join-Path $env:SystemRoot 'System32\regsvr32.exe') (Join-Path $testDir 'not there.dll')
+    Check ($code -eq 3) "the real regsvr32 is waited for and its failure heard (got $code)"
 
     # What a machine upgraded from the registry build looks like: HKLM
     # mirrored months ago, HKCU holding one choice, tool state and a value of

@@ -73,9 +73,17 @@ foreach ($testArch in "x86","x64") {
 # The console-free way in: a GUI-subsystem launcher, so no console ever
 # exists to flash and steal focus from the dialog.  settings.cmd stays for
 # anyone at a command line.
-$launcherCl = Join-Path $msvc.FullName "bin\Hostx64\x64\cl.exe"
-& $launcherCl /nologo /O2 /MT /W3 "/I$($msvc.FullName)\include" "/I$($sdk.FullName)\ucrt" "/I$($sdk.FullName)\um" "/I$($sdk.FullName)\shared" (Join-Path $PSScriptRoot "settings_launcher.c") "/Fe$stage\panthera_settings.exe" "/Fo$stage\" /link /SUBSYSTEM:WINDOWS "/LIBPATH:$($msvc.FullName)\lib\x64" "/LIBPATH:$($sdk.Parent.Parent.FullName)\Lib\$($sdk.Name)\ucrt\x64" "/LIBPATH:$($sdk.Parent.Parent.FullName)\Lib\$($sdk.Name)\um\x64" user32.lib kernel32.lib
-if ($LASTEXITCODE) { throw "settings launcher build failed ($LASTEXITCODE)" }
+#
+# Both bitnesses (panthera-speech#37).  The x64 one is what 64-bit Windows
+# gets -- a 32-bit launcher there would start the 32-bit PowerShell, whose
+# System32 is SysWOW64 -- and the x86 one is the only kind 32-bit Windows can
+# run at all.  The installer picks one; both land as panthera_settings.exe.
+foreach ($arch in "x64","x86") {
+  $launcherCl = Join-Path $msvc.FullName "bin\Hostx64\$arch\cl.exe"
+  $launcherOut = if ($arch -eq "x64") { $stage } else { Join-Path $stage "x86" }
+  & $launcherCl /nologo /O2 /MT /W3 "/I$($msvc.FullName)\include" "/I$($sdk.FullName)\ucrt" "/I$($sdk.FullName)\um" "/I$($sdk.FullName)\shared" (Join-Path $PSScriptRoot "settings_launcher.c") "/Fe$launcherOut\panthera_settings.exe" "/Fo$launcherOut\" /link /SUBSYSTEM:WINDOWS "/LIBPATH:$($msvc.FullName)\lib\$arch" "/LIBPATH:$($sdk.Parent.Parent.FullName)\Lib\$($sdk.Name)\ucrt\$arch" "/LIBPATH:$($sdk.Parent.Parent.FullName)\Lib\$($sdk.Name)\um\$arch" user32.lib kernel32.lib
+  if ($LASTEXITCODE) { throw "$arch settings launcher build failed ($LASTEXITCODE)" }
+}
 # Embeddable Python rides with the stage so extraction owes nothing to the
 # machine's PATH.  Fetched once and kept; the ._pth is rewritten because the
 # embeddable build locks sys.path to that file's entries -- without the ..
@@ -85,16 +93,20 @@ if ($LASTEXITCODE) { throw "settings launcher build failed ($LASTEXITCODE)" }
 # Windows 7, which this community runs.  The extraction chain imports
 # clean under it -- measured -- and an offline extractor gains nothing
 # from a newer interpreter that excludes those machines.
-$py = Join-Path $stage "python"
-if (!(Test-Path (Join-Path $py "python38.dll"))) {
-  if (Test-Path $py) { Remove-Item -Recurse -Force $py }
-  $pyzip = Join-Path $env:TEMP "python-3.8.10-embed-amd64.zip"
-  if (!(Test-Path $pyzip)) {
-    Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.8.10/python-3.8.10-embed-amd64.zip" -OutFile $pyzip
+#
+# amd64 for 64-bit Windows and win32 for 32-bit Windows, which cannot run the
+# other (panthera-speech#37); the installer puts one of them in {app}\python.
+foreach ($pyArch in "amd64","win32") {
+  $py = Join-Path $stage $(if ($pyArch -eq "amd64") { "python" } else { "python-x86" })
+  if (!(Test-Path (Join-Path $py "python38.dll"))) {
+    if (Test-Path $py) { Remove-Item -Recurse -Force $py }
+    $pyzip = Join-Path $env:TEMP "python-3.8.10-embed-$pyArch.zip"
+    if (!(Test-Path $pyzip)) {
+      Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.8.10/python-3.8.10-embed-$pyArch.zip" -OutFile $pyzip
+    }
+    Expand-Archive $pyzip -DestinationPath $py -Force
   }
-  Expand-Archive $pyzip -DestinationPath $py -Force
-}
-Set-Content -Encoding ASCII (Join-Path $py "python38._pth") @'
+  Set-Content -Encoding ASCII (Join-Path $py "python38._pth") @'
 python38.zip
 .
 ..
@@ -104,6 +116,27 @@ python38.zip
 # the bundled interpreter never works.
 #import site
 '@
+}
+# Every binary a 32-bit Windows install takes must be i386, and every one a
+# 64-bit install takes for its own bitness must be x64: a wrong one installs
+# fine and then cannot start, which is how #37 shipped.  Read the PE header.
+function Get-PeMachine([string]$path) {
+  $bytes = [IO.File]::ReadAllBytes($path)
+  $pe = [BitConverter]::ToInt32($bytes, 0x3c)
+  [BitConverter]::ToUInt16($bytes, $pe + 4)
+}
+$expect = @{
+  "x86\panthera_settings.exe" = 0x14c; "panthera_settings.exe" = 0x8664
+  "x86\panthera_sapi.dll" = 0x14c;     "x64\panthera_sapi.dll" = 0x8664
+  "x86\panthera_host.exe" = 0x14c;     "x64\panthera_host.exe" = 0x14c
+  "python-x86\python.exe" = 0x14c;     "python\python.exe" = 0x8664
+}
+foreach ($file in $expect.Keys) {
+  $machine = Get-PeMachine (Join-Path $stage $file)
+  if ($machine -ne $expect[$file]) {
+    throw ("{0} is machine 0x{1:x}, not 0x{2:x}" -f $file, $machine, $expect[$file])
+  }
+}
 Copy-Item (Join-Path $PSScriptRoot "settings.ps1") (Join-Path $stage "settings.ps1")
 Copy-Item (Join-Path $PSScriptRoot "extract.py") (Join-Path $stage "extract.py")
 Copy-Item (Join-Path $repo "panthera\addon\synthDrivers\_panthera\pantheradiscs.py") $stage
