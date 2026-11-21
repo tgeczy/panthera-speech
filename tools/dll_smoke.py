@@ -192,8 +192,8 @@ def openSession(mt, sd, voices, env=None):
     for i, entry in enumerate(env or []):
         block[i] = entry.encode("mbcs")
     reqw, rspr = ctypes.c_void_p(), ctypes.c_void_p()
-    err = dll.pt_open(mt.encode("mbcs"), sd.encode("mbcs"),
-                      voices.encode("mbcs"), None, block,
+    err = dll.pt_open(mt.encode("utf-8"), sd.encode("utf-8"),
+                      voices.encode("utf-8"), None, block,
                       ctypes.byref(reqw), ctypes.byref(rspr))
     if err:
         raise RuntimeError("pt_open returned %d" % err)

@@ -12,16 +12,18 @@ the 32-bit NVDA loads on secure screens was handed its paths as "mbcs", which
 loses the same characters on the Python side.
 
 Every generation is checked, because each opens different files on the way to
-its first word.  The tree is reached through a junction, so nothing is copied.
+its first word.  The tree is reached through a junction; see unicode_tree for the care taken.
 """
 import os
+import shutil
 import struct
 import subprocess
 import sys
 
 import pytest
 
-NAME = "Gergő Дмитрий"
+import unicode_tree
+from unicode_tree import NAME
 HELLO = "Hello there."
 
 GENERATIONS = [("tiger", "Fred"), ("leopard", "Fred"), ("snowleopard", "Fred"),
@@ -42,6 +44,17 @@ def _exact(stream, n):
     return data
 
 
+def _close(proc):
+    """-> the host's stderr, if it was piped, once it has exited."""
+    try:
+        proc.stdin.close()
+    except OSError:
+        pass
+    err = proc.stderr.read().decode("utf-8", "replace") if proc.stderr else ""
+    proc.wait(30)
+    return err
+
+
 def _say(proc, voice):
     """One TGR4 request -> the number of frames that came back."""
     v, body = voice.encode("ascii"), HELLO.encode("utf-8")
@@ -59,28 +72,20 @@ def _say(proc, voice):
         frames += n
 
 
-def _junction(tmp_path, generation):
-    if sys.platform != "win32":
-        pytest.skip("the ANSI code page is a Windows matter")
+def _tree(generation):
     module = _module(generation)
     tree = module.find_tree()
     if not tree:
         pytest.skip("no %s speech tree here" % generation)
-    link = os.path.join(str(tmp_path), NAME, generation)
-    os.makedirs(os.path.dirname(link))
-    made = subprocess.run(["cmd", "/c", "mklink", "/J", link, os.path.normpath(tree)],
-                          capture_output=True)
-    if made.returncode:
-        pytest.skip("could not make a junction here")
-    return module, link
+    return module, tree
 
 
 @pytest.mark.parametrize("generation,voice", GENERATIONS)
-def test_an_engine_outside_the_code_page_speaks(generation, voice, tmp_path):
-    module, link = _junction(tmp_path, generation)
-    try:
-        if not os.path.isfile(module.HOST_EXE):
-            pytest.skip("panthera_host.exe not built; run sh build.sh")
+def test_an_engine_outside_the_code_page_speaks(generation, voice):
+    module, tree = _tree(generation)
+    if not os.path.isfile(module.HOST_EXE):
+        pytest.skip("panthera_host.exe not built; run sh build.sh")
+    with unicode_tree.junction(tree, generation) as link:
         p = subprocess.Popen([module.HOST_EXE, "--serve"] + list(module.engine_paths(link)),
                              stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                              stderr=subprocess.DEVNULL)
@@ -88,25 +93,41 @@ def test_an_engine_outside_the_code_page_speaks(generation, voice, tmp_path):
             frames = _say(p, voice)
             assert frames > 5000, "%s under %r said %d frames" % (voice, NAME, frames)
         finally:
-            try:
-                p.stdin.close()
-            except OSError:
-                pass
-            p.wait(30)
-    finally:
-        os.rmdir(link)                    # the junction, never the tree
+            _close(p)
 
 
-def test_the_library_speaks_from_outside_the_code_page(tmp_path):
+def test_params_beside_a_host_outside_the_code_page_are_read():
+    """The add-on, and so the host, lives under the profile too, and the
+    host looks for `params.txt` beside itself -- by a path it asked Windows
+    for in the code page, until this was fixed."""
+    module, tree = _tree("leopard")
+    if not os.path.isfile(module.HOST_EXE):
+        pytest.skip("panthera_host.exe not built; run sh build.sh")
+    with unicode_tree.folder() as holder:
+        exe = os.path.join(holder, "panthera_host.exe")
+        shutil.copy2(module.HOST_EXE, exe)
+        with open(os.path.join(holder, "params.txt"), "w") as f:
+            f.write("Boundaries.SilThreshold=0\n")
+        p = subprocess.Popen([exe, "--serve"] + list(module.engine_paths(tree)),
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE)
+        try:
+            assert _say(p, "Fred") > 5000
+        finally:
+            err = _close(p)
+        assert "reading engine parameters" in err,             "params.txt beside the host under %r was not read" % NAME
+
+
+def test_the_library_speaks_from_outside_the_code_page():
     """The DLL, as 32-bit NVDA loads it.  Runs only under a 32-bit Python:
-    `C:\\Python313-32\\python.exe -m pytest test_unicode_engine_path.py`."""
+    `C:/Python313-32/python.exe -m pytest test_unicode_engine_path.py`."""
     if struct.calcsize("P") != 4:
         pytest.skip("the library is 32-bit; run this under a 32-bit Python")
-    module, link = _junction(tmp_path, "leopard")
-    try:
-        from synthDrivers._panthera import dllhost
-        if not dllhost.available(module.HOST_DLL):
-            pytest.skip("panthera_host.dll not built")
+    module, tree = _tree("leopard")
+    from synthDrivers._panthera import dllhost
+    if not dllhost.available(module.HOST_DLL):
+        pytest.skip("panthera_host.dll not built")
+    with unicode_tree.junction(tree, "leopard") as link:
         mt, sd, voices = module.engine_paths(link)
         proc = dllhost.DllHost("unicode-test", module.HOST_DLL, mt, sd, voices, None, [])
         try:
@@ -114,5 +135,3 @@ def test_the_library_speaks_from_outside_the_code_page(tmp_path):
             assert frames > 5000, "the library under %r said %d frames" % (NAME, frames)
         finally:
             proc.kill()
-    finally:
-        os.rmdir(link)

@@ -65,7 +65,7 @@ LIB="-LIBPATH:\"$MSVC/lib/x86\" -LIBPATH:\"$SDK/lib/$SDKV/ucrt/x86\" -LIBPATH:\"
 
 eval "\"$CL\" -nologo -O2 -MT -W3 -DTIGER_UC $INC \"$ROOT/src/tiger_host.c\" \
     -Fe\"$OUT/tiger_host_uc.exe\" -Fo\"$OUT/\" \
-    -link $LIB \"$UC_IMP\" winmm.lib ole32.lib mfuuid.lib -LARGEADDRESSAWARE" \
+    -link $LIB \"$UC_IMP\" winmm.lib ole32.lib mfuuid.lib shell32.lib -LARGEADDRESSAWARE" \
     > "$OUT/build.log" 2>&1 || {
         echo "build failed:"; tail -50 "$OUT/build.log"; exit 1; }
 

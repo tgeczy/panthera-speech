@@ -90,24 +90,27 @@
  * under 1252) reached the host as "Gerg?", nothing opened, and the voice
  * loaded in NVDA and never spoke (panthera-speech#27).
  *
- * So `main` rebuilds `argv` as UTF-8 from the wide command line, and every
- * file the host or the guest opens goes through these, which take UTF-8 and
- * call the wide functions.  Text that is not valid UTF-8 -- a client that
- * still sends the code page -- is read in the code page, as it always was, so
- * nothing that spoke before can stop.  Off Windows a path is bytes and these
- * are the plain calls. */
+ * So `main` rebuilds `argv` as UTF-8 from the wide command line, the DLL's
+ * caller sends UTF-8, and every file the host or the guest opens goes
+ * through these, which take UTF-8 and call the wide functions.
+ *
+ * **Strictly UTF-8: text that is not is refused, never guessed at.**  The
+ * first version read invalid UTF-8 in the code page instead, which misreads
+ * code-page bytes that happen to be valid UTF-8 -- 1,920 of GBK's hanzi
+ * among them, 谢 arriving as "л" -- so every source of code-page text is
+ * converted where it enters instead (`main`'s fallback, `u8_module_path`).
+ * Off Windows a path is bytes and these are the plain calls. */
 #ifdef _WIN32
-static wchar_t *u8_wide(const char *s)
+static wchar_t *u8_decode(const char *s, UINT cp, DWORD flags)
 {
-    UINT cp = CP_UTF8;
-    DWORD flags = MB_ERR_INVALID_CHARS;
     int n = MultiByteToWideChar(cp, flags, s, -1, NULL, 0);
-    wchar_t *w;
-    if (n <= 0) { cp = CP_ACP; flags = 0; n = MultiByteToWideChar(cp, flags, s, -1, NULL, 0); }
-    if (n <= 0) return NULL;
-    w = (wchar_t *)malloc(sizeof(wchar_t) * (size_t)n);
+    wchar_t *w = n > 0 ? (wchar_t *)malloc(sizeof(wchar_t) * (size_t)n) : NULL;
     if (w && MultiByteToWideChar(cp, flags, s, -1, w, n) <= 0) { free(w); w = NULL; }
     return w;
+}
+static wchar_t *u8_wide(const char *s)
+{
+    return u8_decode(s, CP_UTF8, MB_ERR_INVALID_CHARS);
 }
 static char *u8_narrow(const wchar_t *w)
 {
@@ -115,6 +118,22 @@ static char *u8_narrow(const wchar_t *w)
     char *s = n > 0 ? (char *)malloc((size_t)n) : NULL;
     if (s && WideCharToMultiByte(CP_UTF8, 0, w, -1, s, n, NULL, NULL) <= 0) { free(s); s = NULL; }
     return s;
+}
+/* Code-page text, as `main`'s own `argv` arrives -> UTF-8. */
+static char *u8_from_acp(const char *s)
+{
+    wchar_t *w = u8_decode(s, CP_ACP, 0);
+    char *u = w ? u8_narrow(w) : NULL;
+    free(w);
+    return u;
+}
+/* -> 1 with this executable's path in `out`, as UTF-8. */
+static int u8_module_path(char *out, size_t n)
+{
+    wchar_t w[1024];
+    DWORD got = GetModuleFileNameW(NULL, w, (DWORD)(sizeof(w) / sizeof(w[0])));
+    if (!got || got >= sizeof(w) / sizeof(w[0])) return 0;
+    return WideCharToMultiByte(CP_UTF8, 0, w, -1, out, (int)n, NULL, NULL) > 0;
 }
 static int u8_open(const char *path)
 {
@@ -160,6 +179,12 @@ static int u8_open(const char *path) { return _open(path, _O_RDONLY | _O_BINARY)
 static FILE *u8_fopen(const char *path, const char *mode) { return fopen(path, mode); }
 static int u8_stat64(const char *path, struct _stat64 *s) { return _stat64(path, s); }
 static int u8_access(const char *path, int mode) { return _access(path, mode); }
+static int u8_module_path(char *out, size_t n)
+{
+    if (!GetModuleFileNameA(NULL, out, (DWORD)n - 1)) return 0;
+    out[n - 1] = 0;
+    return 1;
+}
 static HANDLE u8_attributes_handle(const char *path)
 {
     return CreateFileA(path, FILE_READ_ATTRIBUTES,
@@ -937,17 +962,19 @@ int main(int argc, char **argv)
 
 #ifdef _WIN32
     /* `argv` as UTF-8, from the wide command line: see "paths are UTF-8"
-     * above.  Kept as it came only if the two disagree on the count, which
-     * would be a parse difference and not a path. */
+     * above.  If the two parsers disagree on the count, the CRT's own `argv`
+     * is converted from the code page instead -- what it says is kept, and
+     * it is still UTF-8 like every other path here. */
     {
         int wargc = 0, ok = 1;
         LPWSTR *wargv = CommandLineToArgvW(GetCommandLineW(), &wargc);
-        if (wargv && wargc == argc) {
-            char **u = (char **)calloc((size_t)argc + 1, sizeof(char *));
-            for (i = 0; u && i < argc; i++)
-                if (!(u[i] = u8_narrow(wargv[i]))) ok = 0;
-            if (u && ok) argv = u;
+        char **u = (char **)calloc((size_t)argc + 1, sizeof(char *));
+        for (i = 0; u && i < argc; i++) {
+            u[i] = (wargv && wargc == argc) ? u8_narrow(wargv[i])
+                                            : u8_from_acp(argv[i]);
+            if (!u[i]) ok = 0;
         }
+        if (u && ok) argv = u;
         if (wargv) LocalFree(wargv);
     }
 #endif

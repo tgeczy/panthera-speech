@@ -915,7 +915,7 @@ static int cf_params_file(char *buf, size_t n, char *shown, size_t shownlen)
     FILE *f;
     size_t got;
 
-    if (!GetModuleFileNameA(NULL, path, (DWORD)sizeof(path) - 1)) return 0;
+    if (!u8_module_path(path, sizeof(path))) return 0;      /* UTF-8 */
     path[sizeof(path) - 1] = 0;
     cut = strrchr(path, '\\');
     if (!cut) cut = strrchr(path, '/');
