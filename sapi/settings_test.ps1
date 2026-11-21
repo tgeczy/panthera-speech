@@ -91,6 +91,35 @@ try {
     }
     Check ((ConvertTo-Argument 'say "hi"\') -eq '"say \"hi\"\\"') 'a quote inside is escaped and a trailing backslash doubled'
 
+    # And the elevated registration refuses a data folder that is not there,
+    # before COM registration and before a token is touched: a broken path
+    # used to remove every voice and add none.  The real dispatch block, with
+    # its two regsvr32 calls swapped for a note in a file, in a child process
+    # so its `exit` ends that and not this test.
+    $dispatch = @($ast.EndBlock.Statements | Where-Object {
+        $_ -is [Management.Automation.Language.IfStatementAst] -and
+        $_.Clauses[0].Item1.Extent.Text -match '\$RegisterVoices' })
+    Check ($dispatch.Count -eq 1) 'there is one registration dispatch'
+    $did = Join-Path $testDir 'did.txt'
+    $body = $dispatch[0].Extent.Text
+    foreach ($call in $dispatch[0].FindAll({ param($n) $n -is [Management.Automation.Language.CommandAst] -and
+                                             $n.Extent.Text -match '^& .*regsvr32\.exe' }, $true)) {
+        $body = $body.Replace($call.Extent.Text, ('Add-Content -LiteralPath ''{0}'' regsvr32; $global:LASTEXITCODE = 0' -f $did))
+    }
+    $guarded = Join-Path $testDir 'dispatch.ps1'
+    Set-Content -LiteralPath $guarded -Encoding UTF8 -Value @(
+        'param([switch]$RegisterVoices,[switch]$RegisterServer,[string]$DataRoot,[string]$MirrorSettings)',
+        'function Grant-SettingsFolder { }', 'function Set-MachineSettings($s) { }',
+        ('function Add-VoiceTokens($g) {{ Add-Content -LiteralPath ''{0}'' tokens }}' -f $did),
+        '$Generations = @(''Tiger'')', $body)
+    $missing = Join-Path $testDir 'no such folder\'
+    $run = Microsoft.PowerShell.Management\Start-Process powershell.exe -Wait -PassThru -WindowStyle Hidden -ArgumentList (
+        Format-ElevatedArguments $guarded @('-RegisterVoices','-DataRoot',(ConvertTo-Argument $missing)))
+    Check ($run.ExitCode -eq 3 -and !(Test-Path -LiteralPath $did)) 'registering from a missing folder stops before regsvr32 and the tokens'
+    $run = Microsoft.PowerShell.Management\Start-Process powershell.exe -Wait -PassThru -WindowStyle Hidden -ArgumentList (
+        Format-ElevatedArguments $guarded @('-RegisterVoices','-DataRoot',(ConvertTo-Argument $testDir)))
+    Check ($run.ExitCode -eq 0 -and (Lines $did).Count -eq 3) 'registering from a folder that is there goes ahead'
+
     # What a machine upgraded from the registry build looks like: HKLM
     # mirrored months ago, HKCU holding one choice, tool state and a value of
     # the wrong type, and no file anywhere.

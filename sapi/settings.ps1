@@ -673,13 +673,15 @@ if ($MigrateData) {
     exit 0
 }
 
-if ($RegisterVoices -and $DataRoot -and !(Test-Path -LiteralPath $DataRoot -PathType Container)) {
-    # Registering from a folder that is not there removes every selected
-    # voice and adds none.  Never on a path that arrived broken (#35).
-    Write-Error ('Not registering: the data folder {0} does not exist.' -f $DataRoot)
-    exit 3
-}
 if ($RegisterVoices -or $RegisterServer) {
+    # Registering from a folder that is not there removes every selected
+    # voice and adds none.  Never on a path that arrived broken (#35).  Inside
+    # this block, not beside it: the installer test finds the dispatch as the
+    # one top-level `if` that names $RegisterVoices.
+    if ($RegisterVoices -and $DataRoot -and !(Test-Path -LiteralPath $DataRoot -PathType Container)) {
+        [Console]::Error.WriteLine(('Not registering: the data folder {0} does not exist.' -f $DataRoot))
+        exit 3
+    }
     & "$env:SystemRoot\SysWOW64\regsvr32.exe" /s (Join-Path $stage 'x86\panthera_sapi.dll')
     if ($LASTEXITCODE) { exit $LASTEXITCODE }
     & "$env:SystemRoot\System32\regsvr32.exe" /s (Join-Path $stage 'x64\panthera_sapi.dll')
