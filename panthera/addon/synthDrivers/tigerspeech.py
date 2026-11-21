@@ -161,6 +161,12 @@ _FOLD = {
     #: quotes are left alone: those really are quotation marks.
     0x2018: u"'", 0x2019: u"'",
     0x2044: u"/",                                             # fraction slash
+    #: **Zero-width characters are dropped, not made a space**
+    #: (panthera-speech#43; ssi263-speech#66, the same class).  They shape
+    #: text -- a word a web page broke for line-wrapping, an emoji joined to
+    #: the next, a byte-order mark pasted mid-line -- and are never read; as
+    #: a space, "zero\u200bwidth" was spoken as two words.
+    0x200B: None, 0x200C: None, 0x200D: None, 0x2060: None, 0xFEFF: None,
 }
 
 

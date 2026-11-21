@@ -87,6 +87,16 @@ _FOLD = {
     #: is the same complaint in Polish, and it is two lines to not have it.
     0x0141: u"L", 0x0142: u"l",                     # Ł ł
     0x0110: u"D", 0x0111: u"d",                     # Đ đ
+    #: **Zero-width characters are dropped, not made a space**
+    #: (panthera-speech#43; ssi263-speech#66, the same class).  They shape
+    #: text -- a word a web page broke for line-wrapping, an emoji joined to
+    #: the next, a byte-order mark pasted mid-line -- and are never read; as
+    #: a space, "zero\u200bwidth" was spoken as two words.
+    0x200B: None, 0x200C: None, 0x200D: None, 0x2060: None, 0xFEFF: None,
+    #: The two typeset ligatures MacRoman happens to have (0xDE, 0xDF) as
+    #: their letters: a PDF's "ﬁle" is the word "file", and the other
+    #: ligatures reach their letters through NFKD in _unmappable below.
+    0xFB01: u"fi", 0xFB02: u"fl",
 }
 
 
@@ -112,7 +122,11 @@ def _unmappable(err):
     """
     out = []
     for ch in err.object[err.start:err.end]:
-        bare = u"".join(c for c in unicodedata.normalize("NFD", ch)
+        # NFKD, not NFD: the compatibility forms as well, so a typeset
+        # ligature is its letters ("\ufb01le" was " le") and a subscript
+        # its digit (H\u2082O was "H O") -- #43's class.  An accented letter
+        # decomposes the same either way.
+        bare = u"".join(c for c in unicodedata.normalize("NFKD", ch)
                         if not unicodedata.combining(c))
         try:
             bare.encode("mac_roman")

@@ -7,6 +7,8 @@ a machine with no Mac OS X data at all -- which matters because the bug that
 prompted them was reported in Hungarian and the person who has to reproduce it
 may not have a Hungarian keyboard, let alone Lion.
 """
+import pytest
+
 from synthDrivers._panthera import pantheradriver
 
 
@@ -105,3 +107,26 @@ def test_the_symbols_macroman_does_have_are_not_stripped():
     # ...but the typographic apostrophe is still folded, because the engine
     # reads MacRoman's own 0xD5 as a quotation mark and breaks the phrase.
     assert enc(u"Canopy’s") == b"Canopy's"
+
+
+#: Characters that are there to shape text, never to be read: a word a web
+#: page broke for line-wrapping, an emoji joined to the next, a byte-order mark
+#: pasted into the middle of a line.
+ZERO_WIDTH = [u"​", u"‌", u"‍", u"⁠", u"﻿"]
+
+
+@pytest.mark.parametrize("mark", ZERO_WIDTH, ids=["ZWSP", "ZWNJ", "ZWJ", "WJ", "BOM"])
+def test_a_zero_width_character_does_not_split_a_word(mark):
+    """panthera-speech#43: each became a space, so "zero\u200bwidth" was
+    spoken as two words.  NVDA's symbol dictionaries have no entry for them,
+    so they reach the driver.  Dropped, as ssi263-speech#66 does."""
+    assert enc(u"zero" + mark + u"width") == b"zerowidth"
+
+
+def test_typeset_ligatures_and_subscripts_are_their_letters():
+    """The same class: what NFD cannot take apart became a gap -- "ﬁle" (the
+    fi ligature of a PDF) was " le", and H₂O was "H O".  Their compatibility
+    forms are letters and digits MacRoman has."""
+    assert enc(u"ﬁle") == b"file"
+    assert enc(u"oﬃce") == b"office"
+    assert enc(u"H₂O") == b"H2O"

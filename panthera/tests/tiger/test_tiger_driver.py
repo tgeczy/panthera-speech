@@ -1097,3 +1097,10 @@ def test_inflection_comes_back_to_the_middle_too(driver, monkeypatch):
     assert seen and "[[pmod" not in seen[0], (
         "the command is still being sent after the setting came back: %r"
         % (seen,))
+
+
+@pytest.mark.parametrize("mark", [u"​", u"‌", u"‍", u"⁠", u"﻿"])
+def test_tiger_drops_a_zero_width_character_rather_than_splitting_a_word(mark):
+    """panthera-speech#43, in Tiger's own encoder: each became a space."""
+    from synthDrivers import tigerspeech
+    assert tigerspeech._encode(u"zero" + mark + u"width") == b"zerowidth"
