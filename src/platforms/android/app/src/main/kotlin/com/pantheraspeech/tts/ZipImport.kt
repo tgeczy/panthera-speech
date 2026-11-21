@@ -67,6 +67,15 @@ object ZipImport {
      * its content, never by a stray readme's name. */
     private val NAMES = Charsets.ISO_8859_1
 
+    /** The most of an entry the check ever holds: a plist, and the engine
+     * binary it reads a version from.  Real Apple data is far below both. Read
+     * in pieces and dropped past these, so neither a huge entry nor one that
+     * lies about its size can fill the heap (panthera-speech#55;
+     * ssi263-speech#50, the same class): an OutOfMemoryError on the check
+     * thread is not caught, and took the app and its TTS service down. */
+    private const val PLIST_CAP = 1L shl 20
+    private const val ENGINE_CAP = 64L shl 20
+
     /** The bytes, twice over: a fresh stream from the start for the import,
      * and the same file as a channel when it can be seeked, for the check. */
     class Source(val name: String, val size: Long,
@@ -256,12 +265,12 @@ object ZipImport {
             var version: String? = null
             for (plist in listOf(INFO_PLIST, VERSION_PLIST)) {
                 val e = byName[prefix + plist] ?: continue
-                if (e.size > 1 shl 20) continue
+                if (e.size > PLIST_CAP) continue
                 version = read(e)?.let { plistVersion(String(it, Charsets.UTF_8)) }
                 if (version != null) break
             }
             if (version == null) byName[prefix + MACINTALK]?.let { e ->
-                if (e.size <= 64L shl 20) version = read(e)?.let { binaryVersion(it) }
+                if (e.size <= ENGINE_CAP) version = read(e)?.let { binaryVersion(it) }
             }
             val under = byName.entries.filter { it.key.startsWith(prefix) }
             val voices = under.map { it.key.removePrefix(prefix) }
@@ -385,7 +394,20 @@ object ZipImport {
                 Inflater(true), 1 shl 16)
             else -> return null
         }
-        return stream.use { it.readBytes() }
+        // At most the largest cap, whatever the entry declares: a damaged or
+        // lying size would otherwise inflate into the heap (#55).
+        return stream.use { input ->
+            val held = java.io.ByteArrayOutputStream()
+            val buffer = ByteArray(1 shl 16)
+            var size = 0L
+            while (true) {
+                val n = input.read(buffer); if (n < 0) break
+                size += n
+                if (size > ENGINE_CAP) return null
+                held.write(buffer, 0, n)
+            }
+            held.toByteArray()
+        }
     }
 
     /** `length` bytes of the file from `start` -- and, for deflated data, one
@@ -435,11 +457,19 @@ object ZipImport {
                     name.endsWith("/$MACINTALK") || name == MACINTALK)
                 var size = 0L
                 if (wanted) {
-                    val bytes = zip.readBytes()
-                    size = bytes.size.toLong()
-                    if (name!!.endsWith("Info.plist") || name.endsWith("version.plist")) {
-                        if (bytes.size <= 1 shl 20) kept[name] = bytes
-                    } else if (bytes.size <= 64 shl 20) kept[name] = bytes
+                    // In pieces, kept only up to the cap: the size is known
+                    // only by reading, and reading a huge entry whole took the
+                    // app down before the cap was ever compared (#55).
+                    val cap = if (name!!.endsWith("Info.plist") || name.endsWith("version.plist"))
+                        PLIST_CAP else ENGINE_CAP
+                    val held = java.io.ByteArrayOutputStream()
+                    val buffer = ByteArray(1 shl 16)
+                    while (true) {
+                        val n = zip.read(buffer); if (n < 0) break
+                        size += n
+                        if (size <= cap) held.write(buffer, 0, n)
+                    }
+                    if (size <= cap) kept[name] = held.toByteArray()
                 } else {
                     val buffer = ByteArray(1 shl 16)
                     while (true) { val n = zip.read(buffer); if (n < 0) break; size += n }

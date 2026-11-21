@@ -74,6 +74,29 @@ class ZipImportTest {
         }
     }
 
+    /** An engine entry far larger than any real one -- a gigabyte of zeros,
+     * about a megabyte in the zip -- is refused, not read whole
+     * (panthera-speech#55; ssi263-speech#50, the same class).  The streamed
+     * check read every engine entry with readBytes and only then compared it
+     * with its cap: an OutOfMemoryError on the check thread, uncaught, took
+     * the app down, the TTS service with it.  From a stream, where the size
+     * is only known by reading. */
+    @Test fun aHugeEngineEntryIsRefusedWithoutReadingItWhole() {
+        val file = temp.newFile().also { f ->
+            ZipOutputStream(f.outputStream()).use { zip ->
+                zip.putNextEntry(ZipEntry("lion/" + ZipImport.MACINTALK))
+                val zeros = ByteArray(1 shl 20)
+                repeat(1024) { zip.write(zeros) }
+                zip.closeEntry()
+                zip.putNextEntry(ZipEntry("lion/" + ZipImport.DICTIONARY)); zip.write(byteArrayOf(1)); zip.closeEntry()
+            }
+        }
+        val streamed = ZipImport.Source(file.name, file.length(), { file.inputStream() })
+        val plan = ZipImport.inspect(streamed)
+        assertNotNull(plan.refusal)
+        assertTrue(plan.refusal!!, plan.refusal!!.contains("cannot tell which generation"))
+    }
+
     @Test fun aSingleEngineAtTheRootStillImports() {
         val file = archive(engine(""))
         for (source in sources(file)) {
