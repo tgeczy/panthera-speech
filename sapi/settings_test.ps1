@@ -146,6 +146,43 @@ try {
     Check ($run.ExitCode -eq 4 -and !(Test-Path -LiteralPath $did)) 'with no engine DLL to register, nothing is registered and it says so'
     Remove-Item Env:\REGSVR_CODE, Env:\REGSVR_X64_CODE, Env:\X64_REQUIRED, Env:\NO_SERVERS
 
+    # Move voices for all users: the real -MigrateData block, in a child with
+    # the registry, the settings mirror and the tokens swapped for nothing.
+    # The voice bank it moved must stay readable by every account -- each
+    # file inheriting the root's three entries -- while no account but an
+    # administrator may write anywhere in the tree.  The grants used to go
+    # down the tree with /T and left every FILE with an empty ACL: the moved
+    # voices were unreadable, SYSTEM included, and went silent.
+    $migrate = @($ast.EndBlock.Statements | Where-Object {
+        $_ -is [Management.Automation.Language.IfStatementAst] -and
+        $_.Clauses[0].Item1.Extent.Text -eq '$MigrateData' })
+    Check ($migrate.Count -eq 1) 'there is one move dispatch'
+    $moveFrom = Join-Path $testDir 'move from'
+    $moveTo = Join-Path $testDir 'move to\macintalk'
+    New-Item -ItemType Directory -Force -Path (Join-Path $moveFrom 'Tiger\voices') | Out-Null
+    Set-Content -LiteralPath (Join-Path $moveFrom 'Tiger\voices\bank.bin') -Value 'a voice bank'
+    $mover = Join-Path $testDir 'move.ps1'
+    Set-Content -LiteralPath $mover -Encoding UTF8 -Value @(
+        'param([switch]$MigrateData,[string]$MigrateFrom,[string]$DataRoot,[string]$MirrorSettings)',
+        'function Set-MachineDataPath($p) { }', 'function Grant-SettingsFolder { }', 'function Set-MachineSettings($s) { }',
+        'function Test-AnyPantheraTokens { $false }', 'function Add-VoiceTokens($g) { }',
+        '$GenerationTable = @([pscustomobject]@{ Folder = ''Tiger'' })', $migrate[0].Extent.Text)
+    $run = Microsoft.PowerShell.Management\Start-Process powershell.exe -Wait -PassThru -WindowStyle Hidden -ArgumentList (
+        Format-ElevatedArguments $mover @('-MigrateData','-MigrateFrom',(ConvertTo-Argument $moveFrom),
+                                          '-DataRoot',(ConvertTo-Argument $moveTo)))
+    $bank = Join-Path $moveTo 'Tiger\voices\bank.bin'
+    function UsersRights([string]$path) {
+        @((Get-Acl -LiteralPath $path).Access | Where-Object {
+            $_.AccessControlType -eq 'Allow' -and
+            $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -eq 'S-1-5-32-545' } |
+          ForEach-Object { $_.FileSystemRights.ToString() }) -join ','
+    }
+    Check ($run.ExitCode -eq 0 -and (Test-Path -LiteralPath $bank)) 'the move takes the generation folder'
+    Check ((UsersRights $bank) -match 'Read') 'a moved voice bank is readable by every account (no empty ACL on its files)'
+    Check ((UsersRights $moveTo) -notmatch 'Write|Modify|FullControl|CreateFiles|AppendData' -and
+           (UsersRights $bank) -notmatch 'Write|Modify|FullControl') 'and only an administrator may write in the moved tree'
+    & "$env:SystemRoot\System32\icacls.exe" (Join-Path $testDir 'move to') /reset /T /C /Q | Out-Null   # (removable again)
+
     # Which regsvr32 registers which DLL (panthera-speech#37).  32-bit Windows
     # has no SysWOW64 and no x64 DLL; a 32-bit PowerShell on 64-bit Windows
     # sees System32 redirected, so the x64 DLL goes through Sysnative.  Only

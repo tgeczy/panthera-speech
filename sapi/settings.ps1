@@ -704,6 +704,17 @@ if ($MigrateData) {
     # than by name, because `BUILTIN\Users` is localised and this has to hold
     # on a Windows that does not speak English.
     #
+    # **On the root alone, then everything under it inherits.**  The grants
+    # used to go down the tree with `/T`, and on a FILE that left an empty
+    # ACL: `/inheritance:r` took the inherited entries away, and a grant
+    # carrying `(OI)(CI)` takes nothing on a file.  Every moved voice bank was
+    # then unreadable by everybody -- SYSTEM and the Administrators included
+    # -- and the moved voices went silent.  Found in ssi263-speech's port of
+    # this move, whose SAPI test spoke from the moved folder; confirmed here
+    # with this exact command on a scratch folder.  `/reset` on each child is
+    # the right repair BELOW the root: it makes the child inherit the root's
+    # three entries and nothing of ProgramData's.
+    #
     # Past this line the data has moved, so a failure here is a different
     # failure and has its own exit code: "it did not move" and "it moved but
     # the registry did not follow" need different things said to the person,
@@ -711,9 +722,13 @@ if ($MigrateData) {
     # that sends them looking in the wrong place.
     try {
         & "$env:SystemRoot\System32\icacls.exe" $DataRoot /inheritance:r `
-            /grant '*S-1-5-18:(OI)(CI)F' `
-            /grant '*S-1-5-32-544:(OI)(CI)F' `
-            /grant '*S-1-5-32-545:(OI)(CI)RX' /T /C /Q | Out-Null
+            /grant:r '*S-1-5-18:(OI)(CI)F' `
+            /grant:r '*S-1-5-32-544:(OI)(CI)F' `
+            /grant:r '*S-1-5-32-545:(OI)(CI)RX' /C /Q | Out-Null
+        if ($LASTEXITCODE) { throw "icacls could not set the permissions of $DataRoot" }
+        foreach ($child in @(Get-ChildItem -LiteralPath $DataRoot -Force)) {
+            & "$env:SystemRoot\System32\icacls.exe" $child.FullName /reset /T /C /Q | Out-Null
+        }
         Set-MachineDataPath $DataRoot
         Grant-SettingsFolder
         Set-MachineSettings $MirrorSettings
